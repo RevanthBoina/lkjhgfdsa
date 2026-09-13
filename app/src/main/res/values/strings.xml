@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Aniob</string>
+    <string name="accessibility_service_description">Aniob UI Automation Service: executes autonomous user-directed navigation and actions via accessibility.</string>
+    <string name="tab_chat">Chat</string>
+    <string name="tab_tracker">Tracker</string>
+    <string name="tab_stats">Stats</string>
+    <string name="tab_settings">Settings</string>
+    <string name="prompt_placeholder">Enter command (e.g., Open Settings, Book a cab...)</string>
+    <string name="btn_run">Execute</string>
+    <string name="btn_stop">Stop</string>
+    <string name="filter_all">All</string>
+    <string name="filter_correct">Correct</string>
+    <string name="filter_failed">Failed</string>
+    <string name="grill_me_title">Clarification Needed</string>
+    <string name="grill_me_subtitle">Please clarify missing parameters to proceed:</string>
+    <string name="grill_me_confirm">Confirm &amp; Proceed</string>
+    <string name="status_idle">Idle</string>
+    <string name="status_running">Running</string>
+    <string name="status_success">Success</string>
+    <string name="status_failed">Failed</string>
+    <string name="status_grilling">Awaiting Clarification</string>
+</resources>

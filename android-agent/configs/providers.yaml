@@ -1,0 +1,27 @@
+# Provider Configuration for Aniob (AutoRouter & Providers)
+default_cloud_provider: "omniroute"
+default_local_provider: "ondevice_slm"
+
+providers:
+  omniroute:
+    name: "Omniroute Cloud"
+    base_url: "https://api.omniroute.ai/v1/chat/completions"
+    api_key_env: "OMNIROUTE_API_KEY"
+    model: "gpt-4o"
+    vision_enabled: true
+    timeout_seconds: 30
+    temperature: 0.1
+    max_tokens: 1024
+
+  ondevice_slm:
+    name: "On-Device SLM (Qwen2.5-1.5B)"
+    base_url: "http://127.0.0.1:11434/v1/chat/completions"
+    model: "qwen2.5:1.5b"
+    vision_enabled: false
+    timeout_seconds: 15
+    temperature: 0.1
+    max_tokens: 512
+
+  mock:
+    name: "Deterministic Mock Provider"
+    enabled: true
