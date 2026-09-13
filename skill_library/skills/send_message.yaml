@@ -1,0 +1,24 @@
+name: "send_message"
+version: "2.1"
+description: "Send text message with confirmation safety gate"
+risk_tier: "HIGH"
+confirmation_required: true
+target_package: "com.google.android.apps.messaging"
+triggers:
+  - "send message"
+  - "send a text"
+  - "text someone"
+slots:
+  recipient: "string"
+  body: "string"
+steps:
+  - step: 1
+    action: "open_app"
+    package: "com.google.android.apps.messaging"
+    description: "Launch messaging app"
+  - step: 2
+    action: "confirm_with_user"
+    description: "Confirm message content and recipient"
+  - step: 3
+    action: "finish"
+    description: "Message dispatch complete"

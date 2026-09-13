@@ -1,0 +1,24 @@
+name: "book_cab"
+version: "2.1"
+description: "Assisted ride booking flow with grill-me clarification"
+risk_tier: "MEDIUM"
+confirmation_required: true
+triggers:
+  - "book a cab"
+  - "book cab"
+  - "call a taxi"
+  - "order ride"
+slots:
+  destination: "string"
+  tier: "string"
+steps:
+  - step: 1
+    action: "open_app"
+    package: "com.ubercab"
+    description: "Launch ride sharing application"
+  - step: 2
+    action: "confirm_with_user"
+    description: "Review ride tier and estimated fare before booking"
+  - step: 3
+    action: "finish"
+    description: "Ride booked successfully"

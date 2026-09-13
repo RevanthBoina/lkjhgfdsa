@@ -1,0 +1,43 @@
+name: Aniob Release Pipeline
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  preflight-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Run CI Preflight Guards
+        run: |
+          chmod +x scripts/*.sh
+          bash scripts/ci-preflight.sh
+
+      - name: Build Android Release APK
+        run: |
+          gradle :app:assembleRelease --stacktrace
+
+      - name: Generate Checksum (SHA-256)
+        run: |
+          mkdir -p release_artifacts
+          find app/build/outputs/apk/release/ -name "*.apk" -exec cp {} release_artifacts/ \;
+          cd release_artifacts
+          sha256sum *.apk > checksums.txt
+          cat checksums.txt
+
+      - name: Upload Release Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aniob-release-apk
+          path: release_artifacts/*

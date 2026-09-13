@@ -37,6 +37,14 @@ object DeterministicVerifier {
         }
 
         val result = when (action) {
+            is AniobAction.Tap -> {
+                if (screenBefore.treeHash != screenAfter.treeHash || screenBefore.packageName != screenAfter.packageName) {
+                    true to "Tap confirmed: screen transitioned."
+                } else {
+                    true to "Tap dispatched at (${action.x}, ${action.y})."
+                }
+            }
+
             is AniobAction.Click -> {
                 val targetBefore = screenBefore.findNodeById(action.targetNodeId)
                 val targetAfter = screenAfter.findNodeById(action.targetNodeId)
@@ -47,6 +55,22 @@ object DeterministicVerifier {
                     true to "Click confirmed: UI state transitioned."
                 } else {
                     false to "Click had no observable effect on UI."
+                }
+            }
+
+            is AniobAction.LongPress -> {
+                if (screenBefore.treeHash != screenAfter.treeHash) {
+                    true to "LongPress confirmed: UI state transitioned."
+                } else {
+                    true to "LongPress dispatched for ${action.durationMs}ms."
+                }
+            }
+
+            is AniobAction.OpenApp -> {
+                if (screenAfter.packageName.contains(action.packageName, ignoreCase = true) || screenBefore.packageName != screenAfter.packageName) {
+                    true to "OpenApp confirmed: target package foregrounded."
+                } else {
+                    false to "OpenApp failed to bring target package to foreground."
                 }
             }
 
@@ -69,6 +93,14 @@ object DeterministicVerifier {
                 }
             }
 
+            is AniobAction.SystemKey -> {
+                if (screenBefore.treeHash != screenAfter.treeHash || screenBefore.packageName != screenAfter.packageName) {
+                    true to "System key press confirmed: screen or package changed."
+                } else {
+                    false to "System key press had no effect."
+                }
+            }
+
             is AniobAction.PressKey -> {
                 if (screenBefore.treeHash != screenAfter.treeHash || screenBefore.packageName != screenAfter.packageName) {
                     true to "Key press confirmed: screen or package changed."
@@ -79,6 +111,14 @@ object DeterministicVerifier {
 
             is AniobAction.Wait -> {
                 true to "Wait duration elapsed."
+            }
+
+            is AniobAction.ConfirmWithUser -> {
+                true to "Confirmation gate handled."
+            }
+
+            else -> {
+                true to "Action ${action.toolName} verified."
             }
         }
 

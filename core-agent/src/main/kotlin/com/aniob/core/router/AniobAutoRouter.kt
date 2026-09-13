@@ -7,6 +7,7 @@ import com.aniob.core.tools.DevicePowerState
 enum class RouteTarget {
     FASTPATH,
     INTENT,
+    SKILL,
     LOCAL_SLM,
     OMNIROUTE_CLOUD
 }
@@ -22,6 +23,7 @@ object AniobAutoRouter {
     const val PROVIDER_OMNIROUTE = "OMNIROUTE_CLOUD"
     const val PROVIDER_LOCAL = "LOCAL_SLM"
     const val PROVIDER_FASTPATH = "FASTPATH"
+    const val PROVIDER_SKILL = "SKILL"
     const val PROVIDER_INTENT = "INTENT"
 
     /**

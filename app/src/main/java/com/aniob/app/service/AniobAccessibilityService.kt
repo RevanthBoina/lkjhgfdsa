@@ -25,6 +25,7 @@ class AniobAccessibilityService : AccessibilityService() {
             private set
         var isServiceConnected: Boolean = false
             private set
+        var isTaskActive: Boolean = false
     }
 
     private var contentChangedSinceLastStep: Boolean = true
@@ -38,7 +39,7 @@ class AniobAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null) return
+        if (!isTaskActive || event == null) return
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
@@ -126,6 +127,17 @@ class AniobAccessibilityService : AccessibilityService() {
      */
     fun executeAction(action: AniobAction, callback: (Boolean) -> Unit) {
         when (action) {
+            is AniobAction.Tap -> {
+                val root = rootInActiveWindow
+                val screenState = lastScreenState
+                val targetNode = action.targetNodeId?.let { screenState?.findNodeById(it) }
+
+                val tapX = if (action.x > 0) action.x.toFloat() else targetNode?.centerX?.toFloat() ?: 500f
+                val tapY = if (action.y > 0) action.y.toFloat() else targetNode?.centerY?.toFloat() ?: 500f
+
+                dispatchTap(tapX, tapY, callback)
+            }
+
             is AniobAction.Click -> {
                 val root = rootInActiveWindow
                 val screenState = lastScreenState
@@ -135,6 +147,17 @@ class AniobAccessibilityService : AccessibilityService() {
                 val tapY = if (action.y > 0) action.y.toFloat() else targetNode?.centerY?.toFloat() ?: 500f
 
                 dispatchTap(tapX, tapY, callback)
+            }
+
+            is AniobAction.LongPress -> {
+                val root = rootInActiveWindow
+                val screenState = lastScreenState
+                val targetNode = action.targetNodeId?.let { screenState?.findNodeById(it) }
+
+                val tapX = if (action.x > 0) action.x.toFloat() else targetNode?.centerX?.toFloat() ?: 500f
+                val tapY = if (action.y > 0) action.y.toFloat() else targetNode?.centerY?.toFloat() ?: 500f
+
+                dispatchLongPress(tapX, tapY, action.durationMs, callback)
             }
 
             is AniobAction.InputText -> {
@@ -155,8 +178,30 @@ class AniobAccessibilityService : AccessibilityService() {
                 callback(true)
             }
 
+            is AniobAction.OpenApp -> {
+                val intent = packageManager.getLaunchIntentForPackage(action.packageName)
+                if (intent != null) {
+                    intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(intent)
+                    callback(true)
+                } else {
+                    callback(false)
+                }
+            }
+
             is AniobAction.Swipe -> {
                 dispatchSwipe(action.direction, action.distancePx, callback)
+            }
+
+            is AniobAction.SystemKey -> {
+                val globalAction = when (action.key) {
+                    KeyType.BACK -> GLOBAL_ACTION_BACK
+                    KeyType.HOME -> GLOBAL_ACTION_HOME
+                    KeyType.RECENTS -> GLOBAL_ACTION_RECENTS
+                    else -> GLOBAL_ACTION_BACK
+                }
+                val success = performGlobalAction(globalAction)
+                callback(success)
             }
 
             is AniobAction.PressKey -> {
@@ -174,6 +219,19 @@ class AniobAccessibilityService : AccessibilityService() {
                 callback(true)
             }
 
+            is AniobAction.ConfirmWithUser -> {
+                callback(true)
+            }
+
+            is AniobAction.GetScreenInfo,
+            is AniobAction.TakeScreenshot,
+            is AniobAction.GetDeviceInfo,
+            is AniobAction.GetNotifications,
+            is AniobAction.GetInstalledApps,
+            is AniobAction.Clipboard -> {
+                callback(true)
+            }
+
             is AniobAction.Finish -> {
                 callback(true)
             }
@@ -182,6 +240,21 @@ class AniobAccessibilityService : AccessibilityService() {
                 callback(false)
             }
         }
+    }
+
+    private fun dispatchLongPress(x: Float, y: Float, durationMs: Long, callback: (Boolean) -> Unit) {
+        val path = Path()
+        path.moveTo(x, y)
+        val stroke = GestureDescription.StrokeDescription(path, 0, durationMs.coerceAtLeast(400L))
+        val builder = GestureDescription.Builder().addStroke(stroke)
+        dispatchGesture(builder.build(), object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                callback(true)
+            }
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                callback(false)
+            }
+        }, null)
     }
 
     private fun dispatchTap(x: Float, y: Float, callback: (Boolean) -> Unit) {

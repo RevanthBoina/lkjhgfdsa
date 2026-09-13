@@ -79,7 +79,9 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                 0 -> AniobChatScreen(
                     uiState = uiState,
                     onSubmitTask = { viewModel.submitTask(it) },
-                    onStopTask = { viewModel.stopCurrentTask() }
+                    onStopTask = { viewModel.stopCurrentTask() },
+                    onShowTrackerSheet = { viewModel.setShowTrackerSheet(it) },
+                    onFilterChanged = { viewModel.setTrackerFilter(it) }
                 )
                 1 -> AniobTrackerScreen(
                     uiState = uiState,

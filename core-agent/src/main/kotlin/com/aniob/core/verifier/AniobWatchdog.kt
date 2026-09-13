@@ -18,6 +18,7 @@ class AniobWatchdog(
 
     fun record(screenHash: String, action: AniobAction) {
         val actionKey = when (action) {
+            is AniobAction.Tap -> "TAP_${action.x}_${action.y}"
             is AniobAction.Click -> "CLICK_${action.targetNodeId}"
             is AniobAction.InputText -> "INPUT_${action.targetNodeId}_${action.text}"
             is AniobAction.Swipe -> "SWIPE_${action.direction}"
@@ -25,6 +26,7 @@ class AniobWatchdog(
             is AniobAction.Wait -> "WAIT"
             is AniobAction.Finish -> "FINISH"
             is AniobAction.Fail -> "FAIL"
+            else -> "${action.toolName}_${action.hashCode()}"
         }
         history.add(ActionHistoryEntry(screenHash, actionKey))
         if (history.size > 20) {

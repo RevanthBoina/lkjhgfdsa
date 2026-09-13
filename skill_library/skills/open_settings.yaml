@@ -1,0 +1,19 @@
+name: "open_settings"
+version: "2.1"
+description: "Directly open Android Settings"
+risk_tier: "LOW"
+confirmation_required: false
+target_package: "com.android.settings"
+triggers:
+  - "open settings"
+  - "launch settings"
+  - "go to settings"
+  - "system settings"
+steps:
+  - step: 1
+    action: "open_app"
+    package: "com.android.settings"
+    description: "Launch settings application"
+  - step: 2
+    action: "finish"
+    description: "Settings open successfully"

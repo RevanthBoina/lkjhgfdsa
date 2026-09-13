@@ -170,11 +170,17 @@ fun StepRecordCard(step: AniobStepRecord) {
 }
 
 private fun formatActionSummary(action: AniobAction): String = when (action) {
+    is AniobAction.Tap -> "TAP(${action.x}, ${action.y})"
     is AniobAction.Click -> "CLICK(node=${action.targetNodeId})"
+    is AniobAction.LongPress -> "LONG_PRESS(${action.x}, ${action.y}, ${action.durationMs}ms)"
+    is AniobAction.OpenApp -> "OPEN_APP(${action.packageName})"
     is AniobAction.InputText -> "TYPE(\"${action.text}\" -> node=${action.targetNodeId})"
     is AniobAction.Swipe -> "SWIPE(${action.direction})"
     is AniobAction.PressKey -> "KEY(${action.key})"
+    is AniobAction.SystemKey -> "SYS_KEY(${action.key})"
     is AniobAction.Wait -> "WAIT(${action.durationMs}ms)"
     is AniobAction.Finish -> "FINISH: ${action.summary}"
     is AniobAction.Fail -> "FAIL: ${action.reason}"
+    is AniobAction.ConfirmWithUser -> "CONFIRM: ${action.message}"
+    else -> "${action.toolName}"
 }
