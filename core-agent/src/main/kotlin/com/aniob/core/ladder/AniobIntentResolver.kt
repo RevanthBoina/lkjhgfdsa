@@ -19,14 +19,33 @@ object AniobIntentResolver {
     const val ACTION_DIAL = "android.intent.action.DIAL"
     const val ACTION_SENDTO = "android.intent.action.SENDTO"
     const val CATEGORY_LAUNCHER = "android.intent.category.LAUNCHER"
+    const val ACTION_FLASHLIGHT = "android.intent.action.FLASHLIGHT"
+
+    // System actions surfaced through extras so the executor can dispatch
+    // them without an explicit Android Intent (pure JVM core-agent).
+    const val EXTRA_SYSTEM_ACTION = "aniob_system_action"
+    const val SYSTEM_ACTION_FLASHLIGHT = "turn_on_flashlight"
+    const val SYSTEM_ACTION_GET_DEVICE_INFO = "get_device_info"
 
     /**
      * Resolves natural language commands to direct Android Intent actions if possible.
      */
     fun resolve(command: String): ResolvedIntentShortcut? {
-        val lower = command.lowercase().trim()
+        val lower = command.lowercase().trim().trimEnd('?', '.', '!', ' ', ',', ';')
 
         return when {
+            lower == "turn on flashlight" || lower == "flashlight on" || lower == "open flashlight" || lower == "turn on the flashlight" || lower == "open the flashlight" -> {
+                ResolvedIntentShortcut(
+                    action = ACTION_FLASHLIGHT,
+                    extras = mapOf(EXTRA_SYSTEM_ACTION to SYSTEM_ACTION_FLASHLIGHT)
+                )
+            }
+            lower == "check battery" || lower == "battery status" || lower == "what is my battery" || lower == "check battery level" -> {
+                ResolvedIntentShortcut(
+                    action = ACTION_MAIN,
+                    extras = mapOf(EXTRA_SYSTEM_ACTION to SYSTEM_ACTION_GET_DEVICE_INFO)
+                )
+            }
             lower == "open settings" || lower == "settings" || lower == "launch settings" -> {
                 ResolvedIntentShortcut(
                     action = ACTION_MAIN,

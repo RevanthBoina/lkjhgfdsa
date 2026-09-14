@@ -75,11 +75,11 @@ object AniobAutoRouter {
             )
         }
 
-        // 4. Battery / Thermal Check (only offload if battery < 15% AND not charging, or thermal throttled)
-        if (powerState.batteryPercent < 15 && !powerState.isCharging) {
+        // 4. Battery / Thermal Check (spinal reflex: battery low -> offload, no LLM)
+        if (AniobBatteryHealth.isLowBattery(powerState)) {
             return RouteDecision(
                 target = RouteTarget.OMNIROUTE_CLOUD,
-                reason = "Battery ${powerState.batteryPercent}% low not charging -> cloud",
+                reason = "Battery low reflex: ${powerState.batteryPercent}% not charging -> cloud",
                 requiresVision = false
             )
         }

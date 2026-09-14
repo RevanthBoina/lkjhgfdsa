@@ -50,12 +50,20 @@ object AniobDeviceTelemetry {
                 ((mem.totalMem + (1024L * 1024L * 512L)) / (1024L * 1024L * 1024L)).toInt().coerceAtLeast(1)
             } else 8
 
+            // Internal files-dir free space (used by the model downloader before fetching a 0.3GB embed model)
+            val freeStorageMb = try {
+                context.filesDir?.freeSpace?.div(1024L * 1024L) ?: 0L
+            } catch (e: Exception) {
+                0L
+            }
+
             DevicePowerState(
                 batteryPercent = batteryPct,
                 isCharging = isCharging,
                 isThermalThrottled = isThermal,
                 isNetworkAvailable = isNetwork,
-                totalRamGb = totalRamGb
+                totalRamGb = totalRamGb,
+                freeStorageMb = freeStorageMb
             )
         } catch (e: Exception) {
             DevicePowerState(

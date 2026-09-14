@@ -20,11 +20,14 @@ import com.aniob.app.MainActivity
 class AniobForegroundService : Service() {
 
     companion object {
-        private const val CHANNEL_ID = "aniob_autonomous_task_channel"
+        private const val CHANNEL_ID = "aniob_foreground"
         private const val NOTIFICATION_ID = 8765
         const val ACTION_START = "com.aniob.app.action.START_TASK"
         const val ACTION_STOP = "com.aniob.app.action.STOP_TASK"
         const val EXTRA_TASK_PROMPT = "extra_task_prompt"
+
+        /** Lets the ViewModel cancel the running task when the notification Stop action is tapped. */
+        @Volatile var onStopRequestedFromNotification: (() -> Unit)? = null
 
         fun startService(context: Context, taskPrompt: String) {
             val intent = Intent(context, AniobForegroundService::class.java).apply {
@@ -54,6 +57,8 @@ class AniobForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             stopForeground(STOP_FOREGROUND_REMOVE)
+            onStopRequestedFromNotification?.invoke()
+            onStopRequestedFromNotification = null
             stopSelf()
             return START_NOT_STICKY
         }
@@ -71,7 +76,7 @@ class AniobForegroundService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Aniob Autonomous Execution",
+                "Aniob Foreground",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Notifies when Aniob is executing UI tasks in background"
@@ -93,6 +98,17 @@ class AniobForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        // Stop action identical to the overlay pill's cancel ('■').
+        val stopIntent = Intent(this, AniobForegroundService::class.java).apply {
+            action = ACTION_STOP
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            this,
+            1,
+            stopIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Aniob Agent Active")
             .setContentText(taskPrompt)
@@ -100,6 +116,7 @@ class AniobForegroundService : Service() {
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .addAction(0, "■ Stop", stopPendingIntent)
             .build()
     }
 }

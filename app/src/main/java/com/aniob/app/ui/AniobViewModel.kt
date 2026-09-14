@@ -3,6 +3,8 @@ package com.aniob.app.ui
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.net.Uri
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.AndroidViewModel
@@ -113,7 +115,14 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
     }
     private val hybridEngineRouter by lazy { AniobHybridEngineRouter(modelsDir = modelDownloader.getModelsDir()) }
     private val sharedKnowledgeStore: AniobSharedKnowledgeStore = InMemorySharedKnowledgeStore()
-    private val localLlmProvider: AniobLocalLlmProvider = AniobLiteRtProvider()
+    private val localLlmProvider: AniobLocalLlmProvider = AniobLiteRtProvider().apply {
+        // Reflex 5: release the LiteRT engine on memory pressure, no LLM involved.
+        app.onMemoryTrimListener = { _ ->
+            try {
+                this.release()
+            } catch (_: Exception) {}
+        }
+    }
 
     fun getInstalledModelName(): String? {
         val id = modelDownloader.getDefaultModelId() ?: return null
@@ -650,6 +659,12 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                         // Watchdog check
                         watchdog.record(currentScreen.treeHash, action)
                         val loopDetected = watchdog.isLoopDetected()
+                        if (loopDetected) {
+                            // Reflection reflex: loop gives a negative reward; force remedial BACK.
+                            watchdog.reset()
+                            executeActionSync(a11y, AniobAction.PressKey(com.aniob.core.domain.KeyType.BACK))
+                            delay(400)
+                        }
 
                         // Safety Interceptor check
                         val intercept = AniobSafetyInterceptor.evaluateAction(
@@ -850,14 +865,56 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun dispatchSystemIntent(shortcut: ResolvedIntentShortcut) {
+        val systemAction = shortcut.extras[AniobIntentResolver.EXTRA_SYSTEM_ACTION]
         try {
-            val intent = Intent(shortcut.action).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                shortcut.targetPackage?.let { setPackage(it) }
-                shortcut.uriString?.let { data = Uri.parse(it) }
-                shortcut.category?.let { addCategory(it) }
+            when (systemAction) {
+                AniobIntentResolver.SYSTEM_ACTION_FLASHLIGHT -> {
+                    // Reflex: toggling the camera flash needs no LLM ladder.
+                    val cam = app.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
+                    val flashIds = cam?.cameraIdList?.filter { id ->
+                        cam.getCameraCharacteristics(id).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                    }.orEmpty()
+                    if (cam != null && flashIds.isNotEmpty()) {
+                        cam.setTorchMode(flashIds.first(), true)
+                        app.eventLogger.info("AniobViewModel", "Flashlight toggled on (reflex, no LLM)")
+                    } else {
+                        app.eventLogger.error("AniobViewModel", "Flashlight unavailable on this device")
+                    }
+                    return
+                }
+                AniobIntentResolver.SYSTEM_ACTION_GET_DEVICE_INFO -> {
+                    val state = AniobDeviceTelemetry.getRealState(app)
+                    app.eventLogger.info(
+                        "AniobViewModel",
+                        "Device info: battery ${state.batteryPercent}% charging=${state.isCharging} " +
+                            "thermal=${state.isThermalThrottled} network=${state.isNetworkAvailable} ram=${state.totalRamGb}GB"
+                    )
+                    // Surface the answer right back in the running transcript for M0-ExternalAI style tasks.
+                    val summary = "Battery ${state.batteryPercent}% (charging: ${if (state.isCharging) "yes" else "no"}). " +
+                        "RAM ${state.totalRamGb}GB. Thermal throttled: ${state.isThermalThrottled}. " +
+                        "Network available: ${state.isNetworkAvailable}."
+                    val deviceMsg = ChatMessage(
+                        id = "msg_device_${System.currentTimeMillis()}",
+                        role = "assistant",
+                        content = "📱 $summary",
+                        stepIndex = 0
+                    )
+                    _uiState.update { it.copy(chatMessages = it.chatMessages + deviceMsg) }
+                    AniobAccessibilityService.isTaskActive = false
+                    AniobBackgroundController.onTaskFinished(app, summary)
+                    _uiState.update { it.copy(isRunning = false, statusMessage = "Device info captured") }
+                    return
+                }
+                else -> {
+                    val intent = Intent(shortcut.action).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        shortcut.targetPackage?.let { setPackage(it) }
+                        shortcut.uriString?.let { data = Uri.parse(it) }
+                        shortcut.category?.let { addCategory(it) }
+                    }
+                    app.startActivity(intent)
+                }
             }
-            app.startActivity(intent)
         } catch (e: Exception) {
             app.eventLogger.error("AniobViewModel", "Failed to launch system intent: ${e.message}")
         }

@@ -79,6 +79,20 @@ class AniobAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * Reflex 5: onTrimMemory releases transient caches immediately (zero LLM).
+     * Drops the cached screen so the next capture is fresh, and lets the
+     * ViewModel (which owns the LiteRT engine) know we are under memory pressure.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= TRIM_MEMORY_RUNNING_LOW) {
+            lastScreenState = null
+            contentChangedSinceLastStep = true
+            Log.i(TAG, "onTrimMemory level=$level -> cleared cached screen state (reflex, no LLM)")
+        }
+    }
+
+    /**
      * Extracts optimized screen state using TokenOptimizer and ScreenDiff waterfall.
      */
     fun captureCurrentScreenState(): AniobScreenState {

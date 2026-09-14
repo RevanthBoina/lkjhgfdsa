@@ -33,6 +33,7 @@ object AniobSafetyInterceptor {
 
     private val paymentBlocklist = listOf("upi://", "com.android.vending.BILLING", "checkout", "purchase", "payment", "transaction")
     private val sensitiveBlocklist = listOf("otp", "cvv", "password", "pin")
+    private val unknownContactKeywords = listOf("unknown", "add new", "new contact", "create contact", "???")
     private val blockedFingerprints = mutableSetOf<String>()
 
     fun evaluateAction(
@@ -46,15 +47,45 @@ object AniobSafetyInterceptor {
         }
 
         val actionStr = action.toString().lowercase()
-        // Exact startsWith check
-        if (paymentBlocklist.any { actionStr.startsWith(it) }) {
+        // Exact startsWith check on payment blocklist (also scan thought text so
+        // "Click(targetNodeId=1, thought='buy now')" is caught). Whole-word boundary
+        // matching avoids false positives like "pay" inside "display".
+        val paymentMatch = paymentBlocklist.any { block ->
+            actionStr.startsWith(block) || actionStr.contains(" ${block} ")
+        }
+        if (paymentMatch) {
             blockedFingerprints.add(screenFingerprint)
             return InterceptResult(isAllowed = false, reason = "Payment operation blocked", riskTier = "HIGH")
         }
-        if (sensitiveBlocklist.any { actionStr.contains(it) && targetNode?.isEditable == true }) {
+        val sensitiveRegex = sensitiveBlocklist.joinToString("|") { Regex.escape(it) }
+            .let { Regex("\\b(?:$it)\\b") }
+        if (targetNode?.isEditable == true && (sensitiveRegex.containsMatchIn(actionStr) || OTP_PATTERN.containsMatchIn(actionStr))) {
             blockedFingerprints.add(screenFingerprint)
             return InterceptResult(isAllowed = false, reason = "Sensitive data blocked", riskTier = "HIGH")
         }
+
+        // Immune-system gate: sending to unknown / newly-created contacts must be confirmed.
+        if (action is AniobAction.ConfirmWithUser) {
+            val recipient = action.message.lowercase()
+            val unknownRecipient = recipient.isBlank() || unknownContactKeywords.any { recipient.contains(it) }
+            if (unknownRecipient) {
+                return InterceptResult(
+                    isAllowed = true,
+                    reason = "Confirm with user before messaging unknown contact",
+                    riskTier = "MEDIUM",
+                    requiresConfirmation = true,
+                    recommendedAction = action
+                )
+            }
+            return InterceptResult(
+                isAllowed = true,
+                reason = "Confirmation gate raised (MEDIUM risk)",
+                riskTier = "MEDIUM",
+                requiresConfirmation = true,
+                recommendedAction = action
+            )
+        }
+
         return InterceptResult(isAllowed = true, reason = "Allowed", riskTier = "LOW")
     }
 

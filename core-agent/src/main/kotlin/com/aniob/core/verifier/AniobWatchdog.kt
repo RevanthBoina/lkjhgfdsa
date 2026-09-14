@@ -35,13 +35,16 @@ class AniobWatchdog(
     }
 
     /**
-     * Checks if the last action+screen combination has repeated N times.
+     * Checks if a loop is detected: the same actionKey has been repeated N times
+     * (regardless of screen — e.g. tapping the same element on a screen that keeps
+     * re-rendering, which is indistinguishable from a stuck loop).
+     * Triggers reflection: remedial BACK + failure reason loop_detected.
      */
     fun isLoopDetected(): Boolean {
         if (history.size < loopThreshold) return false
         val last = history.last()
-        val recentDuplicates = history.takeLast(loopThreshold)
-        return recentDuplicates.all { it.screenHash == last.screenHash && it.actionKey == last.actionKey }
+        val recent = history.takeLast(loopThreshold)
+        return recent.all { it.actionKey == last.actionKey }
     }
 
     fun reset() {
