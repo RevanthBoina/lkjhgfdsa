@@ -1,8 +1,12 @@
 package com.aniob.core.execution
 
+import com.aniob.core.domain.AniobScreenState
+
 /**
  * Manages active application sessions and browser tabs.
  * Reuses existing foreground/warm sessions rather than triggering cold starts (saving 1-2s).
+ * BrowserContext-style reuse: sessions are reused within a 5-minute TTL, after which
+ * a warm session is treated as stale and a cold start is planned.
  * Pure JVM design.
  */
 class AniobAppSessionManager {
@@ -10,12 +14,22 @@ class AniobAppSessionManager {
     data class AppSession(
         val packageName: String,
         val lastForegroundTimestamp: Long = System.currentTimeMillis(),
+        val lastAccessTime: Long = System.currentTimeMillis(),
+        val lastScreenState: AniobScreenState? = null,
         val activityStack: List<String> = emptyList(),
         val activeTabs: MutableMap<String, String> = mutableMapOf() // urlDomain -> tabId
-    )
+    ) {
+        fun isStale(now: Long = System.currentTimeMillis(), ttlMs: Long = SESSION_TTL_MS): Boolean {
+            return now - lastAccessTime > ttlMs
+        }
+    }
 
     private val sessions = mutableMapOf<String, AppSession>()
     private var currentForegroundPackage: String? = null
+
+    companion object {
+        const val SESSION_TTL_MS: Long = 5 * 60 * 1000L // 5-min reuse window
+    }
 
     enum class LaunchMode {
         ALREADY_FOREGROUND, // 0ms delay
@@ -34,10 +48,12 @@ class AniobAppSessionManager {
     fun onAppForegrounded(packageName: String, currentActivity: String = "MainActivity") {
         currentForegroundPackage = packageName
         val existing = sessions[packageName]
+        val now = System.currentTimeMillis()
         if (existing != null) {
             val updatedStack = (existing.activityStack + currentActivity).takeLast(5)
             sessions[packageName] = existing.copy(
-                lastForegroundTimestamp = System.currentTimeMillis(),
+                lastForegroundTimestamp = now,
+                lastAccessTime = now,
                 activityStack = updatedStack
             )
         } else {
@@ -48,18 +64,66 @@ class AniobAppSessionManager {
         }
     }
 
+    /**
+     * Returns the existing (non-stale) session for [packageName], or creates and registers
+     * a fresh one — BrowserContext-style reuse within the 5-minute TTL.
+     */
+    @Synchronized
+    fun getOrCreateSession(packageName: String): AppSession {
+        val existing = sessions[packageName]
+        if (existing != null && !existing.isStale()) {
+            touch(packageName)
+            return sessions[packageName]!!
+        }
+        val fresh = AppSession(packageName = packageName)
+        sessions[packageName] = fresh
+        return fresh
+    }
+
+    @Synchronized
+    fun getSession(packageName: String): AppSession? = sessions[packageName]
+
+    /**
+     * Records the latest captured screen for a session, refreshing its access time.
+     */
+    @Synchronized
+    fun onSessionScreenUpdated(packageName: String, screenState: AniobScreenState?) {
+        val existing = sessions[packageName]
+        if (existing != null) {
+            sessions[packageName] = existing.copy(
+                lastScreenState = screenState,
+                lastAccessTime = System.currentTimeMillis()
+            )
+        } else if (screenState != null) {
+            sessions[packageName] = AppSession(
+                packageName = packageName,
+                lastScreenState = screenState
+            )
+        }
+    }
+
+    private fun touch(packageName: String) {
+        val existing = sessions[packageName] ?: return
+        sessions[packageName] = existing.copy(lastAccessTime = System.currentTimeMillis())
+    }
+
     @Synchronized
     fun planAppLaunch(targetPackage: String, targetUrlDomain: String? = null): LaunchPlan {
         if (currentForegroundPackage == targetPackage) {
+            val matchedTabId = if (targetUrlDomain != null) {
+                sessions[targetPackage]?.activeTabs?.get(targetUrlDomain)
+            } else null
             return LaunchPlan(
                 mode = LaunchMode.ALREADY_FOREGROUND,
                 packageName = targetPackage,
+                reuseBrowserTabId = matchedTabId,
                 estimatedLatencyMs = 0L
             )
         }
 
         val existingSession = sessions[targetPackage]
-        if (existingSession != null) {
+        // TTL staleness check: a session older than 5 minutes is treated as cold.
+        if (existingSession != null && !existingSession.isStale()) {
             val matchedTabId = if (targetUrlDomain != null) {
                 existingSession.activeTabs[targetUrlDomain]
             } else null
@@ -83,6 +147,7 @@ class AniobAppSessionManager {
     fun registerBrowserTab(packageName: String, urlDomain: String, tabId: String) {
         val session = sessions.getOrPut(packageName) { AppSession(packageName = packageName) }
         session.activeTabs[urlDomain] = tabId
+        touch(packageName)
     }
 
     @Synchronized

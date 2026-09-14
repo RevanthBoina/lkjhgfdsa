@@ -18,6 +18,9 @@ import com.aniob.app.telemetry.AniobDeviceTelemetry
 import com.aniob.app.ui.chat.ChatMessage
 import com.aniob.core.domain.*
 import com.aniob.core.embedding.AniobEmbeddingStore
+import com.aniob.core.exec.ExecOutcome
+import com.aniob.core.exec.ExecReport
+import com.aniob.core.execution.AniobAppSessionManager
 import com.aniob.core.external.AniobExternalAiTrigger
 import com.aniob.core.grillme.AniobGrillMeEngine
 import com.aniob.core.grillme.AniobGrillMeResult
@@ -28,6 +31,8 @@ import com.aniob.core.ladder.AniobIntentResolver
 import com.aniob.core.ladder.AniobPlanningAgent
 import com.aniob.core.ladder.ResolvedIntentShortcut
 import com.aniob.core.ladder.TaskProgress
+import com.aniob.core.logging.AniobExecutionTracker
+import com.aniob.core.memory.AniobHippocampusTracker
 import com.aniob.core.memory.AniobSharedKnowledgeStore
 import com.aniob.core.memory.InMemorySharedKnowledgeStore
 import com.aniob.core.policy.AniobObservationPolicy
@@ -94,10 +99,18 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
     private val localLlmClient = AniobLocalLlmClient.getEngine()
     private val watchdog = AniobWatchdog(loopThreshold = 3)
     private val observationPolicy = AniobObservationPolicy(maxBurstSteps = 3)
+    private val appSessionManager = AniobAppSessionManager()
+    private val executionTracker = AniobExecutionTracker()
     private var localFailCount = 0
 
     private val app = application as AniobApplication
     private val modelDownloader = AniobModelDownloader(application)
+    private val hippocampusTracker by lazy {
+        AniobHippocampusTracker(
+            skillsDir = File(app.getExternalFilesDir(null) ?: app.filesDir, "skill_library/skills"),
+            assetSkillsDir = null // built-in library stays assets-synced; learned skills are runtime-only
+        )
+    }
     private val hybridEngineRouter by lazy { AniobHybridEngineRouter(modelsDir = modelDownloader.getModelsDir()) }
     private val sharedKnowledgeStore: AniobSharedKnowledgeStore = InMemorySharedKnowledgeStore()
     private val localLlmProvider: AniobLocalLlmProvider = AniobLiteRtProvider()
@@ -320,6 +333,7 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun executeTaskPipeline(task: AniobTask) {
         watchdog.reset()
         observationPolicy.reset()
+        executionTracker.clear()
         AniobAccessibilityService.isTaskActive = true
         val startTime = System.currentTimeMillis()
         var currentStep = 0
@@ -327,12 +341,64 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
         var finalSuccess = true
         var primaryProvider = "INTENT"
         var decisionReason = "Direct intent shortcut"
+        var screenReads = 0
+        var actionsDispatched = 0
+        var escalations = 0
+
+        // Hippocampus: short-term episodic stream for this task ("hippocampus -> cortex" consolidation)
+        hippocampusTracker.beginTask(task.id, task.clarifiedGoal)
 
         // Background automation integrity: minimize Aniob chat UI and run foreground service
         AniobBackgroundController.onTaskStarted(app, task.rawPrompt)
 
         val a11y = AniobAccessibilityService.instance
         var screenBefore: AniobScreenState? = a11y?.captureCurrentScreenState()
+
+        fun recordTrajectory(
+            stepIndex: Int,
+            observation: String,
+            action: AniobAction,
+            provider: String,
+            latencyMs: Long,
+            screenHash: String,
+            verified: Boolean
+        ) {
+            hippocampusTracker.recordStep(
+                AniobHippocampusTracker.HippocampusStep(
+                    stepIndex = stepIndex,
+                    observation = observation,
+                    thought = action.thought,
+                    action = action,
+                    latencyMs = latencyMs,
+                    screenHash = screenHash,
+                    provider = provider,
+                    verified = verified
+                )
+            )
+            executionTracker.recordEvent(
+                AniobExecutionTracker.TrajectoryEvent(
+                    stepIndex = stepIndex,
+                    observationSummary = observation,
+                    thought = action.thought,
+                    toolName = action.toolName,
+                    action = action,
+                    latencyMs = latencyMs,
+                    outcome = if (verified) "SUCCESS" else "FAILURE",
+                    isVerified = verified
+                )
+            )
+            app.eventLogger.logStep(
+                com.aniob.app.metrics.EventLogger.TrajectoryStep(
+                    stepIndex = stepIndex,
+                    observation = observation,
+                    thought = action.thought,
+                    action = action,
+                    latencyMs = latencyMs,
+                    screenHash = screenHash,
+                    provider = provider
+                )
+            )
+        }
 
         val maxSteps = 10
 
@@ -342,6 +408,7 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
 
                 // Check Observation Policy: burst if predictable, else full capture
                 val currentScreen = if (observationPolicy.shouldObserve() || screenBefore == null) {
+                    screenReads++
                     a11y?.captureCurrentScreenState() ?: AniobScreenState(
                         packageName = "com.aniob.app",
                         treeHash = "mock_hash_${currentStep}",
@@ -353,6 +420,7 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     screenBefore
                 }
+                appSessionManager.onSessionScreenUpdated(currentScreen.packageName, currentScreen)
 
                 // Evaluate Execution Ladder with real power state and on-device model status
                 val powerState = AniobDeviceTelemetry.getRealState(app)
@@ -383,7 +451,19 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                         dispatchSystemIntent(ladderResult.shortcut)
                         delay(800)
 
+                        screenReads++
                         val screenAfter = a11y?.captureCurrentScreenState() ?: currentScreen
+                        appSessionManager.onSessionScreenUpdated(ladderResult.shortcut.targetPackage ?: screenAfter.packageName, screenAfter)
+                        actionsDispatched++
+                        recordTrajectory(
+                            stepIndex = currentStep + 1,
+                            observation = "screen ${screenAfter.treeHash.take(6)} after intent",
+                            action = AniobAction.Finish(summary = "Intent dispatched: ${ladderResult.shortcut.targetPackage}"),
+                            provider = "INTENT",
+                            latencyMs = System.currentTimeMillis() - stepStartTime,
+                            screenHash = screenAfter.treeHash,
+                            verified = true
+                        )
                         val stepRecord = AniobStepRecord(
                             stepIndex = currentStep + 1,
                             screenHash = currentScreen.treeHash,
@@ -414,6 +494,15 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                         )
 
                         if (!intercept.isAllowed) {
+                            recordTrajectory(
+                                stepIndex = currentStep + 1,
+                                observation = "blocked by safety interceptor",
+                                action = action,
+                                provider = "FASTPATH",
+                                latencyMs = System.currentTimeMillis() - stepStartTime,
+                                screenHash = currentScreen.treeHash,
+                                verified = false
+                            )
                             val stepRecord = AniobStepRecord(
                                 stepIndex = currentStep + 1,
                                 screenHash = currentScreen.treeHash,
@@ -432,8 +521,19 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                         executeActionSync(a11y, action)
                         delay(600)
 
+                        screenReads++
                         val screenAfter = a11y?.captureCurrentScreenState() ?: currentScreen
                         val verification = DeterministicVerifier.verify(action, currentScreen, screenAfter)
+                        actionsDispatched++
+                        recordTrajectory(
+                            stepIndex = currentStep + 1,
+                            observation = "screen ${screenAfter.treeHash.take(6)} after ${action.toolName}",
+                            action = action,
+                            provider = "FASTPATH",
+                            latencyMs = System.currentTimeMillis() - stepStartTime,
+                            screenHash = screenAfter.treeHash,
+                            verified = verification.isExpected
+                        )
 
                         observationPolicy.recordActionOutcome(action, currentScreen.packageName, verification.isSuccessful)
 
@@ -445,7 +545,7 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                             latencyMs = System.currentTimeMillis() - stepStartTime,
                             tokensUsed = 0,
                             verifiedSuccess = verification.isSuccessful,
-                            failureReason = if (!verification.isSuccessful) verification.explanation else null
+                            failureReason = if (!verification.isSuccessful) verification.reason else null
                         )
                         addStepRecord(stepRecord)
 
@@ -463,8 +563,19 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                         executeActionSync(a11y, action)
                         delay(600)
 
+                        screenReads++
                         val screenAfter = a11y?.captureCurrentScreenState() ?: currentScreen
                         val verification = DeterministicVerifier.verify(action, currentScreen, screenAfter)
+                        actionsDispatched++
+                        recordTrajectory(
+                            stepIndex = currentStep + 1,
+                            observation = "screen ${screenAfter.treeHash.take(6)} after skill ${action.toolName}",
+                            action = action,
+                            provider = "SKILL",
+                            latencyMs = System.currentTimeMillis() - stepStartTime,
+                            screenHash = screenAfter.treeHash,
+                            verified = verification.isExpected
+                        )
                         observationPolicy.recordActionOutcome(action, currentScreen.packageName, verification.isSuccessful)
 
                         val stepRecord = AniobStepRecord(
@@ -474,7 +585,8 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                             provider = "SKILL",
                             latencyMs = System.currentTimeMillis() - stepStartTime,
                             tokensUsed = 0,
-                            verifiedSuccess = verification.isSuccessful
+                            verifiedSuccess = verification.isSuccessful,
+                            failureReason = if (!verification.isSuccessful) verification.reason else null
                         )
                         addStepRecord(stepRecord)
 
@@ -501,6 +613,7 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                         }
 
                         // Invoke provider (Local LiteRT, Omniroute Cloud, or Mock fallback)
+                        if (decision.target == RouteTarget.OMNIROUTE_CLOUD) escalations++
                         val action = if (decision.target == RouteTarget.LOCAL_SLM && localLlmClient.isModelLoaded()) {
                             val localRes = localLlmClient.generateStep("System: Android Agent", task.clarifiedGoal)
                             totalTokens += 80
@@ -530,6 +643,15 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                         )
 
                         if (!intercept.isAllowed) {
+                            recordTrajectory(
+                                stepIndex = currentStep + 1,
+                                observation = "blocked by safety interceptor",
+                                action = action,
+                                provider = primaryProvider,
+                                latencyMs = System.currentTimeMillis() - stepStartTime,
+                                screenHash = currentScreen.treeHash,
+                                verified = false
+                            )
                             val stepRecord = AniobStepRecord(
                                 stepIndex = currentStep + 1,
                                 screenHash = currentScreen.treeHash,
@@ -547,19 +669,40 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
 
                         if (intercept.requiresConfirmation) {
                             showConfirmationDialog.value = Pair(intercept.reason) {}
+                            actionsDispatched++
+                            recordTrajectory(
+                                stepIndex = currentStep + 1,
+                                observation = "confirmation gate raised",
+                                action = action,
+                                provider = primaryProvider,
+                                latencyMs = System.currentTimeMillis() - stepStartTime,
+                                screenHash = currentScreen.treeHash,
+                                verified = true
+                            )
                         }
 
                         executeActionSync(a11y, action)
                         delay(600)
 
+                        screenReads++
                         val screenAfter = a11y?.captureCurrentScreenState() ?: currentScreen
                         val verification = DeterministicVerifier.verify(action, currentScreen, screenAfter)
-                        val reflection = reflectionAgent.reflect(currentScreen, screenAfter, action, verification.isSuccessful)
+                        actionsDispatched++
+                        val reflection = reflectionAgent.reflect(currentScreen, screenAfter, action, verification.isExpected)
                         val remedial = reflection.remedialAction
                         if (!reflection.isExpected && remedial != null) {
                             executeActionSync(a11y, remedial)
                         }
                         observationPolicy.recordActionOutcome(action, currentScreen.packageName, verification.isSuccessful)
+                        recordTrajectory(
+                            stepIndex = currentStep + 1,
+                            observation = "screen ${screenAfter.treeHash.take(6)} after ${action.toolName}",
+                            action = action,
+                            provider = primaryProvider,
+                            latencyMs = System.currentTimeMillis() - stepStartTime,
+                            screenHash = screenAfter.treeHash,
+                            verified = verification.isExpected
+                        )
 
                         val stepSuccess = verification.isSuccessful && !loopDetected
                         if (primaryProvider == "LOCAL_SLM") {
@@ -578,7 +721,7 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                             latencyMs = System.currentTimeMillis() - stepStartTime,
                             tokensUsed = if (primaryProvider == "OMNIROUTE_CLOUD") 150 else 0,
                             verifiedSuccess = stepSuccess,
-                            failureReason = if (loopDetected) "Watchdog loop detected (N=3 repeated action)" else if (!verification.isSuccessful) verification.explanation else null,
+                            failureReason = if (loopDetected) "Watchdog loop detected (N=3 repeated action)" else if (!verification.isSuccessful) verification.reason else null,
                             reflectorInvoked = loopDetected
                         )
                         addStepRecord(stepRecord)
@@ -599,6 +742,52 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
 
         val totalDuration = System.currentTimeMillis() - startTime
         val resultSummary = if (finalSuccess) "Task completed in ${totalDuration}ms (${currentStep + 1} steps)" else "Task terminated"
+
+        // Hippocampus: sleep-time consolidation on success, natural-selection prune on failure.
+        val consolidatedSkill = if (finalSuccess) {
+            hippocampusTracker.consolidateOnSuccess(
+                taskId = task.id,
+                prompt = task.clarifiedGoal,
+                screenReads = screenReads,
+                actions = actionsDispatched,
+                escalations = escalations,
+                elapsedMs = totalDuration
+            )
+        } else {
+            hippocampusTracker.onFailure()
+            null
+        }
+        if (consolidatedSkill != null) {
+            app.eventLogger.info("AniobHippocampus", "Consolidated learned skill '$consolidatedSkill'")
+        }
+        app.eventLogger.recordSessionCounters(
+            screenReads = screenReads,
+            actions = actionsDispatched,
+            escalations = escalations,
+            elapsedMs = totalDuration,
+            stateTrace = hippocampusTracker.currentStateTrace(),
+            providerDecisionReason = decisionReason,
+            lastRoutingReason = _uiState.value.lastRoutingReason
+        )
+        // Push the pinned terminal snapshot into the BrowserUse metrics stream.
+        ExecReport(
+            outcome = if (finalSuccess) ExecOutcome.SUCCESS else ExecOutcome.FAILED_VERIFICATION,
+            reason = resultSummary,
+            screenReads = screenReads,
+            actions = actionsDispatched,
+            escalations = escalations,
+            elapsedMs = totalDuration,
+            stateTrace = hippocampusTracker.currentStateTrace(),
+            providerUsed = primaryProvider,
+            decisionReason = decisionReason
+        ).toMetricSnapshot(taskId = task.id, stepIndex = currentStep + 1).also { snapshot ->
+            app.eventLogger.info(
+                "AniobMetrics",
+                "SNAPSHOT{task=${snapshot.taskId},provider=${snapshot.provider}," +
+                    "screenReads=${snapshot.screenReads},actions=${snapshot.actions}," +
+                    "escalations=${snapshot.escalations},routing=${snapshot.lastRoutingReason}}"
+            )
+        }
 
         // Auto-return to chatroom and stop foreground service
         AniobBackgroundController.onTaskFinished(app, resultSummary)
@@ -659,6 +848,7 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stopCurrentTask() {
         AniobAccessibilityService.isTaskActive = false
+        hippocampusTracker.onFailure() // prune interrupted episode
         AniobBackgroundController.onTaskFinished(app, "Stopped by user")
         _uiState.update { it.copy(isRunning = false, statusMessage = "Stopped by user") }
     }

@@ -113,7 +113,7 @@ fun AniobHistoryScreen(
                         .weight(1f),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(filteredSessions) { session ->
+                    items(filteredSessions, key = { it.id }) { session ->
                         HistorySessionCard(
                             session = session,
                             onClick = {

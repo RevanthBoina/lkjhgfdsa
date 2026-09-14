@@ -151,7 +151,7 @@ fun AniobTrackerScreen(
                     .testTag("tracker_step_list"),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(filteredSteps) { step ->
+                items(filteredSteps, key = { it.stepIndex }) { step ->
                     ExpandableStepRow(
                         step = step,
                         autoExpand = !step.verifiedSuccess,

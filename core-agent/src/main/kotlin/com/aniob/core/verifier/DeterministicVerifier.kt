@@ -9,9 +9,12 @@ import com.aniob.core.domain.AniobScreenState
 object DeterministicVerifier {
 
     data class VerificationResult(
-        val isSuccessful: Boolean,
+        val isExpected: Boolean,
         val durationMs: Long,
-        val explanation: String
+        val reason: String,
+        /** Backwards-compatible aliases (AIM pins use isExpected/reason as primary fields). */
+        val isSuccessful: Boolean = isExpected,
+        val explanation: String = reason
     )
 
     /**
@@ -41,7 +44,7 @@ object DeterministicVerifier {
                 if (screenBefore.treeHash != screenAfter.treeHash || screenBefore.packageName != screenAfter.packageName) {
                     true to "Tap confirmed: screen transitioned."
                 } else {
-                    true to "Tap dispatched at (${action.x}, ${action.y})."
+                    false to "No-effect: treeHash unchanged after Tap at (${action.x}, ${action.y})."
                 }
             }
 
@@ -62,7 +65,7 @@ object DeterministicVerifier {
                 if (screenBefore.treeHash != screenAfter.treeHash) {
                     true to "LongPress confirmed: UI state transitioned."
                 } else {
-                    true to "LongPress dispatched for ${action.durationMs}ms."
+                    false to "No-effect: treeHash unchanged after LongPress for ${action.durationMs}ms."
                 }
             }
 
@@ -110,7 +113,11 @@ object DeterministicVerifier {
             }
 
             is AniobAction.Wait -> {
-                true to "Wait duration elapsed."
+                if (screenBefore.treeHash != screenAfter.treeHash) {
+                    true to "Wait confirmed: UI settled to a new state."
+                } else {
+                    false to "No-effect: treeHash unchanged after Wait for ${action.durationMs}ms."
+                }
             }
 
             is AniobAction.ConfirmWithUser -> {
@@ -123,6 +130,6 @@ object DeterministicVerifier {
         }
 
         val duration = System.currentTimeMillis() - start
-        return VerificationResult(result.first, duration, result.second)
+        return VerificationResult(isExpected = result.first, durationMs = duration, reason = result.second)
     }
 }

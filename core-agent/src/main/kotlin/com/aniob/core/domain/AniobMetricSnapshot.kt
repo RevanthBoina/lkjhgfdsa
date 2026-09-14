@@ -13,5 +13,11 @@ data class AniobMetricSnapshot(
     val tokensUsed: Int,
     val fastPathHit: Boolean,
     val waterfallLevelUsed: Int,
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val lastRoutingReason: String = "",
+    val screenReads: Int = 0,
+    val actions: Int = 0,
+    val escalations: Int = 0,
+    val memoryRetrievals: Int = 0,
+    val embeddingSearches: Int = 0
 )
