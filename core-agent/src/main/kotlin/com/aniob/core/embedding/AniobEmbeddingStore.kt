@@ -88,3 +88,16 @@ class AniobEmbeddingStore {
         }
     }
 }
+
+interface AniobEmbeddingProvider {
+    fun isAvailable(): Boolean
+    fun embed(text: String): FloatArray // Real nomic-embed-text 0.3GB via llama.cpp
+    fun embedBatch(texts: List<String>): List<FloatArray>
+}
+
+class AniobPseudoEmbeddingProvider : AniobEmbeddingProvider {
+    override fun isAvailable() = true
+    override fun embed(text: String) = AniobEmbeddingStore.generatePseudoEmbedding(text)
+    override fun embedBatch(texts: List<String>) = texts.map { embed(it) }
+}
+

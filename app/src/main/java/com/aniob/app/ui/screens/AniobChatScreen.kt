@@ -228,17 +228,36 @@ fun AniobChatScreen(
                 )
                 Spacer(modifier = Modifier.height(16.dp))
 
-                ExampleTaskRow("Open Settings", "Launch Android system settings") {
-                    promptInput = "Open Settings"
-                    onSubmitTask("Open Settings")
-                }
-                ExampleTaskRow("Book a cab", "Open ride-hailing app and find ride") {
-                    promptInput = "Book a cab"
-                    onSubmitTask("Book a cab")
-                }
-                ExampleTaskRow("What is the capital of France?", "Instant direct AI answer") {
-                    promptInput = "What is the capital of France?"
-                    onSubmitTask("What is the capital of France?")
+                val examples = listOf(
+                    "Open YouTube and search lo-fi",
+                    "Open Settings",
+                    "Book a cab to airport",
+                    "What is the capital of France?"
+                )
+
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    examples.forEach { ex ->
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    promptInput = ex
+                                    onSubmitTask(ex)
+                                },
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+                            Text(
+                                text = ex,
+                                modifier = Modifier.padding(14.dp),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
                 }
             }
         } else {

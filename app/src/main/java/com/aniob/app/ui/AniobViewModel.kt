@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.aniob.app.AniobApplication
@@ -16,6 +17,7 @@ import com.aniob.app.service.AniobAccessibilityService
 import com.aniob.app.telemetry.AniobDeviceTelemetry
 import com.aniob.app.ui.chat.ChatMessage
 import com.aniob.core.domain.*
+import com.aniob.core.embedding.AniobEmbeddingStore
 import com.aniob.core.external.AniobExternalAiTrigger
 import com.aniob.core.grillme.AniobGrillMeEngine
 import com.aniob.core.grillme.AniobGrillMeResult
@@ -23,10 +25,13 @@ import com.aniob.core.intent.AniobIntent
 import com.aniob.core.intent.AniobTaskIntentClassifier
 import com.aniob.core.ladder.AniobExecutionRouter
 import com.aniob.core.ladder.AniobIntentResolver
+import com.aniob.core.ladder.AniobPlanningAgent
 import com.aniob.core.ladder.ResolvedIntentShortcut
+import com.aniob.core.ladder.TaskProgress
 import com.aniob.core.memory.AniobSharedKnowledgeStore
 import com.aniob.core.memory.InMemorySharedKnowledgeStore
 import com.aniob.core.policy.AniobObservationPolicy
+import com.aniob.core.providers.AniobHybridEngineRouter
 import com.aniob.core.providers.AniobLiteRtProvider
 import com.aniob.core.providers.AniobLocalLlmClient
 import com.aniob.core.providers.AniobLocalLlmProvider
@@ -34,6 +39,7 @@ import com.aniob.core.router.RouteTarget
 import com.aniob.core.safety.AniobSafetyInterceptor
 import com.aniob.core.skills.AniobSemanticSkillMatcher
 import com.aniob.core.tools.DevicePowerState
+import com.aniob.core.verifier.AniobReflectionAgent
 import com.aniob.core.verifier.AniobWatchdog
 import com.aniob.core.verifier.DeterministicVerifier
 import java.io.File
@@ -72,9 +78,18 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow(AniobUiState())
     val uiState: StateFlow<AniobUiState> = _uiState.asStateFlow()
 
+    val showConfirmationDialog = mutableStateOf<Pair<String, () -> Unit>?>(null)
+
     private val semanticSkillMatcher = AniobSemanticSkillMatcher()
     private val grillMeEngine = AniobGrillMeEngine()
-    private val executionRouter = AniobExecutionRouter(semanticSkillMatcher = semanticSkillMatcher)
+    private val planningAgent = AniobPlanningAgent()
+    private val memoryStore = AniobEmbeddingStore()
+    private val reflectionAgent = AniobReflectionAgent()
+    private val executionRouter = AniobExecutionRouter(
+        semanticSkillMatcher = semanticSkillMatcher,
+        planningAgent = planningAgent,
+        memoryStore = memoryStore
+    )
     private val mockProvider = AniobMockProvider()
     private val localLlmClient = AniobLocalLlmClient.getEngine()
     private val watchdog = AniobWatchdog(loopThreshold = 3)
@@ -83,8 +98,14 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
 
     private val app = application as AniobApplication
     private val modelDownloader = AniobModelDownloader(application)
+    private val hybridEngineRouter by lazy { AniobHybridEngineRouter(modelsDir = modelDownloader.getModelsDir()) }
     private val sharedKnowledgeStore: AniobSharedKnowledgeStore = InMemorySharedKnowledgeStore()
     private val localLlmProvider: AniobLocalLlmProvider = AniobLiteRtProvider()
+
+    fun getInstalledModelName(): String? {
+        val id = modelDownloader.getDefaultModelId() ?: return null
+        return AniobModelDownloader.ALL_MODELS.find { it.id == id }?.name ?: id
+    }
 
     private fun getOmniRouteProvider(): AniobOmniRouteProvider {
         return AniobOmniRouteProvider(
@@ -98,6 +119,7 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
         val savedApiKey = prefs.getString("omniroute_api_key", "") ?: ""
         val savedModel = prefs.getString("omniroute_model", "gpt-4o") ?: "gpt-4o"
         val savedMode = prefs.getString("autorouter_mode", "auto") ?: "auto"
+        localFailCount = prefs.getInt("local_fail_count", 0)
 
         _uiState.update {
             it.copy(
@@ -523,16 +545,29 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                             break
                         }
 
+                        if (intercept.requiresConfirmation) {
+                            showConfirmationDialog.value = Pair(intercept.reason) {}
+                        }
+
                         executeActionSync(a11y, action)
                         delay(600)
 
                         val screenAfter = a11y?.captureCurrentScreenState() ?: currentScreen
                         val verification = DeterministicVerifier.verify(action, currentScreen, screenAfter)
+                        val reflection = reflectionAgent.reflect(currentScreen, screenAfter, action, verification.isSuccessful)
+                        val remedial = reflection.remedialAction
+                        if (!reflection.isExpected && remedial != null) {
+                            executeActionSync(a11y, remedial)
+                        }
                         observationPolicy.recordActionOutcome(action, currentScreen.packageName, verification.isSuccessful)
 
                         val stepSuccess = verification.isSuccessful && !loopDetected
                         if (primaryProvider == "LOCAL_SLM") {
                             if (stepSuccess) localFailCount = 0 else localFailCount++
+                            app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
+                                .edit()
+                                .putInt("local_fail_count", localFailCount)
+                                .apply()
                         }
 
                         val stepRecord = AniobStepRecord(

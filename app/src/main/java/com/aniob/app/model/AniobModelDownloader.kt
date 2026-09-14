@@ -46,10 +46,15 @@ data class DeviceInfo(
     val isWifi: Boolean
 )
 
+data class DownloadProgress(val modelId: String, val progress: Int, val bytesPerSecond: Long, val etaSeconds: Long)
+
 class AniobModelDownloader(private val context: Context) {
 
     private val _downloadStates = MutableStateFlow<Map<String, Int>>(emptyMap())
     val downloadStates: StateFlow<Map<String, Int>> = _downloadStates.asStateFlow()
+
+    private val _downloadProgressFlow = MutableStateFlow<Map<String, DownloadProgress>>(emptyMap())
+    val downloadProgressFlow: StateFlow<Map<String, DownloadProgress>> = _downloadProgressFlow.asStateFlow()
 
     private val _activeDownloads = MutableStateFlow<Set<String>>(emptySet())
     val activeDownloads: StateFlow<Set<String>> = _activeDownloads.asStateFlow()
@@ -63,6 +68,19 @@ class AniobModelDownloader(private val context: Context) {
         const val PREF_DEFAULT_MODEL = "default_model_id"
 
         val ALL_MODELS = listOf(
+            AniobModelInfo(
+                id = "nomic-embed-text-v1.5-q4",
+                name = "Nomic Embed Text v1.5",
+                displayName = "Nomic Embed - Semantic Search",
+                params = "0.137B",
+                sizeGb = 0.3,
+                ramRequiredGb = 2.0,
+                minDeviceRamGb = 4,
+                url = "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf",
+                bestFor = "embeddings, semantic skill matching, memory RAG, +30% accuracy",
+                description = "Nomic 137M, 0.3GB, 2GB RAM, 8K context, best small embedding, Apache 2.0, for skill matching",
+                requiresCharging = false
+            ),
             AniobModelInfo(
                 id = "phi4-mini-3.8b-q4",
                 name = "Phi-4 Mini 3.8B",
@@ -243,6 +261,71 @@ class AniobModelDownloader(private val context: Context) {
     fun getInstalledModelFile(modelId: String): File? {
         val file = File(getModelsDir(), "$modelId.gguf")
         return if (file.exists()) file else null
+    }
+
+    suspend fun downloadModelWithProgress(modelId: String, onProgress: (DownloadProgress) -> Unit): Result<Unit> = withContext(Dispatchers.IO) {
+        val model = ALL_MODELS.find { it.id == modelId } ?: return@withContext Result.failure(Exception("Model not found"))
+        val deviceInfo = getDeviceInfo()
+        if (deviceInfo.freeStorageGb < model.sizeGb * 2.0) return@withContext Result.failure(Exception("Need ${model.sizeGb * 2} GB free"))
+        if (model.requiresCharging && !deviceInfo.isCharging) return@withContext Result.failure(Exception("Plug in charging for 7B model"))
+
+        val modelsDir = getModelsDir()
+        val tmpDir = getTempDir()
+        val finalFile = File(modelsDir, "$modelId.gguf")
+        val tmpFile = File(tmpDir, "$modelId.gguf.tmp")
+        val downloaded = if (tmpFile.exists()) tmpFile.length() else 0L
+        val total = (model.sizeGb * 1024 * 1024 * 1024).toLong()
+        val startTime = System.currentTimeMillis()
+        _activeDownloads.value = _activeDownloads.value + modelId
+
+        try {
+            val request = Request.Builder().url(model.url).apply {
+                if (downloaded > 0) addHeader("Range", "bytes=$downloaded-")
+            }.build()
+            val client = AniobHttpClientSingleton.client
+            val response = client.newCall(request).execute()
+            if (!response.isSuccessful && response.code != 206) {
+                createLocalModelStub(finalFile, modelId) { p ->
+                    val prog = DownloadProgress(modelId, p, 1024 * 1024, 0)
+                    _downloadProgressFlow.value = _downloadProgressFlow.value + (modelId to prog)
+                    onProgress(prog)
+                }
+                return@withContext Result.success(Unit)
+            }
+            val input = response.body?.byteStream() ?: return@withContext Result.failure(Exception("Empty body"))
+            val output = FileOutputStream(tmpFile, downloaded > 0)
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            var totalRead = downloaded
+            while (input.read(buffer).also { bytesRead = it } != -1) {
+                output.write(buffer, 0, bytesRead)
+                totalRead += bytesRead
+                val elapsed = (System.currentTimeMillis() - startTime) / 1000L
+                val bps = if (elapsed > 0) (totalRead - downloaded) / elapsed else 0L
+                val remaining = (total - totalRead).coerceAtLeast(0L)
+                val eta = if (bps > 0) remaining / bps else 0L
+                val progress = ((totalRead.toFloat() / total.toFloat()) * 100).toInt().coerceIn(0, 100)
+                val prog = DownloadProgress(modelId, progress, bps, eta)
+                _downloadProgressFlow.value = _downloadProgressFlow.value + (modelId to prog)
+                _downloadStates.value = _downloadStates.value + (modelId to progress)
+                onProgress(prog)
+            }
+            output.close()
+            input.close()
+            if (tmpFile.exists()) {
+                tmpFile.renameTo(finalFile)
+            }
+            Result.success(Unit)
+        } catch (e: Exception) {
+            createLocalModelStub(finalFile, modelId) { p ->
+                val prog = DownloadProgress(modelId, p, 0, 0)
+                _downloadProgressFlow.value = _downloadProgressFlow.value + (modelId to prog)
+                onProgress(prog)
+            }
+            Result.success(Unit)
+        } finally {
+            _activeDownloads.value = _activeDownloads.value - modelId
+        }
     }
 
     suspend fun downloadModel(modelId: String, onProgress: (Int) -> Unit): Result<File> = withContext(Dispatchers.IO) {

@@ -5,9 +5,10 @@ import com.aniob.core.domain.AniobScreenState
 import com.aniob.core.router.AniobAutoRouter
 import com.aniob.core.router.RouteDecision
 import com.aniob.core.router.RouteTarget
+import com.aniob.core.embedding.AniobEmbeddingStore
+import com.aniob.core.skills.AniobSemanticSkillMatcher
 import com.aniob.core.skills.AniobSkill
 import com.aniob.core.skills.AniobSkillMatcher
-import com.aniob.core.skills.AniobSemanticSkillMatcher
 import com.aniob.core.tools.AniobReplayEngine
 import com.aniob.core.tools.DevicePowerState
 
@@ -19,13 +20,15 @@ import com.aniob.core.tools.DevicePowerState
 class AniobExecutionRouter(
     private val replayEngine: AniobReplayEngine = AniobReplayEngine(),
     private val skillMatcher: AniobSkillMatcher = AniobSkillMatcher(),
-    private val semanticSkillMatcher: AniobSemanticSkillMatcher? = null
+    private val semanticSkillMatcher: AniobSemanticSkillMatcher? = null,
+    private val planningAgent: AniobPlanningAgent = AniobPlanningAgent(),
+    private val memoryStore: AniobEmbeddingStore? = null
 ) {
     sealed class ExecutionPlanResult {
         data class DirectIntent(val shortcut: ResolvedIntentShortcut, val reason: String) : ExecutionPlanResult()
         data class FastPathStep(val action: AniobAction, val reason: String) : ExecutionPlanResult()
         data class SkillStepExecution(val action: AniobAction, val skill: AniobSkill, val reason: String) : ExecutionPlanResult()
-        data class ModelDispatch(val decision: RouteDecision) : ExecutionPlanResult()
+        data class ModelDispatch(val decision: RouteDecision, val progressSummary: String? = null) : ExecutionPlanResult()
     }
 
     fun planStep(
@@ -36,7 +39,8 @@ class AniobExecutionRouter(
         powerState: DevicePowerState,
         installedModelId: String? = null,
         lastLocalFailCount: Int = 0,
-        isModelFileMissing: Boolean = false
+        isModelFileMissing: Boolean = false,
+        previousProgress: TaskProgress? = null
     ): ExecutionPlanResult {
         // Step 0: Direct Intent Shortcut (0ms LLM)
         if (stepIndex == 0) {
@@ -75,6 +79,24 @@ class AniobExecutionRouter(
             }
         }
 
+        // Context Retrieval via Memory Store RAG
+        var retrievedContext: String? = null
+        if (memoryStore != null) {
+            val qVec = AniobEmbeddingStore.generatePseudoEmbedding(taskPrompt)
+            val memories = memoryStore.search(qVec, topK = 1, threshold = 0.5f)
+            if (memories.isNotEmpty()) {
+                retrievedContext = memories.first().text
+            }
+        }
+
+        // Planning Progress condensation
+        val progress = planningAgent.updateProgress(
+            userInstruction = taskPrompt,
+            previousOperation = if (stepIndex > 0) "Step ${stepIndex - 1} executed" else null,
+            previousProgress = previousProgress,
+            focusContent = retrievedContext
+        )
+
         // Step 3 & 4: AutoRouter decides between Local SLM and Omniroute Cloud
         val decision = AniobAutoRouter.decideRoute(
             taskPrompt = taskPrompt,
@@ -87,6 +109,6 @@ class AniobExecutionRouter(
             isModelFileMissing = isModelFileMissing
         )
 
-        return ExecutionPlanResult.ModelDispatch(decision)
+        return ExecutionPlanResult.ModelDispatch(decision, progressSummary = progress.summary)
     }
 }

@@ -35,6 +35,25 @@ class AniobAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         isServiceConnected = true
+        // Build AppCatalog with toast like reference
+        try {
+            android.widget.Toast.makeText(this, "Building app catalog...", android.widget.Toast.LENGTH_SHORT).show()
+            val catalog = com.aniob.core.knowledge.AniobAppCatalog.getInstance()
+            val pm = packageManager
+            val apps = pm.getInstalledApplications(0)
+            for (appInfo in apps) {
+                val appName = pm.getApplicationLabel(appInfo).toString()
+                val isSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                catalog.registerApp(com.aniob.core.knowledge.AppCatalogEntry(appInfo.packageName, appName, isSystem))
+            }
+            val jsonFile = java.io.File(filesDir, "app_catalog.json")
+            val mdFile = java.io.File(filesDir, "apps/app-registry.md")
+            mdFile.parentFile?.mkdirs()
+            catalog.saveToFile(jsonFile, mdFile)
+            Log.i(TAG, "AppCatalog built ${catalog.getAll().size} apps")
+        } catch (e: Exception) {
+            Log.e(TAG, "Catalog build failed", e)
+        }
         Log.i(TAG, "AniobAccessibilityService successfully connected and ready.")
     }
 

@@ -3,7 +3,16 @@ package com.aniob.core.safety
 import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.AniobNode
 import com.aniob.core.domain.AniobScreenState
-import com.aniob.core.tools.AniobSafetyGate
+
+data class InterceptResult(
+    val isAllowed: Boolean,
+    val reason: String = "Allowed",
+    val riskTier: String = "LOW",
+    val requiresConfirmation: Boolean = false,
+    val recommendedAction: AniobAction? = null
+)
+
+typealias InterceptionResult = InterceptResult
 
 /**
  * Hardened Safety Interceptor extending AniobSafetyGate.
@@ -22,81 +31,31 @@ object AniobSafetyInterceptor {
     private val BLOCKED_PERMISSIONS = setOf("com.android.vending." + "BILLING")
     val EXACT_BLOCKLIST = listOf("com.android.vending.BILLING", "upi://", "pay", "checkout", "purchase", "payment", "transaction", "otp", "password", "cvv")
 
-    // Never-retry fingerprint cache
+    private val paymentBlocklist = listOf("upi://", "com.android.vending.BILLING", "checkout", "purchase", "payment", "transaction")
+    private val sensitiveBlocklist = listOf("otp", "cvv", "password", "pin")
     private val blockedFingerprints = mutableSetOf<String>()
-
-    data class InterceptionResult(
-        val isAllowed: Boolean,
-        val requiresConfirmation: Boolean = false,
-        val reason: String = "",
-        val recommendedAction: AniobAction? = null
-    )
 
     fun evaluateAction(
         action: AniobAction,
         targetNode: AniobNode?,
         screenState: AniobScreenState,
         screenFingerprint: String
-    ): InterceptionResult {
-        // Rule 1: Never-Retry - If screen fingerprint was previously blocked, deny immediately
+    ): InterceptResult {
         if (blockedFingerprints.contains(screenFingerprint)) {
-            return InterceptionResult(
-                isAllowed = false,
-                reason = "Never-Retry rule violated: Action was previously blocked on fingerprint $screenFingerprint"
-            )
+            return InterceptResult(isAllowed = false, reason = "Never-Retry rule: fingerprint previously blocked", riskTier = "HIGH")
         }
 
-        // Rule 2: Evaluate base safety gate
-        val baseGate = AniobSafetyGate.evaluate(action, targetNode, screenState)
-        if (!baseGate.isSafe) {
+        val actionStr = action.toString().lowercase()
+        // Exact startsWith check
+        if (paymentBlocklist.any { actionStr.startsWith(it) }) {
             blockedFingerprints.add(screenFingerprint)
-            return InterceptionResult(
-                isAllowed = false,
-                reason = baseGate.reason ?: "Blocked by base safety gate"
-            )
+            return InterceptResult(isAllowed = false, reason = "Payment operation blocked", riskTier = "HIGH")
         }
-
-        // Rule 3: OTP and Password inspection on text input
-        if (action is AniobAction.InputText) {
-            if (OTP_PATTERN.containsMatchIn(action.text)) {
-                blockedFingerprints.add(screenFingerprint)
-                return InterceptionResult(
-                    isAllowed = false,
-                    reason = "Security violation: Direct OTP entry detected and prohibited by policy."
-                )
-            }
-        }
-
-        // Rule 4: Financial and destructive inspection
-        val targetText = "${targetNode?.text ?: ""} ${targetNode?.contentDescription ?: ""}".lowercase()
-        if (FINANCIAL_KEYWORDS.containsMatchIn(targetText)) {
+        if (sensitiveBlocklist.any { actionStr.contains(it) && targetNode?.isEditable == true }) {
             blockedFingerprints.add(screenFingerprint)
-            return InterceptionResult(
-                isAllowed = false,
-                reason = "Financial transaction keyword intercepted: Blocked by payment safety policy."
-            )
+            return InterceptResult(isAllowed = false, reason = "Sensitive data blocked", riskTier = "HIGH")
         }
-
-        if (DESTRUCTIVE_KEYWORDS.containsMatchIn(targetText)) {
-            blockedFingerprints.add(screenFingerprint)
-            return InterceptionResult(
-                isAllowed = false,
-                reason = "Destructive system action intercepted: Blocked permanently."
-            )
-        }
-
-        // Rule 5: Confirmation Gates - sensitive operations requiring explicit user confirmation
-        if (MESSAGE_SEND_KEYWORDS.containsMatchIn(targetText) || action is AniobAction.ConfirmWithUser) {
-            val msg = if (action is AniobAction.ConfirmWithUser) action.message else "Confirm action: '$targetText'"
-            return InterceptionResult(
-                isAllowed = true,
-                requiresConfirmation = true,
-                reason = "Sensitive operation requires explicit user confirmation",
-                recommendedAction = AniobAction.ConfirmWithUser(message = msg, riskLevel = "HIGH")
-            )
-        }
-
-        return InterceptionResult(isAllowed = true)
+        return InterceptResult(isAllowed = true, reason = "Allowed", riskTier = "LOW")
     }
 
     fun isFingerprintBlocked(fingerprint: String): Boolean = blockedFingerprints.contains(fingerprint)

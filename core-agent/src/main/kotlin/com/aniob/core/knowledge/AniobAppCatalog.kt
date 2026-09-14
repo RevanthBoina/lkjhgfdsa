@@ -69,6 +69,14 @@ class AniobAppCatalog private constructor() {
         return sb.toString()
     }
 
+    @Synchronized
+    fun saveToFile(jsonFile: File, mdFile: File) {
+        try {
+            jsonFile.writeText(toJson())
+            mdFile.writeText(toMarkdown())
+        } catch (_: Exception) {}
+    }
+
     companion object {
         private val instance = AniobAppCatalog()
         fun getInstance(): AniobAppCatalog = instance

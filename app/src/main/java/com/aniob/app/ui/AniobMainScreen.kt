@@ -64,14 +64,8 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                             AssistChip(
                                 onClick = { currentScreen = AniobScreen.MODELS },
                                 label = {
-                                    val chipLabel = when (uiState.autoRouterMode) {
-                                        "local-first" -> "Local-First"
-                                        "local-only" -> "Local-Only"
-                                        "cloud-only" -> "Cloud-Only"
-                                        "balanced" -> "Balanced"
-                                        else -> "Auto"
-                                    }
-                                    Text(chipLabel)
+                                    val installedModel = viewModel.getInstalledModelName()
+                                    Text(installedModel ?: "Select Model")
                                 },
                                 leadingIcon = {
                                     Icon(Icons.Default.Memory, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -219,6 +213,35 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
             grillResult = uiState.grillMeResult!!,
             onConfirm = { answers -> viewModel.onGrillAnswersSubmitted(answers) },
             onDismiss = { viewModel.dismissGrillMe() }
+        )
+    }
+
+    val confirmDialog = viewModel.showConfirmationDialog.value
+    if (confirmDialog != null) {
+        AlertDialog(
+            onDismissRequest = { viewModel.showConfirmationDialog.value = null },
+            title = { Text("Confirmation Required") },
+            text = { Text(confirmDialog.first) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val action = confirmDialog.second
+                        viewModel.showConfirmationDialog.value = null
+                        action()
+                    },
+                    modifier = Modifier.testTag("confirm_action_dialog_btn")
+                ) {
+                    Text("Confirm")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { viewModel.showConfirmationDialog.value = null },
+                    modifier = Modifier.testTag("cancel_action_dialog_btn")
+                ) {
+                    Text("Cancel")
+                }
+            }
         )
     }
 }

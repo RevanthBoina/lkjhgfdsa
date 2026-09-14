@@ -109,50 +109,25 @@ object AniobAutoRouter {
             }
         }
 
-        // 6. Vision: less aggressive - need (unlabelled >= 2 && taskNeedsVision) OR (unlabelled >= 5 && taskNeedsVision) OR (hasCanvas && taskNeedsVision)
+        // FIXED: Less aggressive vision - was (unlabelled>=2 && taskNeedsVision) || (unlabelled>=5 && taskNeedsVision) redundant
         val unlabelled = screenState.nodes.count { it.isClickable && it.text.isBlank() && it.contentDescription.isBlank() }
         val hasCanvas = screenState.nodes.any { it.className.contains("Canvas") || it.className.contains("SurfaceView") }
-        val taskNeedsVision = taskPrompt.contains("icon", ignoreCase = true) ||
-                taskPrompt.contains("image", ignoreCase = true) ||
-                taskPrompt.contains("canvas", ignoreCase = true)
-        val needsVision = (unlabelled >= 2 && taskNeedsVision) || (unlabelled >= 5 && taskNeedsVision) || (hasCanvas && taskNeedsVision)
+        val taskNeedsVision = taskPrompt.contains("icon", true) || taskPrompt.contains("image", true) || taskPrompt.contains("canvas", true) || taskPrompt.contains("picture", true)
+        val needsVision = (unlabelled >= 5) || (unlabelled >= 2 && taskNeedsVision) || (hasCanvas && taskNeedsVision)
         if (needsVision) {
-            return RouteDecision(
-                target = RouteTarget.OMNIROUTE_CLOUD,
-                reason = "Vision needed unlabelled $unlabelled canvas $hasCanvas -> cloud vision",
-                requiresVision = true
-            )
+            return RouteDecision(RouteTarget.OMNIROUTE_CLOUD, "Vision needed unlabelled $unlabelled canvas $hasCanvas -> cloud vision", true)
         }
 
-        // 7. Simple text nav: relax to total <=40 and ratio >=0.6
-        val textRatio = if (screenState.nodes.isNotEmpty()) {
-            screenState.nodes.count { it.text.isNotBlank() }.toFloat() / screenState.nodes.size
-        } else 0f
+        val textRatio = if (screenState.nodes.isNotEmpty()) screenState.nodes.count { it.text.isNotBlank() }.toFloat() / screenState.nodes.size else 0f
         val isSimple = screenState.nodes.isNotEmpty() && screenState.nodes.size <= 40 && textRatio >= 0.6f
         if (isSimple) {
-            return RouteDecision(
-                target = RouteTarget.LOCAL_SLM,
-                reason = "Simple text nav ${screenState.nodes.size} nodes ratio $textRatio -> local ${installedModelId ?: "SLM"}",
-                requiresVision = false,
-                modelId = installedModelId
-            )
+            return RouteDecision(RouteTarget.LOCAL_SLM, "Simple text nav ${screenState.nodes.size} nodes ratio $textRatio -> local ${installedModelId ?: "SLM"}", false, installedModelId)
         }
 
-        // 8. Learning: if local failed last 2 times, escalate to cloud
         if (lastLocalFailCount >= 2) {
-            return RouteDecision(
-                target = RouteTarget.OMNIROUTE_CLOUD,
-                reason = "Local failed $lastLocalFailCount times -> escalate to cloud",
-                requiresVision = false
-            )
+            return RouteDecision(RouteTarget.OMNIROUTE_CLOUD, "Local failed $lastLocalFailCount times -> escalate to cloud")
         }
 
-        // 9. Default: LOCAL-FIRST for 8GB RAM phones, not cloud-first
-        return RouteDecision(
-            target = RouteTarget.LOCAL_SLM,
-            reason = "Default local-first for 8GB RAM phones, model ${installedModelId ?: "SLM"}, complex task but try local first",
-            requiresVision = false,
-            modelId = installedModelId
-        )
+        return RouteDecision(RouteTarget.LOCAL_SLM, "Default local-first for 8GB RAM phones, model ${installedModelId ?: "SLM"}", false, installedModelId)
     }
 }

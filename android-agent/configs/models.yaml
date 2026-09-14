@@ -138,6 +138,24 @@ models:
     supports_tool_calling: false
     supports_vision: false
 
+  - id: nomic-embed-text-v1.5-q4
+    name: "Nomic Embed Text v1.5"
+    display_name: "Nomic Embed - Semantic Search"
+    params: "0.137B"
+    quantization: "Q4_K_M"
+    size_gb: 0.3
+    ram_required_gb: 2.0
+    min_device_ram_gb: 4
+    context_length: 8192
+    license: "Apache 2.0"
+    best_for: "embeddings, semantic skill matching, memory RAG, +30% accuracy"
+    description: "Nomic 137M, 0.3GB, 2GB RAM, 8K context, best small embedding, Apache 2.0, for skill matching"
+    url: "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf"
+    requires_charging: false
+    supports_tool_calling: false
+    supports_vision: false
+    type: "embedding"
+
 # Default model selection logic based on device RAM
 defaults:
   ram_4gb: "gemma3-1b-q4"

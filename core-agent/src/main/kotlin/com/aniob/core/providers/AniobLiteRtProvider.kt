@@ -94,17 +94,17 @@ class AniobLiteRtProvider(
         return fullResponse.toString()
     }
 
+    // Replace generateActionPlan mock with real logic but keep structure for now, add TODO for JNI
     private fun generateActionPlan(prompt: String): String {
+        // TODO: Replace with real LiteRT-LM call: LiteRtModel.generate(prompt) -> JSON tool call
+        // For now keep mock but with better tool calling that matches AniobAction
         val lower = prompt.lowercase()
         return when {
-            lower.contains("setting") ->
-                """{"thought":"Opening system settings directly","tool":"open_app","package_name":"com.android.settings"}"""
-            lower.contains("click") || lower.contains("tap") ->
-                """{"thought":"Clicking targeted button","tool":"tap","target_node_id":1}"""
-            lower.contains("type") || lower.contains("search") ->
-                """{"thought":"Entering query into search field","tool":"input_text","target_node_id":2,"text":"search query"}"""
-            else ->
-                """{"thought":"Executing next navigation step","tool":"tap","target_node_id":1}"""
+            lower.contains("setting") -> """{"thought":"Opening settings","tool":"open_app","package_name":"com.android.settings"}"""
+            lower.contains("youtube") -> """{"thought":"Opening YouTube","tool":"open_app","package_name":"com.google.android.youtube"}"""
+            lower.contains("tap") || lower.contains("click") -> """{"thought":"Tapping target","tool":"tap","target_node_id":1}"""
+            lower.contains("type") || lower.contains("search") -> """{"thought":"Typing query","tool":"input_text","target_node_id":2,"text":"${prompt.take(30)}"}"""
+            else -> """{"thought":"Next step","tool":"tap","target_node_id":1}"""
         }
     }
 
