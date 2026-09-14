@@ -20,11 +20,14 @@ import java.util.concurrent.TimeUnit
 /**
  * Omniroute Cloud Provider client.
  * Connects to https://api.omniroute.ai/v1/chat/completions with gpt-4o vision.
+ * When [jsonMode] is enabled, all generation requests enforce `response_format:
+ * json_object` with temperature 0.1 so the ladder can trust structured output.
  */
 class AniobOmniRouteProvider(
     private val apiKey: String,
     private val baseUrl: String = "https://api.omniroute.ai/v1/chat/completions",
-    private val model: String = "gpt-4o"
+    private val model: String = "gpt-4o",
+    private val jsonMode: Boolean = false
 ) : AniobCloudLlmProvider {
     override val name: String = "OMNIROUTE_CLOUD"
 
@@ -52,6 +55,10 @@ class AniobOmniRouteProvider(
                 put("model", model)
                 put("messages", messages)
                 put("max_tokens", 1024)
+                if (jsonMode) {
+                    put("temperature", 0.1)
+                    put("response_format", JSONObject().apply { put("type", "json_object") })
+                }
             }
             val request = Request.Builder()
                 .url(baseUrl)
@@ -85,6 +92,17 @@ class AniobOmniRouteProvider(
         onDelta: (String) -> Unit
     ): String = streamingResult(prompt, systemPrompt, screenshotBase64, onDelta)
 
+    /** Whether this provider instance enforces structured JSON output. */
+    fun isJsonMode() = jsonMode
+
+    /** Returns a copy with JsonMode enabled for callers that need strict JSON. */
+    fun withJsonMode(): AniobOmniRouteProvider = AniobOmniRouteProvider(
+        apiKey = apiKey,
+        baseUrl = baseUrl,
+        model = model,
+        jsonMode = true
+    )
+
     private suspend fun streamingResult(
         prompt: String,
         systemPrompt: String,
@@ -102,6 +120,10 @@ class AniobOmniRouteProvider(
                 put("model", model)
                 put("messages", messages)
                 put("max_tokens", 1024)
+                if (jsonMode) {
+                    put("temperature", 0.1)
+                    put("response_format", JSONObject().apply { put("type", "json_object") })
+                }
             }
             val request = Request.Builder()
                 .url(baseUrl)

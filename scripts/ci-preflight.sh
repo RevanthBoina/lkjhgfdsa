@@ -86,6 +86,12 @@ if [ ! -f app/src/main/java/com/aniob/app/service/AniobNotificationListenerServi
     SMOKE_FAIL=1
 fi
 
+# 5g. Omniroute JsonMode gate
+if ! grep -q "response_format" app/src/main/java/com/aniob/app/provider/AniobOmniRouteProvider.kt 2>/dev/null; then
+    echo "ERROR: Omniroute JsonMode (response_format) missing."
+    SMOKE_FAIL=1
+fi
+
 if [ "$SMOKE_FAIL" -eq 1 ]; then
     echo "ERROR: Prompt-4 smoke M0 pins failed (see above)."
     exit 1
