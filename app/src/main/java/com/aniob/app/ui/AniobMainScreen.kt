@@ -1,102 +1,209 @@
 package com.aniob.app.ui
 
-import androidx.compose.foundation.layout.padding
+import androidx.compose.animation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Chat
-import androidx.compose.material.icons.filled.Insights
-import androidx.compose.material.icons.filled.ListAlt
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.aniob.app.ui.screens.AniobChatScreen
-import com.aniob.app.ui.screens.AniobSettingsScreen
-import com.aniob.app.ui.screens.AniobStatsScreen
-import com.aniob.app.ui.screens.AniobTrackerScreen
+import com.aniob.app.ui.screens.*
 
+enum class AniobScreen {
+    CHAT,
+    HISTORY,
+    STATS,
+    MODELS,
+    SETTINGS,
+    ONBOARDING
+}
+
+/**
+ * Expert Main Screen (AIM Phase 1.1 - No Bottom Nav Forest).
+ * Normal mobile app UX (WhatsApp / Telegram / Google Settings style).
+ * - Home = Chat only.
+ * - TopAppBar with Title, Model Chip, Running indicator, and Overflow Menu (⋮).
+ * - Clean screen transitions between CHAT, HISTORY, STATS, MODELS, SETTINGS, ONBOARDING.
+ * - Tracker bottom sheet (0 captures, 0 model calls).
+ * - Grill-Me bottom sheet when task ambiguity detected.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AniobMainScreen(viewModel: AniobViewModel) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var currentScreen by remember { mutableStateOf(AniobScreen.CHAT) }
+    var showOverflowMenu by remember { mutableStateOf(false) }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Aniob - UI Automation Agent") },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                ),
-                actions = {
-                    if (uiState.isRunning) {
-                        Badge(
-                            containerColor = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.testTag("running_badge")
-                        ) {
-                            Text("RUNNING")
+    when (currentScreen) {
+        AniobScreen.CHAT -> {
+            Scaffold(
+                topBar = {
+                    TopAppBar(
+                        title = {
+                            Column {
+                                Text(
+                                    text = "Aniob",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = if (uiState.isRunning) "Running · Step ${uiState.currentStep}" else "Ready",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (uiState.isRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        },
+                        actions = {
+                            // Model selector chip button
+                            AssistChip(
+                                onClick = { currentScreen = AniobScreen.MODELS },
+                                label = { Text(uiState.omnirouteModel.ifBlank { "Local SLM" }) },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Memory, contentDescription = null, modifier = Modifier.size(16.dp))
+                                },
+                                modifier = Modifier.testTag("model_selector_chip")
+                            )
+
+                            // Clear chat action
+                            IconButton(
+                                onClick = { viewModel.clearChat() },
+                                modifier = Modifier.testTag("clear_chat_button")
+                            ) {
+                                Icon(Icons.Default.DeleteOutline, contentDescription = "Clear Chat")
+                            }
+
+                            // Overflow Menu (⋮)
+                            Box {
+                                IconButton(
+                                    onClick = { showOverflowMenu = true },
+                                    modifier = Modifier.testTag("main_overflow_menu_btn")
+                                ) {
+                                    Icon(Icons.Default.MoreVert, contentDescription = "Menu")
+                                }
+
+                                DropdownMenu(
+                                    expanded = showOverflowMenu,
+                                    onDismissRequest = { showOverflowMenu = false }
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("History") },
+                                        leadingIcon = { Icon(Icons.Default.History, contentDescription = null) },
+                                        onClick = {
+                                            showOverflowMenu = false
+                                            currentScreen = AniobScreen.HISTORY
+                                        },
+                                        modifier = Modifier.testTag("menu_history")
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Stats & Performance") },
+                                        leadingIcon = { Icon(Icons.Default.BarChart, contentDescription = null) },
+                                        onClick = {
+                                            showOverflowMenu = false
+                                            currentScreen = AniobScreen.STATS
+                                        },
+                                        modifier = Modifier.testTag("menu_stats")
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("On-Device AI Models") },
+                                        leadingIcon = { Icon(Icons.Default.Memory, contentDescription = null) },
+                                        onClick = {
+                                            showOverflowMenu = false
+                                            currentScreen = AniobScreen.MODELS
+                                        },
+                                        modifier = Modifier.testTag("menu_models")
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Settings") },
+                                        leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                                        onClick = {
+                                            showOverflowMenu = false
+                                            currentScreen = AniobScreen.SETTINGS
+                                        },
+                                        modifier = Modifier.testTag("menu_settings")
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Setup & Permissions") },
+                                        leadingIcon = { Icon(Icons.Default.VerifiedUser, contentDescription = null) },
+                                        onClick = {
+                                            showOverflowMenu = false
+                                            currentScreen = AniobScreen.ONBOARDING
+                                        },
+                                        modifier = Modifier.testTag("menu_onboarding")
+                                    )
+                                }
+                            }
                         }
-                    }
+                    )
                 }
-            )
-        },
-        bottomBar = {
-            NavigationBar(modifier = Modifier.testTag("main_bottom_nav")) {
-                NavigationBarItem(
-                    selected = uiState.currentTab == 0,
-                    onClick = { viewModel.setTab(0) },
-                    icon = { Icon(Icons.Default.Chat, contentDescription = "Chat") },
-                    label = { Text("Chat") },
-                    modifier = Modifier.testTag("nav_chat")
-                )
-                NavigationBarItem(
-                    selected = uiState.currentTab == 1,
-                    onClick = { viewModel.setTab(1) },
-                    icon = { Icon(Icons.Default.ListAlt, contentDescription = "Tracker") },
-                    label = { Text("Tracker") },
-                    modifier = Modifier.testTag("nav_tracker")
-                )
-                NavigationBarItem(
-                    selected = uiState.currentTab == 2,
-                    onClick = { viewModel.setTab(2) },
-                    icon = { Icon(Icons.Default.Insights, contentDescription = "Stats") },
-                    label = { Text("Stats") },
-                    modifier = Modifier.testTag("nav_stats")
-                )
-                NavigationBarItem(
-                    selected = uiState.currentTab == 3,
-                    onClick = { viewModel.setTab(3) },
-                    icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
-                    label = { Text("Settings") },
-                    modifier = Modifier.testTag("nav_settings")
-                )
+            ) { innerPadding ->
+                Surface(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
+                ) {
+                    AniobChatScreen(
+                        uiState = uiState,
+                        onSubmitTask = { viewModel.submitTask(it) },
+                        onStopTask = { viewModel.stopCurrentTask() },
+                        onShowTrackerSheet = { viewModel.setShowTrackerSheet(it) },
+                        onFilterChanged = { viewModel.setTrackerFilter(it) }
+                    )
+                }
             }
         }
-    ) { innerPadding ->
-        Surface(modifier = Modifier.padding(innerPadding)) {
-            when (uiState.currentTab) {
-                0 -> AniobChatScreen(
-                    uiState = uiState,
-                    onSubmitTask = { viewModel.submitTask(it) },
-                    onStopTask = { viewModel.stopCurrentTask() },
-                    onShowTrackerSheet = { viewModel.setShowTrackerSheet(it) },
-                    onFilterChanged = { viewModel.setTrackerFilter(it) }
-                )
-                1 -> AniobTrackerScreen(
-                    uiState = uiState,
-                    onFilterChanged = { viewModel.setTrackerFilter(it) }
-                )
-                2 -> AniobStatsScreen(uiState = uiState)
-                3 -> AniobSettingsScreen(
-                    uiState = uiState,
-                    onSaveSettings = { key, model -> viewModel.updateSettings(key, model) }
-                )
-            }
+
+        AniobScreen.HISTORY -> {
+            AniobHistoryScreen(
+                uiState = uiState,
+                onBack = { currentScreen = AniobScreen.CHAT },
+                onNavigateToStats = { currentScreen = AniobScreen.STATS }
+            )
+        }
+
+        AniobScreen.STATS -> {
+            AniobStatsScreen(
+                uiState = uiState,
+                onBack = { currentScreen = AniobScreen.CHAT }
+            )
+        }
+
+        AniobScreen.MODELS -> {
+            AniobModelDownloadScreen(
+                onBack = { currentScreen = AniobScreen.CHAT }
+            )
+        }
+
+        AniobScreen.SETTINGS -> {
+            AniobSettingsScreen(
+                uiState = uiState,
+                onSaveSettings = { key, model -> viewModel.updateSettings(key, model) },
+                onBack = { currentScreen = AniobScreen.CHAT },
+                onNavigateToModels = { currentScreen = AniobScreen.MODELS },
+                onNavigateToStats = { currentScreen = AniobScreen.STATS },
+                onNavigateToOnboarding = { currentScreen = AniobScreen.ONBOARDING }
+            )
+        }
+
+        AniobScreen.ONBOARDING -> {
+            AniobOnboardingScreen(
+                onBack = { currentScreen = AniobScreen.CHAT },
+                onNavigateToModels = { currentScreen = AniobScreen.MODELS },
+                onNavigateToSettings = { currentScreen = AniobScreen.SETTINGS },
+                onRunDemoTask = {
+                    currentScreen = AniobScreen.CHAT
+                    viewModel.submitTask("Open Settings")
+                }
+            )
         }
     }
 
-    // Modal Grill-Me Clarification Sheet
+    // Modal Grill-Me Clarification Sheet (AIM Phase 1.4)
     if (uiState.showGrillMeSheet && uiState.grillMeResult != null) {
         AniobGrillMeSheet(
             grillResult = uiState.grillMeResult!!,

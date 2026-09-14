@@ -9,13 +9,15 @@ enum class RouteTarget {
     INTENT,
     SKILL,
     LOCAL_SLM,
-    OMNIROUTE_CLOUD
+    OMNIROUTE_CLOUD,
+    EXTERNAL_AI_QUERY
 }
 
 data class RouteDecision(
     val target: RouteTarget,
     val reason: String,
-    val requiresVision: Boolean = false
+    val requiresVision: Boolean = false,
+    val modelId: String? = null
 )
 
 object AniobAutoRouter {
@@ -25,6 +27,7 @@ object AniobAutoRouter {
     const val PROVIDER_FASTPATH = "FASTPATH"
     const val PROVIDER_SKILL = "SKILL"
     const val PROVIDER_INTENT = "INTENT"
+    const val PROVIDER_EXTERNAL_AI = "EXTERNAL_AI_QUERY"
 
     /**
      * Core routing algorithm: Evaluates task, screen state, and device telemetry.
@@ -34,7 +37,8 @@ object AniobAutoRouter {
         screenState: AniobScreenState,
         powerState: DevicePowerState,
         hasFastPathHit: Boolean = false,
-        isIntentShortcut: Boolean = false
+        isIntentShortcut: Boolean = false,
+        installedModelId: String? = null
     ): RouteDecision {
         // 1. Direct Intent Shortcut (0ms LLM)
         if (isIntentShortcut) {
@@ -56,10 +60,12 @@ object AniobAutoRouter {
 
         // 3. Offline constraint -> Must use local SLM
         if (!powerState.isNetworkAvailable) {
+            val modelName = installedModelId ?: "Default Local SLM"
             return RouteDecision(
                 target = RouteTarget.LOCAL_SLM,
-                reason = "Device is offline: Forcing local SLM (Qwen2.5-1.5B)",
-                requiresVision = false
+                reason = "Device is offline: Forcing local SLM ($modelName)",
+                requiresVision = false,
+                modelId = installedModelId
             )
         }
 
@@ -82,12 +88,14 @@ object AniobAutoRouter {
             )
         }
 
-        // 6. Simple structured text navigation -> Local SLM
-        if (isSimpleTextNavigation(screenState)) {
+        // 6. Simple structured text navigation or installed coding model -> Local SLM
+        if (isSimpleTextNavigation(screenState) || (installedModelId != null && !needsVision)) {
+            val modelLabel = installedModelId ?: "On-Device SLM"
             return RouteDecision(
                 target = RouteTarget.LOCAL_SLM,
-                reason = "Simple text/list hierarchy detected: Handled locally by on-device SLM",
-                requiresVision = false
+                reason = "Handled locally by on-device model ($modelLabel)",
+                requiresVision = false,
+                modelId = installedModelId
             )
         }
 

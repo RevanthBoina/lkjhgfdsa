@@ -29,6 +29,8 @@ fun AniobGrillMeSheet(
         }
     }
 
+    var generalNotes by remember { mutableStateOf("") }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
@@ -42,14 +44,14 @@ fun AniobGrillMeSheet(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text(
-                text = "Clarification Needed (Grill-Me)",
+                text = "Help me understand",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
+                color = MaterialTheme.colorScheme.onSurface
             )
 
             Text(
-                text = "Aniob detected ambiguity in your request. Please select options or enter details to proceed:",
+                text = "I need a few details to do this right:",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -57,52 +59,67 @@ fun AniobGrillMeSheet(
             HorizontalDivider()
 
             grillResult.questions.forEach { question ->
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text = question.question,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
-
-                    // Options chips / row
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        question.options.forEach { option ->
-                            val selected = userAnswers[question.id] == option
-                            FilterChip(
-                                selected = selected,
-                                onClick = { userAnswers[question.id] = option },
-                                label = { Text(option) },
-                                modifier = Modifier.testTag("chip_${question.id}_$option")
+                        Text(
+                            text = question.question,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        // Options chips / row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            question.options.forEach { option ->
+                                val selected = userAnswers[question.id] == option
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = { userAnswers[question.id] = option },
+                                    label = { Text(option) },
+                                    modifier = Modifier.testTag("chip_${question.id}_$option")
+                                )
+                            }
+                        }
+
+                        // Free text input if enabled
+                        if (question.allowFreeText) {
+                            OutlinedTextField(
+                                value = userAnswers[question.id] ?: "",
+                                onValueChange = { userAnswers[question.id] = it },
+                                label = { Text("Or type custom answer") },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("freetext_${question.id}"),
+                                singleLine = true
                             )
                         }
                     }
-
-                    // Free text input if enabled
-                    if (question.allowFreeText) {
-                        OutlinedTextField(
-                            value = userAnswers[question.id] ?: "",
-                            onValueChange = { userAnswers[question.id] = it },
-                            label = { Text("Or specify custom answer") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("freetext_${question.id}"),
-                            singleLine = true
-                        )
-                    }
                 }
             }
+
+            OutlinedTextField(
+                value = generalNotes,
+                onValueChange = { generalNotes = it },
+                label = { Text("Anything else? (optional)") },
+                modifier = Modifier.fillMaxWidth().testTag("grill_general_notes"),
+                singleLine = false,
+                maxLines = 2
+            )
 
             Spacer(modifier = Modifier.height(8.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 TextButton(
                     onClick = onDismiss,
@@ -112,10 +129,16 @@ fun AniobGrillMeSheet(
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Button(
-                    onClick = { onConfirm(userAnswers.toMap()) },
+                    onClick = {
+                        val finalAnswers = userAnswers.toMutableMap()
+                        if (generalNotes.isNotBlank()) {
+                            finalAnswers["notes"] = generalNotes
+                        }
+                        onConfirm(finalAnswers)
+                    },
                     modifier = Modifier.testTag("grill_me_confirm")
                 ) {
-                    Text("Confirm & Proceed")
+                    Text("Continue")
                 }
             }
 

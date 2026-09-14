@@ -1,0 +1,320 @@
+package com.aniob.app.ui.screens
+
+import android.widget.Toast
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.aniob.app.model.AniobModelDownloader
+import com.aniob.app.model.AniobModelInfo
+import com.aniob.app.model.DeviceInfo
+import kotlinx.coroutines.launch
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AniobModelDownloadScreen(
+    onBack: () -> Unit
+) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val downloader = remember { AniobModelDownloader(context) }
+
+    var deviceInfo by remember { mutableStateOf(downloader.getDeviceInfo()) }
+    val downloadStates by downloader.downloadStates.collectAsStateWithLifecycle()
+    val activeDownloads by downloader.activeDownloads.collectAsStateWithLifecycle()
+
+    var models by remember { mutableStateOf(downloader.getAvailableModels()) }
+    var defaultModelId by remember { mutableStateOf(downloader.getDefaultModelId()) }
+    val recommendedId = remember(deviceInfo) { downloader.getRecommendedModel(deviceInfo) }
+
+    fun refreshModels() {
+        deviceInfo = downloader.getDeviceInfo()
+        models = downloader.getAvailableModels()
+        defaultModelId = downloader.getDefaultModelId()
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("On-Device AI Models", fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    IconButton(onClick = onBack, modifier = Modifier.testTag("models_back_button")) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { refreshModels() }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                    }
+                }
+            )
+        }
+    ) { paddingValues ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // 1. Device Hardware Telemetry Card
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth().testTag("device_telemetry_card"),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f))
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Device Capability (8GB Target)",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Badge(containerColor = MaterialTheme.colorScheme.primary) {
+                                Text("${deviceInfo.totalRamGb} GB RAM", color = MaterialTheme.colorScheme.onPrimary)
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Free RAM: ${deviceInfo.freeRamGb} GB", style = MaterialTheme.typography.bodySmall)
+                            Text("Free Storage: ${"%.1f".format(deviceInfo.freeStorageGb)} GB", style = MaterialTheme.typography.bodySmall)
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Battery: ${deviceInfo.batteryPct}% ${if (deviceInfo.isCharging) "(Charging)" else ""}", style = MaterialTheme.typography.bodySmall)
+                            Text("Network: ${if (deviceInfo.isWifi) "Wi-Fi" else "Mobile Data"}", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+
+            // 2. Recommendation Banner
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth().testTag("recommendation_banner")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Recommend,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Column {
+                            Text(
+                                text = "Recommended: ${models.find { it.id == recommendedId }?.name ?: "Phi-4 Mini 3.8B"}",
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(
+                                text = "Optimal quality-to-RAM balance for your ${deviceInfo.totalRamGb}GB phone. Runs at 30-50 tok/s on CPU.",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 3. Models List Header
+            item {
+                Text(
+                    text = "Installable Models (Q4_K_M GGUF)",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            // 4. Model Cards
+            items(models) { model ->
+                val isDownloading = activeDownloads.contains(model.id)
+                val progress = downloadStates[model.id] ?: if (model.isInstalled) 100 else 0
+                val isDefault = defaultModelId == model.id
+
+                ModelItemCard(
+                    model = model,
+                    isRecommended = model.id == recommendedId,
+                    isDefault = isDefault,
+                    isDownloading = isDownloading,
+                    progress = progress,
+                    deviceInfo = deviceInfo,
+                    onDownload = {
+                        coroutineScope.launch {
+                            val result = downloader.downloadModel(model.id) { p ->
+                                // progress handled in flow
+                            }
+                            if (result.isSuccess) {
+                                Toast.makeText(context, "${model.name} installed successfully", Toast.LENGTH_SHORT).show()
+                                refreshModels()
+                            } else {
+                                Toast.makeText(context, "Download failed: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
+                    onDelete = {
+                        downloader.deleteModel(model.id)
+                        Toast.makeText(context, "${model.name} removed", Toast.LENGTH_SHORT).show()
+                        refreshModels()
+                    },
+                    onSetDefault = {
+                        downloader.setDefaultModelId(model.id)
+                        defaultModelId = model.id
+                        Toast.makeText(context, "${model.name} set as primary local model", Toast.LENGTH_SHORT).show()
+                    }
+                )
+            }
+
+            item {
+                Spacer(modifier = Modifier.height(24.dp))
+            }
+        }
+    }
+}
+
+@Composable
+fun ModelItemCard(
+    model: AniobModelInfo,
+    isRecommended: Boolean,
+    isDefault: Boolean,
+    isDownloading: Boolean,
+    progress: Int,
+    deviceInfo: DeviceInfo,
+    onDownload: () -> Unit,
+    onDelete: () -> Unit,
+    onSetDefault: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("model_card_${model.id}"),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isDefault) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = model.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (isRecommended) {
+                        Badge(containerColor = MaterialTheme.colorScheme.primary) {
+                            Text("Best", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                    if (isDefault) {
+                        Badge(containerColor = MaterialTheme.colorScheme.tertiary) {
+                            Text("Active", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+
+                Text(
+                    text = "${model.sizeGb} GB",
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            Text(
+                text = model.description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text("RAM: ${model.ramRequiredGb} GB", style = MaterialTheme.typography.labelSmall)
+                Text("Quant: Q4_K_M", style = MaterialTheme.typography.labelSmall)
+                if (model.requiresCharging) {
+                    Text("Needs charging", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                }
+            }
+
+            if (isDownloading) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    LinearProgressIndicator(
+                        progress = { progress / 100f },
+                        modifier = Modifier.fillMaxWidth().testTag("download_progress_${model.id}")
+                    )
+                    Text(
+                        text = "Downloading... $progress%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (model.isInstalled) {
+                    TextButton(onClick = onDelete, modifier = Modifier.testTag("delete_${model.id}")) {
+                        Text("Delete", color = MaterialTheme.colorScheme.error)
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    if (!isDefault) {
+                        OutlinedButton(onClick = onSetDefault, modifier = Modifier.testTag("set_default_${model.id}")) {
+                            Text("Set Default")
+                        }
+                    } else {
+                        FilledTonalButton(onClick = {}, enabled = false) {
+                            Text("Default Model")
+                        }
+                    }
+                } else {
+                    Button(
+                        onClick = onDownload,
+                        enabled = !isDownloading,
+                        modifier = Modifier.testTag("download_${model.id}")
+                    ) {
+                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Download")
+                    }
+                }
+            }
+        }
+    }
+}

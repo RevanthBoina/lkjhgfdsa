@@ -15,7 +15,9 @@ data class ChatMessage(
     val timestamp: Long = System.currentTimeMillis(),
     val stepIndex: Int? = null,
     val action: AniobAction? = null,
-    val isStreaming: Boolean = false
+    val isStreaming: Boolean = false,
+    val badge: String? = null,
+    val provider: String? = null
 )
 
 @Immutable

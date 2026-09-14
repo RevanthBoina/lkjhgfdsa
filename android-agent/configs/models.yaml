@@ -1,0 +1,159 @@
+# Aniob On-Device Models for 8GB RAM Android Phones
+# Research from: https://localaimaster.com/blog/best-local-ai-models-8gb-ram (12 Tested Picks)
+# https://localaimaster.com/vram/best-ollama-models-8gb-vram
+# https://www.promptquorum.com/power-local-llm/mobile-llm-models-phi4-gemma-smollm
+# All models Q4_K_M GGUF - preserves ~95% quality at 1/4 size, standard mobile quant
+
+models:
+  - id: phi4-mini-3.8b-q4
+    name: "Phi-4 Mini 3.8B"
+    display_name: "Phi-4 Mini - Recommended for 8GB+"
+    params: "3.8B"
+    quantization: "Q4_K_M"
+    size_gb: 2.1
+    ram_required_gb: 2.7
+    min_device_ram_gb: 8
+    context_length: 128000
+    license: "MIT"
+    best_for: "reasoning, coding, general chat, smartest small model"
+    description: "Microsoft 3.8B, MMLU 68% HumanEval 70%, 30-50 tok/s CPU, smartest on 8GB+ phones"
+    url: "https://huggingface.co/microsoft/Phi-4-mini-instruct-gguf/resolve/main/phi-4-mini-instruct-q4_k_m.gguf"
+    sha256: ""
+    ollama_command: "ollama pull phi4-mini"
+    requires_charging: false
+    supports_tool_calling: true
+    supports_vision: false
+
+  - id: gemma3-4b-q4
+    name: "Gemma 3 4B"
+    display_name: "Gemma 3 4B - Balanced Default"
+    params: "4B"
+    quantization: "Q4_K_M"
+    size_gb: 2.2
+    ram_required_gb: 2.9
+    min_device_ram_gb: 8
+    context_length: 128000
+    license: "Gemma"
+    best_for: "balanced, efficient, Google, chat"
+    description: "Google 4B, 2.9GB RAM at Q4, fits 8GB+ phones, tight on 6GB use Phi-4 Mini instead"
+    url: "https://huggingface.co/google/gemma-3-4b-it-qat-q4_0-gguf/resolve/main/model.gguf"
+    sha256: ""
+    ollama_command: "ollama pull gemma3:4b"
+    requires_charging: false
+    supports_tool_calling: true
+    supports_vision: false
+
+  - id: llama3.2-3b-q4
+    name: "Llama 3.2 3B"
+    display_name: "Llama 3.2 3B - Tool Calling Workhorse"
+    params: "3.2B"
+    quantization: "Q4_K_M"
+    size_gb: 1.8
+    ram_required_gb: 2.2
+    min_device_ram_gb: 6
+    context_length: 128000
+    license: "Llama 3.2"
+    best_for: "tool calling, function calling, general, fastest 3B"
+    description: "Meta 3.2B, 2.2GB RAM, 25-45 tok/s, best for tool calling, workhorse"
+    url: "https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf"
+    sha256: ""
+    ollama_command: "ollama pull llama3.2:3b"
+    requires_charging: false
+    supports_tool_calling: true
+    supports_vision: false
+
+  - id: qwen3-4b-q4
+    name: "Qwen 3 4B"
+    display_name: "Qwen 3 4B - Multilingual Coding"
+    params: "4B"
+    quantization: "Q4_K_M"
+    size_gb: 2.2
+    ram_required_gb: 2.85
+    min_device_ram_gb: 8
+    context_length: 32000
+    license: "Qwen"
+    best_for: "multilingual, coding, 29+ languages, newest"
+    description: "Alibaba Qwen3 4B, 2.85GB RAM at Q4, 20-28 tok/s, mid-range 6-8GB, 1.7B variant 1.1GB"
+    url: "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/qwen3-4b-q4_k_m.gguf"
+    sha256: ""
+    ollama_command: "ollama pull qwen3:4b"
+    requires_charging: false
+    supports_tool_calling: true
+    supports_vision: false
+
+  - id: qwen2.5-coder-7b-q4
+    name: "Qwen 2.5 Coder 7B"
+    display_name: "Qwen 2.5 Coder 7B - Coding Specialist"
+    params: "7B"
+    quantization: "Q4_K_M"
+    size_gb: 4.7
+    ram_required_gb: 4.7
+    min_device_ram_gb: 8
+    context_length: 128000
+    license: "Qwen"
+    best_for: "coding, debugging, Continue.dev Copilot, HumanEval 88%"
+    description: "Alibaba Coder 7B, 4.7GB RAM, 50 tok/s, gold standard for 8GB laptops, tight on 8GB phones, use plugged in"
+    url: "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m.gguf"
+    sha256: ""
+    ollama_command: "ollama pull qwen2.5-coder:7b"
+    requires_charging: true
+    supports_tool_calling: true
+    supports_vision: false
+
+  - id: mistral-7b-q4
+    name: "Mistral 7B"
+    display_name: "Mistral 7B - Fastest 7B"
+    params: "7.2B"
+    quantization: "Q4_K_M"
+    size_gb: 4.0
+    ram_required_gb: 4.5
+    min_device_ram_gb: 8
+    context_length: 32000
+    license: "Apache 2.0"
+    best_for: "speed, lowest memory 7B, fast chat, summarization"
+    description: "Mistral AI 7B, 4.5GB RAM, 52 tok/s, lowest memory of 7B class, most context headroom on 8GB, Apache 2.0"
+    url: "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/mistral-7b-instruct-v0.3.Q4_K_M.gguf"
+    sha256: ""
+    ollama_command: "ollama pull mistral"
+    requires_charging: true
+    supports_tool_calling: false
+    supports_vision: false
+
+  - id: gemma3-1b-q4
+    name: "Gemma 3 1B"
+    display_name: "Gemma 3 1B - Lightweight"
+    params: "1B"
+    quantization: "Q4_K_M"
+    size_gb: 0.6
+    ram_required_gb: 0.72
+    min_device_ram_gb: 4
+    context_length: 32000
+    license: "Gemma"
+    best_for: "old phones 4GB RAM, iPhone SE, budget"
+    description: "Google 1B, 720MB RAM at Q4, runs on 4GB RAM minimum, only viable for very old phones"
+    url: "https://huggingface.co/google/gemma-3-1b-it-qat-q4_0-gguf/resolve/main/model.gguf"
+    sha256: ""
+    ollama_command: "ollama pull gemma3:1b"
+    requires_charging: false
+    supports_tool_calling: false
+    supports_vision: false
+
+# Default model selection logic based on device RAM
+defaults:
+  ram_4gb: "gemma3-1b-q4"
+  ram_6gb: "llama3.2-3b-q4"
+  ram_8gb: "phi4-mini-3.8b-q4"
+  ram_8gb_coding: "qwen2.5-coder-7b-q4"
+  ram_8gb_balanced: "gemma3-4b-q4"
+
+# Download settings
+download:
+  storage_dir: "filesDir/models"
+  temp_dir: "cache/models_tmp"
+  requires_wifi: true
+  requires_charging_for_7b: true
+  min_free_space_multiplier: 2.0
+  use_workmanager: true
+  resumable: true
+  verify_sha256: true
+  notification_channel: "aniob_model_download"

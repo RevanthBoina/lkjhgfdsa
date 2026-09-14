@@ -3,6 +3,7 @@ package com.aniob.app.provider
 import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.KeyType
 import com.aniob.core.domain.SwipeDirection
+import com.aniob.core.external.AniobCloudLlmProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -21,11 +22,62 @@ class AniobOmniRouteProvider(
     private val apiKey: String,
     private val baseUrl: String = "https://api.omniroute.ai/v1/chat/completions",
     private val model: String = "gpt-4o"
-) {
+) : AniobCloudLlmProvider {
+    override val name: String = "OMNIROUTE_CLOUD"
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
+
+    override suspend fun generate(prompt: String, systemPrompt: String): String = withContext(Dispatchers.IO) {
+        if (apiKey.isBlank()) {
+            return@withContext "Omniroute API key is not configured. Please add it in Settings."
+        }
+        try {
+            val messages = JSONArray().apply {
+                put(JSONObject().apply {
+                    put("role", "system")
+                    put("content", systemPrompt)
+                })
+                put(JSONObject().apply {
+                    put("role", "user")
+                    put("content", prompt)
+                })
+            }
+            val payload = JSONObject().apply {
+                put("model", model)
+                put("messages", messages)
+                put("max_tokens", 1024)
+            }
+            val request = Request.Builder()
+                .url(baseUrl)
+                .addHeader("Authorization", "Bearer $apiKey")
+                .addHeader("Content-Type", "application/json")
+                .post(payload.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+
+            val response = client.newCall(request).execute()
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                return@withContext "Error from Omniroute Cloud (${response.code}): $body"
+            }
+            val rootJson = JSONObject(body)
+            rootJson.getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content")
+        } catch (e: Exception) {
+            "Request failed: ${e.message}"
+        }
+    }
+
+    override suspend fun generateStreaming(
+        prompt: String,
+        systemPrompt: String,
+        onDelta: (String) -> Unit
+    ): String {
+        val result = generate(prompt, systemPrompt)
+        onDelta(result)
+        return result
+    }
 
     suspend fun getNextAction(
         systemPrompt: String,

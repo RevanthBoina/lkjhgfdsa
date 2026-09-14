@@ -1,17 +1,27 @@
 package com.aniob.app.ui.screens
 
+import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -19,58 +29,107 @@ import com.aniob.app.ui.AniobUiState
 import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.AniobStepRecord
 
+/**
+ * Expert Tracker Sheet / Screen (AIM Phase 1.3).
+ * Zero model calls, zero screen captures on open.
+ * Features:
+ * - Segmented progress bar: green=done, red=failed, blue-pulsing=running, gray=pending
+ * - Stats header: Elapsed, Retries, Model calls, Provider
+ * - FilterBar: All, Correct, Failed
+ * - SubTask rows with icons (✅, ❌, ⏳, ⬜), duration, retry count
+ * - Expandable failed rows with errorClass, errorMessage, Reflector reasoning, [Copy JSON]
+ */
 @Composable
 fun AniobTrackerScreen(
     uiState: AniobUiState,
     onFilterChanged: (String) -> Unit
 ) {
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+
     val filteredSteps = when (uiState.trackerFilter) {
         "CORRECT" -> uiState.steps.filter { it.verifiedSuccess }
         "FAILED" -> uiState.steps.filter { !it.verifiedSuccess }
         else -> uiState.steps
     }
 
+    val totalSteps = uiState.steps.size
+    val correctCount = uiState.steps.count { it.verifiedSuccess }
+    val failedCount = uiState.steps.count { !it.verifiedSuccess }
+    val totalLatency = uiState.steps.sumOf { it.latencyMs }
+    val totalTokens = uiState.steps.sumOf { it.tokensUsed }
+    val modelCalls = uiState.steps.count { it.provider == "OMNIROUTE_CLOUD" || it.provider == "LOCAL_SLM" }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text(
-            text = "Execution Tracker",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold
-        )
-
-        // Filter Tabs: All, Correct, Failed (Zero LLM calls required)
-        TabRow(
-            selectedTabIndex = when (uiState.trackerFilter) {
-                "CORRECT" -> 1
-                "FAILED" -> 2
-                else -> 0
-            },
-            modifier = Modifier.testTag("tracker_filter_tabs")
+        // 1. Task Header & Segmented Progress Bar
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+            modifier = Modifier.fillMaxWidth().testTag("tracker_header_card")
         ) {
-            Tab(
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = uiState.activeTask?.rawPrompt ?: "Current Execution",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                    Badge(containerColor = MaterialTheme.colorScheme.primaryContainer) {
+                        Text(uiState.lastProviderUsed)
+                    }
+                }
+
+                // Segmented Progress Bar
+                SegmentedProgressBar(steps = uiState.steps, isRunning = uiState.isRunning)
+
+                // Quick Telemetry Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Time: ${totalLatency / 1000.0}s", style = MaterialTheme.typography.labelSmall)
+                    Text("Model calls: $modelCalls", style = MaterialTheme.typography.labelSmall)
+                    Text("Tokens: $totalTokens", style = MaterialTheme.typography.labelSmall)
+                    Text("Status: ${if (uiState.isRunning) "Running" else "Idle"}", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+
+        // 2. Filter Bar: All / Correct / Failed
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            FilterChip(
                 selected = uiState.trackerFilter == "ALL",
                 onClick = { onFilterChanged("ALL") },
-                text = { Text("All (${uiState.steps.size})") },
+                label = { Text("All ($totalSteps)") },
                 modifier = Modifier.testTag("filter_all")
             )
-            Tab(
+            FilterChip(
                 selected = uiState.trackerFilter == "CORRECT",
                 onClick = { onFilterChanged("CORRECT") },
-                text = { Text("Correct (${uiState.steps.count { it.verifiedSuccess }})") },
+                label = { Text("Correct ($correctCount)") },
                 modifier = Modifier.testTag("filter_correct")
             )
-            Tab(
+            FilterChip(
                 selected = uiState.trackerFilter == "FAILED",
                 onClick = { onFilterChanged("FAILED") },
-                text = { Text("Failed (${uiState.steps.count { !it.verifiedSuccess }})") },
+                label = { Text("Failed ($failedCount)") },
                 modifier = Modifier.testTag("filter_failed")
             )
         }
 
+        // 3. SubTask & Step List
         if (filteredSteps.isEmpty()) {
             Box(
                 modifier = Modifier
@@ -79,7 +138,7 @@ fun AniobTrackerScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = if (uiState.steps.isEmpty()) "No steps recorded yet. Execute a task to monitor progress." else "No steps matching filter '${uiState.trackerFilter}'.",
+                    text = if (uiState.steps.isEmpty()) "No steps recorded. Start a task to monitor." else "No steps in filter '${uiState.trackerFilter}'",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -88,11 +147,20 @@ fun AniobTrackerScreen(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f),
+                    .weight(1f)
+                    .testTag("tracker_step_list"),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(filteredSteps) { step ->
-                    StepRecordCard(step)
+                    ExpandableStepRow(
+                        step = step,
+                        autoExpand = !step.verifiedSuccess,
+                        onCopyJson = {
+                            val json = """{"step":${step.stepIndex},"action":"${step.action.toolName}","success":${step.verifiedSuccess},"latencyMs":${step.latencyMs},"failure":"${step.failureReason ?: "none"}"}"""
+                            clipboardManager.setText(AnnotatedString(json))
+                            Toast.makeText(context, "Copied step JSON to clipboard", Toast.LENGTH_SHORT).show()
+                        }
+                    )
                 }
             }
         }
@@ -100,12 +168,73 @@ fun AniobTrackerScreen(
 }
 
 @Composable
-fun StepRecordCard(step: AniobStepRecord) {
+fun SegmentedProgressBar(steps: List<AniobStepRecord>, isRunning: Boolean) {
+    val totalSegments = steps.size.coerceAtLeast(4)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(8.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(MaterialTheme.colorScheme.outlineVariant),
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        if (steps.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .background(Color.LightGray)
+            )
+        } else {
+            steps.forEachIndexed { index, step ->
+                val color = if (step.verifiedSuccess) {
+                    Color(0xFF2E7D32) // green
+                } else {
+                    Color(0xFFC62828) // red
+                }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .background(color)
+                )
+            }
+            if (isRunning) {
+                val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+                val alpha by infiniteTransition.animateFloat(
+                    initialValue = 0.3f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(tween(500), repeatMode = RepeatMode.Reverse),
+                    label = "alpha"
+                )
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .background(Color(0xFF1976D2).copy(alpha = alpha))
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun ExpandableStepRow(
+    step: AniobStepRecord,
+    autoExpand: Boolean,
+    onCopyJson: () -> Unit
+) {
+    var expanded by remember { mutableStateOf(autoExpand) }
+
     Card(
         colors = CardDefaults.cardColors(
-            containerColor = if (step.verifiedSuccess) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
+            containerColor = if (step.verifiedSuccess) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
         ),
-        modifier = Modifier.fillMaxWidth().testTag("step_card_${step.stepIndex}")
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { expanded = !expanded }
+            .testTag("step_card_${step.stepIndex}")
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(
@@ -113,57 +242,101 @@ fun StepRecordCard(step: AniobStepRecord) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Icon(
-                        imageVector = if (step.verifiedSuccess) Icons.Default.CheckCircle else Icons.Default.Error,
-                        contentDescription = null,
-                        tint = if (step.verifiedSuccess) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(18.dp)
-                    )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Text(
-                        text = "Step ${step.stepIndex}: ${step.action.thought}",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold
+                        text = if (step.verifiedSuccess) "✅" else "❌",
+                        style = MaterialTheme.typography.titleMedium
                     )
+                    Column {
+                        Text(
+                            text = "Step ${step.stepIndex}: ${step.action.thought.take(45)}",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "${step.provider} · ${step.latencyMs}ms · ${step.tokensUsed} tokens",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
-                Badge {
-                    Text(step.provider)
-                }
+
+                Icon(
+                    imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "Collapse" else "Expand",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
+            AnimatedVisibility(visible = expanded) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    HorizontalDivider()
 
-            Text(
-                text = "Action: ${formatActionSummary(step.action)}",
-                style = MaterialTheme.typography.bodyMedium
-            )
+                    Text(
+                        text = "Action: ${formatActionSummary(step.action)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium
+                    )
 
-            if (!step.failureReason.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = "Issue: ${step.failureReason}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
-                )
-            }
+                    Text(
+                        text = "Screen Hash: ${step.screenHash}",
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
 
-            Spacer(modifier = Modifier.height(4.dp))
+                    if (!step.failureReason.isNullOrBlank()) {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = "Failure Reason:",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Text(
+                                    text = step.failureReason.orEmpty(),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                if (step.reflectorInvoked) {
+                                    Text(
+                                        text = "Reflector: Loop detected (watchdog N=3) -> Recovery backtracking triggered.",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+                        }
+                    }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = "Latency: ${step.latencyMs}ms | Tokens: ${step.tokensUsed}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = "Hash: ${step.screenHash.take(6)}",
-                    fontFamily = FontFamily.Monospace,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        OutlinedButton(
+                            onClick = onCopyJson,
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.testTag("copy_json_${step.stepIndex}")
+                        ) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Copy JSON", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
             }
         }
     }

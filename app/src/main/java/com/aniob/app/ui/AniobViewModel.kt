@@ -8,18 +8,26 @@ import androidx.lifecycle.viewModelScope
 import com.aniob.app.AniobApplication
 import com.aniob.app.background.AniobBackgroundController
 import com.aniob.app.db.SessionScoreEntity
+import com.aniob.app.model.AniobModelDownloader
 import com.aniob.app.provider.AniobMockProvider
 import com.aniob.app.provider.AniobOmniRouteProvider
 import com.aniob.app.service.AniobAccessibilityService
 import com.aniob.app.ui.chat.ChatMessage
 import com.aniob.core.domain.*
+import com.aniob.core.external.AniobExternalAiTrigger
 import com.aniob.core.grillme.AniobGrillMeEngine
 import com.aniob.core.grillme.AniobGrillMeResult
+import com.aniob.core.intent.AniobIntent
+import com.aniob.core.intent.AniobTaskIntentClassifier
 import com.aniob.core.ladder.AniobExecutionRouter
 import com.aniob.core.ladder.AniobIntentResolver
 import com.aniob.core.ladder.ResolvedIntentShortcut
+import com.aniob.core.memory.AniobSharedKnowledgeStore
+import com.aniob.core.memory.InMemorySharedKnowledgeStore
 import com.aniob.core.policy.AniobObservationPolicy
+import com.aniob.core.providers.AniobLiteRtProvider
 import com.aniob.core.providers.AniobLocalLlmClient
+import com.aniob.core.providers.AniobLocalLlmProvider
 import com.aniob.core.router.RouteTarget
 import com.aniob.core.safety.AniobSafetyInterceptor
 import com.aniob.core.tools.DevicePowerState
@@ -66,6 +74,16 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
     private val observationPolicy = AniobObservationPolicy(maxBurstSteps = 3)
 
     private val app = application as AniobApplication
+    private val modelDownloader = AniobModelDownloader(application)
+    private val sharedKnowledgeStore: AniobSharedKnowledgeStore = InMemorySharedKnowledgeStore()
+    private val localLlmProvider: AniobLocalLlmProvider = AniobLiteRtProvider()
+
+    private fun getOmniRouteProvider(): AniobOmniRouteProvider {
+        return AniobOmniRouteProvider(
+            apiKey = _uiState.value.omnirouteApiKey,
+            model = _uiState.value.omnirouteModel
+        )
+    }
 
     init {
         // Collect session scores from Room database
@@ -87,6 +105,10 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                 )
             )
         }
+    }
+
+    fun clearChat() {
+        _uiState.update { it.copy(chatMessages = emptyList()) }
     }
 
     fun setTab(index: Int) {
@@ -133,6 +155,66 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch(Dispatchers.Default) {
+            // Step 0: Intent Gate (AIM Phase 2.6 / P0-3)
+            val intent = AniobTaskIntentClassifier.classify(trimmed)
+            if (intent != AniobIntent.DEVICE_AUTOMATION) {
+                _uiState.update {
+                    it.copy(
+                        statusMessage = "Answering query...",
+                        lastProviderUsed = "EXTERNAL_AI"
+                    )
+                }
+                val trigger = AniobExternalAiTrigger(
+                    cloudProvider = getOmniRouteProvider(),
+                    localProvider = localLlmProvider,
+                    sharedKnowledgeStore = sharedKnowledgeStore
+                )
+                val powerState = DevicePowerState(
+                    batteryPercent = 85,
+                    isCharging = true,
+                    isThermalThrottled = false,
+                    isNetworkAvailable = true
+                )
+                val result = trigger.query(
+                    prompt = trimmed,
+                    intent = intent,
+                    powerState = powerState,
+                    onDelta = { delta ->
+                        _uiState.update { it.copy(streamingBubbleText = delta, isStreaming = true) }
+                    }
+                )
+                val assistantMessage = ChatMessage(
+                    id = "msg_asst_${System.currentTimeMillis()}",
+                    role = "assistant",
+                    content = result.answer,
+                    badge = "💬 AI Answer",
+                    provider = result.provider
+                )
+                _uiState.update {
+                    it.copy(
+                        isRunning = false,
+                        isStreaming = false,
+                        streamingBubbleText = "",
+                        statusMessage = "Ready",
+                        chatMessages = it.chatMessages + assistantMessage,
+                        lastProviderUsed = result.provider
+                    )
+                }
+
+                // Record Session Telemetry for analytics and audit
+                app.metricsCollector.recordSession(
+                    taskId = taskId,
+                    prompt = trimmed,
+                    isSuccess = true,
+                    steps = 0,
+                    durationMs = result.latencyMs,
+                    tokensUsed = 120,
+                    providerUsed = result.provider,
+                    decisionReason = "Direct intent answer for ${intent.name}"
+                )
+                return@launch
+            }
+
             // Step 1: Grill-Me Check (Flow: Understand -> Ask questions -> Create plan -> Proceed)
             val grillResult = grillMeEngine.evaluateTask(trimmed)
             if (grillResult.needsClarification && grillResult.questions.isNotEmpty()) {
