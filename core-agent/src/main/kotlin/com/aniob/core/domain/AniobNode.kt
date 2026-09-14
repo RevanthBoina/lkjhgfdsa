@@ -24,26 +24,12 @@ data class AniobNode(
     val height: Int get() = bounds.bottom - bounds.top
 
     /**
-     * Compact single-line representation formatted for LLM token efficiency.
-     * Example: [1] Button "Search" (100, 200, 300, 250) {Clickable}
+     * Compact single-line Set-of-Mark representation formatted for LLM token efficiency
+     * (Skyvern fovea/SoM pattern). id is a clean 1-based sequential index post-optimize.
+     * Example: [1] android.widget.Button text='Search' contentDesc='' bounds=[100,200,300,250] clickable=true
      */
     fun toOptimizedTokenString(): String {
-        val label = when {
-            text.isNotBlank() && contentDescription.isNotBlank() -> "\"$text\" / \"$contentDescription\""
-            text.isNotBlank() -> "\"$text\""
-            contentDescription.isNotBlank() -> "\"$contentDescription\""
-            viewId.isNotBlank() -> "[id: ${viewId.substringAfterLast('/')}]"
-            else -> "<icon>"
-        }
-        val simpleClass = className.substringAfterLast('.')
-        val traits = buildList {
-            if (isClickable) add("Clickable")
-            if (isEditable) add("Editable")
-            if (isScrollable) add("Scrollable")
-            if (isSelected) add("Selected")
-        }.joinToString(",")
-
-        return "[$id] $simpleClass $label (${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}) {$traits}"
+        return "[$id] $className text='$text' contentDesc='$contentDescription' bounds=[${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}] clickable=$isClickable"
     }
 }
 

@@ -47,6 +47,52 @@ class AniobAutoRouterTest {
     }
 
     @Test
+    fun testTwoUnlabelledPlusVisionWordingRoutesToCloud() {
+        val unlabelledNodes = (1..3).map { id ->
+            AniobNode(id = id, className = "ImageView", text = "", contentDescription = "", isClickable = true, bounds = AniobRect(id * 50, 0, id * 50 + 40, 100))
+        }
+        val screen = AniobScreenState(packageName = "com.test.app", nodes = unlabelledNodes)
+        val power = DevicePowerState(batteryPercent = 80, isNetworkAvailable = true)
+
+        // unlabelled=3 >= 2 && task mentions icon -> needs vision
+        val decision = AniobAutoRouter.decideRoute("Identify the icon and tap it", screen, power)
+        assertEquals(RouteTarget.OMNIROUTE_CLOUD, decision.target)
+        assertTrue(decision.requiresVision)
+        assertTrue(decision.reason.contains("unlabelled 3"))
+        assertTrue(decision.reason.contains("canvas false"))
+    }
+
+    @Test
+    fun testUnlabelledBelowFiveWithoutVisionWordingStaysLocal() {
+        // 3 unlabelled icons but no vision wording -> Skyvern: do NOT trigger cloud for every icon
+        val unlabelledNodes = (1..3).map { id ->
+            AniobNode(id = id, className = "ImageView", text = "", contentDescription = "", isClickable = true, bounds = AniobRect(id * 50, 0, id * 50 + 40, 100))
+        }
+        val screen = AniobScreenState(packageName = "com.test.app", nodes = unlabelledNodes)
+        val power = DevicePowerState(batteryPercent = 80, isNetworkAvailable = true)
+
+        val decision = AniobAutoRouter.decideRoute("Open the first item", screen, power)
+        assertEquals(RouteTarget.LOCAL_SLM, decision.target)
+    }
+
+    @Test
+    fun testCanvasNodePlusVisionWordingRoutesToCloud() {
+        val screen = AniobScreenState(
+            packageName = "com.test.app",
+            nodes = listOf(
+                AniobNode(id = 1, className = "android.view.SurfaceView", text = "", contentDescription = "", isClickable = false, bounds = AniobRect(0, 0, 200, 400)),
+                AniobNode(id = 2, className = "android.widget.Button", text = "Cancel", isClickable = true, bounds = AniobRect(0, 420, 80, 440))
+            )
+        )
+        val power = DevicePowerState(batteryPercent = 80, isNetworkAvailable = true)
+
+        val decision = AniobAutoRouter.decideRoute("What picture is on the canvas", screen, power)
+        assertEquals(RouteTarget.OMNIROUTE_CLOUD, decision.target)
+        assertTrue(decision.requiresVision)
+        assertTrue(decision.reason.contains("canvas true"))
+    }
+
+    @Test
     fun testSimpleTextNavRoutesToLocalSLM() {
         val textNodes = (1..10).map { id ->
             AniobNode(id = id, className = "TextView", text = "Item $id", isClickable = true, bounds = AniobRect(0, id * 50, 200, id * 50 + 40))
