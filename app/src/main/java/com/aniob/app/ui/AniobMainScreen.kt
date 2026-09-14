@@ -63,7 +63,16 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                             // Model selector chip button
                             AssistChip(
                                 onClick = { currentScreen = AniobScreen.MODELS },
-                                label = { Text(uiState.omnirouteModel.ifBlank { "Local SLM" }) },
+                                label = {
+                                    val chipLabel = when (uiState.autoRouterMode) {
+                                        "local-first" -> "Local-First"
+                                        "local-only" -> "Local-Only"
+                                        "cloud-only" -> "Cloud-Only"
+                                        "balanced" -> "Balanced"
+                                        else -> "Auto"
+                                    }
+                                    Text(chipLabel)
+                                },
                                 leadingIcon = {
                                     Icon(Icons.Default.Memory, contentDescription = null, modifier = Modifier.size(16.dp))
                                 },
@@ -183,6 +192,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
             AniobSettingsScreen(
                 uiState = uiState,
                 onSaveSettings = { key, model -> viewModel.updateSettings(key, model) },
+                onAutoRouterModeChanged = { mode -> viewModel.setAutoRouterMode(mode) },
                 onBack = { currentScreen = AniobScreen.CHAT },
                 onNavigateToModels = { currentScreen = AniobScreen.MODELS },
                 onNavigateToStats = { currentScreen = AniobScreen.STATS },

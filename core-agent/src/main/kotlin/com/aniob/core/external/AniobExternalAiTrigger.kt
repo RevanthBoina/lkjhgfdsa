@@ -36,13 +36,21 @@ class AniobExternalAiTrigger(
         prompt: String,
         intent: AniobIntent,
         powerState: DevicePowerState,
+        autoMode: String = "auto",
         onDelta: (String) -> Unit = {}
     ): ExternalAiResult {
         val startMs = System.currentTimeMillis()
 
         // VAULT_QUERY -> check SharedKnowledgeStore first
         if (intent == AniobIntent.VAULT_QUERY) {
-            val vaultResult = sharedKnowledgeStore.get(prompt.lowercase())
+            val lower = prompt.lowercase()
+            var vaultResult = sharedKnowledgeStore.get(lower)
+            if (vaultResult == null) {
+                val all = sharedKnowledgeStore.getAll()
+                vaultResult = all.entries.firstOrNull { (k, _) ->
+                    lower.contains(k) || k.contains(lower)
+                }?.value
+            }
             if (vaultResult != null) {
                 onDelta(vaultResult)
                 return ExternalAiResult(
@@ -76,14 +84,42 @@ class AniobExternalAiTrigger(
         var fullAnswer = ""
         val chosenProviderName: String
 
-        if (powerState.isNetworkAvailable && cloudProvider != null) {
-            chosenProviderName = cloudProvider.name
+        val isLocalReady = localProvider != null && localProvider.isAvailable()
+        val isCloudReady = powerState.isNetworkAvailable && cloudProvider != null
+
+        val useLocal = when (autoMode.lowercase()) {
+            "local-only" -> isLocalReady
+            "cloud-only" -> false
+            "local-first" -> isLocalReady || !isCloudReady
+            "balanced", "auto" -> {
+                if (!powerState.isNetworkAvailable) {
+                    isLocalReady
+                } else if (powerState.batteryPercent < 15 && !powerState.isCharging) {
+                    false // low battery -> cloud
+                } else if (intent == AniobIntent.KNOWLEDGE_QA && isLocalReady) {
+                    true // For KNOWLEDGE_QA simple -> local Phi-4 Mini is smartest 3.8B MMLU 68%
+                } else if (isCloudReady) {
+                    false // for web research -> cloud
+                } else {
+                    isLocalReady
+                }
+            }
+            else -> !isCloudReady && isLocalReady
+        }
+
+        if (useLocal && isLocalReady) {
+            chosenProviderName = "LOCAL_SLM"
+            fullAnswer = localProvider!!.chatStreaming(prompt) { delta ->
+                onDelta(delta)
+            }
+        } else if (isCloudReady) {
+            chosenProviderName = cloudProvider!!.name
             fullAnswer = cloudProvider.generateStreaming(prompt, systemPrompt) { delta ->
                 onDelta(delta)
             }
-        } else if (localProvider != null && localProvider.isAvailable()) {
+        } else if (isLocalReady) {
             chosenProviderName = "LOCAL_SLM"
-            fullAnswer = localProvider.chatStreaming(prompt) { delta ->
+            fullAnswer = localProvider!!.chatStreaming(prompt) { delta ->
                 onDelta(delta)
             }
         } else {

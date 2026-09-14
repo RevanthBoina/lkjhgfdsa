@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -25,6 +26,7 @@ import com.aniob.app.ui.AniobUiState
 fun AniobSettingsScreen(
     uiState: AniobUiState,
     onSaveSettings: (String, String) -> Unit,
+    onAutoRouterModeChanged: (String) -> Unit = {},
     onBack: () -> Unit = {},
     onNavigateToModels: () -> Unit = {},
     onNavigateToStats: () -> Unit = {},
@@ -35,6 +37,7 @@ fun AniobSettingsScreen(
     var selectedModel by remember { mutableStateOf(uiState.omnirouteModel) }
     var fastPathEnabled by remember { mutableStateOf(true) }
     var safetyGateEnabled by remember { mutableStateOf(true) }
+    var autoRouterMode by remember { mutableStateOf(uiState.autoRouterMode) }
 
     Scaffold(
         topBar = {
@@ -56,6 +59,60 @@ fun AniobSettingsScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // AutoRouter Mode Section (Phase 3.3)
+            Card(modifier = Modifier.fillMaxWidth().testTag("card_autorouter_mode")) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "AutoRouter Execution Policy",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "Controls whether tasks execute locally on-device or escalate to Omniroute cloud.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    val modes = listOf(
+                        Triple("auto", "Auto (Recommended)", "Smart local-first, cloud when battery/vision requires"),
+                        Triple("local-first", "Local-First", "Prefer on-device, cloud only for vision/complex"),
+                        Triple("local-only", "Local-Only", "Never use cloud, offline mode, fail if impossible"),
+                        Triple("cloud-only", "Cloud-Only", "Always use cloud (Omniroute)"),
+                        Triple("balanced", "Balanced", "Local for simple tasks, cloud for research/creative")
+                    )
+
+                    modes.forEach { (modeKey, modeTitle, modeDesc) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    autoRouterMode = modeKey
+                                    onAutoRouterModeChanged(modeKey)
+                                }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = (autoRouterMode == modeKey),
+                                onClick = {
+                                    autoRouterMode = modeKey
+                                    onAutoRouterModeChanged(modeKey)
+                                },
+                                modifier = Modifier.testTag("radio_mode_$modeKey")
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(modeTitle, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                                Text(modeDesc, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
             // Quick Navigation Shortcuts Card
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),

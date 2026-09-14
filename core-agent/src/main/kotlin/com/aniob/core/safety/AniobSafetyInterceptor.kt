@@ -14,12 +14,13 @@ import com.aniob.core.tools.AniobSafetyGate
 object AniobSafetyInterceptor {
 
     private val OTP_PATTERN = Regex("\\b\\d{4,6}\\b")
-    private val FINANCIAL_KEYWORDS = Regex("(?i)(?:pay|purchase|checkout|transaction|credit\\s*card|debit\\s*card|cvv|upi://|wallet|bank\\s*transfer|billing)")
+    private val FINANCIAL_KEYWORDS = Regex("(?i)(?:pay|purchase|checkout|payment|transaction|credit\\s*card|debit\\s*card|cvv|upi://|wallet|bank\\s*transfer|billing|password|otp)")
     private val DESTRUCTIVE_KEYWORDS = Regex("(?i)(?:delete\\s*account|erase\\s*all|factory\\s*reset|format\\s*storage|wipe\\s*data)")
     private val MESSAGE_SEND_KEYWORDS = Regex("(?i)(?:send\\s*sms|send\\s*message|delete\\s*file|transfer\\s*funds)")
 
     // Dynamic pattern for billing permission prevention without tripping static string scanners
     private val BLOCKED_PERMISSIONS = setOf("com.android.vending." + "BILLING")
+    val EXACT_BLOCKLIST = listOf("com.android.vending.BILLING", "upi://", "pay", "checkout", "purchase", "payment", "transaction", "otp", "password", "cvv")
 
     // Never-retry fingerprint cache
     private val blockedFingerprints = mutableSetOf<String>()

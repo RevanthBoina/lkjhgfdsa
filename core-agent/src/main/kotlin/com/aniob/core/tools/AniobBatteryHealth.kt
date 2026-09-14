@@ -7,12 +7,13 @@ data class DevicePowerState(
     val batteryPercent: Int = 100,
     val isCharging: Boolean = true,
     val isThermalThrottled: Boolean = false,
-    val isNetworkAvailable: Boolean = true
+    val isNetworkAvailable: Boolean = true,
+    val totalRamGb: Int = 8
 )
 
 object AniobBatteryHealth {
 
-    const val CRITICAL_BATTERY_THRESHOLD = 20
+    const val CRITICAL_BATTERY_THRESHOLD = 15
 
     /**
      * Determines whether compute should be offloaded to cloud to save device battery & thermal budget.

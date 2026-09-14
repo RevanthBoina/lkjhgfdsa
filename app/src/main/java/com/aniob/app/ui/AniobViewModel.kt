@@ -1,6 +1,7 @@
 package com.aniob.app.ui
 
 import android.app.Application
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
@@ -12,6 +13,7 @@ import com.aniob.app.model.AniobModelDownloader
 import com.aniob.app.provider.AniobMockProvider
 import com.aniob.app.provider.AniobOmniRouteProvider
 import com.aniob.app.service.AniobAccessibilityService
+import com.aniob.app.telemetry.AniobDeviceTelemetry
 import com.aniob.app.ui.chat.ChatMessage
 import com.aniob.core.domain.*
 import com.aniob.core.external.AniobExternalAiTrigger
@@ -30,9 +32,11 @@ import com.aniob.core.providers.AniobLocalLlmClient
 import com.aniob.core.providers.AniobLocalLlmProvider
 import com.aniob.core.router.RouteTarget
 import com.aniob.core.safety.AniobSafetyInterceptor
+import com.aniob.core.skills.AniobSemanticSkillMatcher
 import com.aniob.core.tools.DevicePowerState
 import com.aniob.core.verifier.AniobWatchdog
 import com.aniob.core.verifier.DeterministicVerifier
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -54,7 +58,9 @@ data class AniobUiState(
     val chatMessages: List<ChatMessage> = emptyList(),
     val omnirouteApiKey: String = "",
     val omnirouteModel: String = "gpt-4o",
+    val autoRouterMode: String = "auto", // auto, local-first, local-only, cloud-only, balanced
     val statusMessage: String = "Ready",
+    val lastRoutingReason: String = "Ready",
     val lastProviderUsed: String = "NONE",
     val sessionScores: List<SessionScoreEntity> = emptyList(),
     val streamingBubbleText: String = "",
@@ -66,12 +72,14 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow(AniobUiState())
     val uiState: StateFlow<AniobUiState> = _uiState.asStateFlow()
 
+    private val semanticSkillMatcher = AniobSemanticSkillMatcher()
     private val grillMeEngine = AniobGrillMeEngine()
-    private val executionRouter = AniobExecutionRouter()
+    private val executionRouter = AniobExecutionRouter(semanticSkillMatcher = semanticSkillMatcher)
     private val mockProvider = AniobMockProvider()
     private val localLlmClient = AniobLocalLlmClient.getEngine()
     private val watchdog = AniobWatchdog(loopThreshold = 3)
     private val observationPolicy = AniobObservationPolicy(maxBurstSteps = 3)
+    private var localFailCount = 0
 
     private val app = application as AniobApplication
     private val modelDownloader = AniobModelDownloader(application)
@@ -86,6 +94,19 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
+        val prefs = app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
+        val savedApiKey = prefs.getString("omniroute_api_key", "") ?: ""
+        val savedModel = prefs.getString("omniroute_model", "gpt-4o") ?: "gpt-4o"
+        val savedMode = prefs.getString("autorouter_mode", "auto") ?: "auto"
+
+        _uiState.update {
+            it.copy(
+                omnirouteApiKey = savedApiKey,
+                omnirouteModel = savedModel,
+                autoRouterMode = savedMode
+            )
+        }
+
         // Collect session scores from Room database
         viewModelScope.launch {
             app.metricsCollector.getSessionScores().collect { scores ->
@@ -123,7 +144,15 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(showTrackerSheet = show) }
     }
 
+    fun setAutoRouterMode(mode: String) {
+        val prefs = app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("autorouter_mode", mode).apply()
+        _uiState.update { it.copy(autoRouterMode = mode) }
+    }
+
     fun updateSettings(apiKey: String, model: String) {
+        val prefs = app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("omniroute_api_key", apiKey).putString("omniroute_model", model).apply()
         _uiState.update { it.copy(omnirouteApiKey = apiKey, omnirouteModel = model) }
     }
 
@@ -169,16 +198,15 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                     localProvider = localLlmProvider,
                     sharedKnowledgeStore = sharedKnowledgeStore
                 )
-                val powerState = DevicePowerState(
-                    batteryPercent = 85,
-                    isCharging = true,
-                    isThermalThrottled = false,
-                    isNetworkAvailable = true
-                )
+                val powerState = AniobDeviceTelemetry.getRealState(app)
+                val prefs = app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
+                val autoMode = prefs.getString("autorouter_mode", "auto") ?: "auto"
+
                 val result = trigger.query(
                     prompt = trimmed,
                     intent = intent,
                     powerState = powerState,
+                    autoMode = autoMode,
                     onDelta = { delta ->
                         _uiState.update { it.copy(streamingBubbleText = delta, isStreaming = true) }
                     }
@@ -196,6 +224,7 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                         isStreaming = false,
                         streamingBubbleText = "",
                         statusMessage = "Ready",
+                        lastRoutingReason = "Answered via ${result.provider}",
                         chatMessages = it.chatMessages + assistantMessage,
                         lastProviderUsed = result.provider
                     )
@@ -303,13 +332,22 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                     screenBefore
                 }
 
-                // Evaluate Execution Ladder
+                // Evaluate Execution Ladder with real power state and on-device model status
+                val powerState = AniobDeviceTelemetry.getRealState(app)
+                val installedModelId = modelDownloader.getDefaultModelId()
+                val installedFileExists = installedModelId?.let { File(modelDownloader.getModelsDir(), "$it.gguf").exists() } == true
+                val effectiveModelId = if (installedFileExists) installedModelId else null
+                val isModelFileMissing = installedModelId != null && !installedFileExists
+
                 val ladderResult = executionRouter.planStep(
                     taskPrompt = task.clarifiedGoal,
                     screenState = currentScreen,
                     stepIndex = currentStep,
                     taskSignature = task.rawPrompt.lowercase(),
-                    powerState = DevicePowerState(batteryPercent = 85, isCharging = true, isNetworkAvailable = true)
+                    powerState = powerState,
+                    installedModelId = effectiveModelId,
+                    lastLocalFailCount = localFailCount,
+                    isModelFileMissing = isModelFileMissing
                 )
 
                 val stepStartTime = System.currentTimeMillis()
@@ -432,7 +470,13 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         decisionReason = decision.reason
 
-                        _uiState.update { it.copy(statusMessage = "Routed to $primaryProvider: ${decision.reason}") }
+                        _uiState.update {
+                            it.copy(
+                                statusMessage = "Routed to $primaryProvider: ${decision.reason}",
+                                lastRoutingReason = decision.reason,
+                                lastProviderUsed = primaryProvider
+                            )
+                        }
 
                         // Invoke provider (Local LiteRT, Omniroute Cloud, or Mock fallback)
                         val action = if (decision.target == RouteTarget.LOCAL_SLM && localLlmClient.isModelLoaded()) {
@@ -486,6 +530,11 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                         val verification = DeterministicVerifier.verify(action, currentScreen, screenAfter)
                         observationPolicy.recordActionOutcome(action, currentScreen.packageName, verification.isSuccessful)
 
+                        val stepSuccess = verification.isSuccessful && !loopDetected
+                        if (primaryProvider == "LOCAL_SLM") {
+                            if (stepSuccess) localFailCount = 0 else localFailCount++
+                        }
+
                         val stepRecord = AniobStepRecord(
                             stepIndex = currentStep + 1,
                             screenHash = currentScreen.treeHash,
@@ -493,7 +542,7 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                             provider = primaryProvider,
                             latencyMs = System.currentTimeMillis() - stepStartTime,
                             tokensUsed = if (primaryProvider == "OMNIROUTE_CLOUD") 150 else 0,
-                            verifiedSuccess = verification.isSuccessful && !loopDetected,
+                            verifiedSuccess = stepSuccess,
                             failureReason = if (loopDetected) "Watchdog loop detected (N=3 repeated action)" else if (!verification.isSuccessful) verification.explanation else null,
                             reflectorInvoked = loopDetected
                         )
@@ -523,7 +572,7 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
         val assistantMessage = ChatMessage(
             id = "msg_asst_${System.currentTimeMillis()}",
             role = "assistant",
-            content = "Completed '$task' via $primaryProvider. $resultSummary",
+            content = "Completed '${task.rawPrompt}' via $primaryProvider. $resultSummary",
             stepIndex = currentStep + 1
         )
 

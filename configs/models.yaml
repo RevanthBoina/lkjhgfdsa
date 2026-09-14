@@ -138,6 +138,25 @@ models:
     supports_tool_calling: false
     supports_vision: false
 
+  - id: nomic-embed-text
+    name: "nomic-embed-text"
+    display_name: "nomic-embed-text - Semantic Retrieval"
+    params: "137M"
+    quantization: "Q4_K_M"
+    size_gb: 0.3
+    ram_required_gb: 2.0
+    min_device_ram_gb: 6
+    context_length: 8192
+    license: "Apache 2.0"
+    best_for: "embeddings, semantic search, memory RAG, skill matching"
+    description: "Nomic 137M, 8K context, high speed embeddings for vector similarity search"
+    url: "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf"
+    sha256: ""
+    ollama_command: "ollama pull nomic-embed-text"
+    requires_charging: false
+    supports_tool_calling: false
+    supports_vision: false
+
 # Default model selection logic based on device RAM
 defaults:
   ram_4gb: "gemma3-1b-q4"

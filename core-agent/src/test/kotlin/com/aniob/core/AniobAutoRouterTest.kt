@@ -34,15 +34,14 @@ class AniobAutoRouterTest {
 
     @Test
     fun testVisionNeedRoutesToOmnirouteCloud() {
-        // Create screen with unlabelled clickable nodes (icons without text)
-        val unlabelledNodes = listOf(
-            AniobNode(id = 1, className = "ImageView", text = "", contentDescription = "", isClickable = true, bounds = AniobRect(0, 0, 100, 100)),
-            AniobNode(id = 2, className = "ImageView", text = "", contentDescription = "", isClickable = true, bounds = AniobRect(100, 0, 200, 100))
-        )
+        // Screen with >= 5 unlabelled clickable nodes AND vision task wording
+        val unlabelledNodes = (1..6).map { id ->
+            AniobNode(id = id, className = "ImageView", text = "", contentDescription = "", isClickable = true, bounds = AniobRect(id * 50, 0, id * 50 + 40, 100))
+        }
         val screen = AniobScreenState(packageName = "com.test.app", nodes = unlabelledNodes)
         val power = DevicePowerState(batteryPercent = 80, isNetworkAvailable = true)
 
-        val decision = AniobAutoRouter.decideRoute("Click profile icon", screen, power)
+        val decision = AniobAutoRouter.decideRoute("Look at the photo on screen and tap icon", screen, power)
         assertEquals(RouteTarget.OMNIROUTE_CLOUD, decision.target)
         assertTrue(decision.requiresVision)
     }
@@ -57,5 +56,35 @@ class AniobAutoRouterTest {
 
         val decision = AniobAutoRouter.decideRoute("Select item 3", screen, power)
         assertEquals(RouteTarget.LOCAL_SLM, decision.target)
+    }
+
+    @Test
+    fun testMissingModelFileEscalatesToCloud() {
+        val screen = AniobScreenState(packageName = "com.test.app")
+        val power = DevicePowerState(batteryPercent = 80, isNetworkAvailable = true)
+
+        val decision = AniobAutoRouter.decideRoute(
+            taskPrompt = "Search notes",
+            screenState = screen,
+            powerState = power,
+            isModelFileMissing = true
+        )
+        assertEquals(RouteTarget.OMNIROUTE_CLOUD, decision.target)
+        assertTrue(decision.reason.contains("missing", ignoreCase = true))
+    }
+
+    @Test
+    fun testLocalFailureEscalationToCloud() {
+        val screen = AniobScreenState(packageName = "com.test.app")
+        val power = DevicePowerState(batteryPercent = 80, isNetworkAvailable = true)
+
+        val decision = AniobAutoRouter.decideRoute(
+            taskPrompt = "Open settings",
+            screenState = screen,
+            powerState = power,
+            lastLocalFailCount = 2
+        )
+        assertEquals(RouteTarget.OMNIROUTE_CLOUD, decision.target)
+        assertTrue(decision.reason.contains("failed 2 times", ignoreCase = true))
     }
 }

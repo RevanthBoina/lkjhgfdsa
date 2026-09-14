@@ -7,6 +7,7 @@ import com.aniob.core.router.RouteDecision
 import com.aniob.core.router.RouteTarget
 import com.aniob.core.skills.AniobSkill
 import com.aniob.core.skills.AniobSkillMatcher
+import com.aniob.core.skills.AniobSemanticSkillMatcher
 import com.aniob.core.tools.AniobReplayEngine
 import com.aniob.core.tools.DevicePowerState
 
@@ -17,7 +18,8 @@ import com.aniob.core.tools.DevicePowerState
  */
 class AniobExecutionRouter(
     private val replayEngine: AniobReplayEngine = AniobReplayEngine(),
-    private val skillMatcher: AniobSkillMatcher = AniobSkillMatcher()
+    private val skillMatcher: AniobSkillMatcher = AniobSkillMatcher(),
+    private val semanticSkillMatcher: AniobSemanticSkillMatcher? = null
 ) {
     sealed class ExecutionPlanResult {
         data class DirectIntent(val shortcut: ResolvedIntentShortcut, val reason: String) : ExecutionPlanResult()
@@ -31,7 +33,10 @@ class AniobExecutionRouter(
         screenState: AniobScreenState,
         stepIndex: Int,
         taskSignature: String,
-        powerState: DevicePowerState
+        powerState: DevicePowerState,
+        installedModelId: String? = null,
+        lastLocalFailCount: Int = 0,
+        isModelFileMissing: Boolean = false
     ): ExecutionPlanResult {
         // Step 0: Direct Intent Shortcut (0ms LLM)
         if (stepIndex == 0) {
@@ -56,8 +61,8 @@ class AniobExecutionRouter(
             }
         }
 
-        // Step 2: Tier 1.5 YAML Skill Match (0 LLM calls if declarative skill exists)
-        val skillMatch = skillMatcher.match(taskPrompt)
+        // Step 2: Tier 1.5 YAML or Semantic Skill Match
+        val skillMatch = semanticSkillMatcher?.findBestSkill(taskPrompt) ?: skillMatcher.match(taskPrompt)
         if (skillMatch.matched && skillMatch.skill != null) {
             val skill = skillMatch.skill
             val step = skill.steps.getOrNull(stepIndex)
@@ -70,13 +75,16 @@ class AniobExecutionRouter(
             }
         }
 
-        // Step 3 & 4: AutoRouter decides between Local SLM (LiteRT) and Omniroute Cloud
+        // Step 3 & 4: AutoRouter decides between Local SLM and Omniroute Cloud
         val decision = AniobAutoRouter.decideRoute(
             taskPrompt = taskPrompt,
             screenState = screenState,
             powerState = powerState,
             hasFastPathHit = false,
-            isIntentShortcut = false
+            isIntentShortcut = false,
+            installedModelId = installedModelId,
+            lastLocalFailCount = lastLocalFailCount,
+            isModelFileMissing = isModelFileMissing
         )
 
         return ExecutionPlanResult.ModelDispatch(decision)
