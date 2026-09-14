@@ -21,7 +21,7 @@ class AniobExecutionRouter(
     private val replayEngine: AniobReplayEngine = AniobReplayEngine(),
     private val skillMatcher: AniobSkillMatcher = AniobSkillMatcher(),
     private val semanticSkillMatcher: AniobSemanticSkillMatcher? = null,
-    private val planningAgent: AniobPlanningAgent = AniobPlanningAgent(),
+    private val planningAgent: AniobPlanningAgent? = null,
     private val memoryStore: AniobEmbeddingStore? = null
 ) {
     sealed class ExecutionPlanResult {
@@ -89,8 +89,9 @@ class AniobExecutionRouter(
             }
         }
 
-        // Planning Progress condensation
-        val progress = planningAgent.updateProgress(
+        // Planning Progress condensation: prefrontal-cortex summary replaces the full
+        // interleaved observation history in the LLM prompt (~80% token reduction).
+        val progress = planningAgent?.updateProgress(
             userInstruction = taskPrompt,
             previousOperation = if (stepIndex > 0) "Step ${stepIndex - 1} executed" else null,
             previousProgress = previousProgress,
@@ -109,6 +110,6 @@ class AniobExecutionRouter(
             isModelFileMissing = isModelFileMissing
         )
 
-        return ExecutionPlanResult.ModelDispatch(decision, progressSummary = progress.summary)
+        return ExecutionPlanResult.ModelDispatch(decision, progressSummary = progress?.summary)
     }
 }

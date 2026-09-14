@@ -345,6 +345,10 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
         var actionsDispatched = 0
         var escalations = 0
 
+        // Prefrontal-cortex condensation: TaskProgress summary (not full history) is
+        // threaded through the ladder so the LLM sees a pure-text progress summary.
+        var taskProgress: TaskProgress? = null
+
         // Hippocampus: short-term episodic stream for this task ("hippocampus -> cortex" consolidation)
         hippocampusTracker.beginTask(task.id, task.clarifiedGoal)
 
@@ -437,8 +441,18 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                     powerState = powerState,
                     installedModelId = effectiveModelId,
                     lastLocalFailCount = localFailCount,
-                    isModelFileMissing = isModelFileMissing
+                    isModelFileMissing = isModelFileMissing,
+                    previousProgress = taskProgress
                 )
+                if (ladderResult is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch) {
+                    // TaskProgress accumulates across steps (prefrontal condensation).
+                    taskProgress = planningAgent.updateProgress(
+                        userInstruction = task.clarifiedGoal,
+                        previousOperation = if (currentStep > 0) "Step ${currentStep - 1} executed" else null,
+                        previousProgress = taskProgress,
+                        focusContent = null
+                    )
+                }
 
                 val stepStartTime = System.currentTimeMillis()
 
@@ -612,22 +626,25 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                             )
                         }
 
-                        // Invoke provider (Local LiteRT, Omniroute Cloud, or Mock fallback)
+                        // Invoke provider (Local LiteRT, Omniroute Cloud, or Mock fallback).
+                        // The planning agent's condensed TaskProgress summary stands in for the
+                        // full interleaved observation history (prefrontal-cortex condensation).
+                        val planningSummary = ladderResult.progressSummary ?: task.clarifiedGoal
                         if (decision.target == RouteTarget.OMNIROUTE_CLOUD) escalations++
                         val action = if (decision.target == RouteTarget.LOCAL_SLM && localLlmClient.isModelLoaded()) {
-                            val localRes = localLlmClient.generateStep("System: Android Agent", task.clarifiedGoal)
+                            val localRes = localLlmClient.generateStep("System: Android Agent", planningSummary)
                             totalTokens += 80
-                            mockProvider.planNextStep(task.clarifiedGoal, currentStep, currentScreen)
+                            mockProvider.planNextStep(planningSummary, currentStep, currentScreen)
                         } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD && _uiState.value.omnirouteApiKey.isNotBlank()) {
                             val omniroute = AniobOmniRouteProvider(
                                 apiKey = _uiState.value.omnirouteApiKey,
                                 model = _uiState.value.omnirouteModel
                             )
-                            val res = omniroute.getNextAction("You are Aniob agent.", task.clarifiedGoal)
+                            val res = omniroute.getNextAction("You are Aniob agent.", planningSummary)
                             totalTokens += 150
-                            res.getOrElse { mockProvider.planNextStep(task.clarifiedGoal, currentStep, currentScreen) }
+                            res.getOrElse { mockProvider.planNextStep(planningSummary, currentStep, currentScreen) }
                         } else {
-                            mockProvider.planNextStep(task.clarifiedGoal, currentStep, currentScreen)
+                            mockProvider.planNextStep(planningSummary, currentStep, currentScreen)
                         }
 
                         // Watchdog check
