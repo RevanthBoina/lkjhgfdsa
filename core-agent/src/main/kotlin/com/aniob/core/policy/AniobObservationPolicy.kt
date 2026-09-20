@@ -68,9 +68,11 @@ class AniobObservationPolicy(
         val bothConfirmed = lastTwo.all { it.verifiedSuccess }
         val noScroll = lastTwo.none { it.wasScroll }
 
-        // If last two actions hit same action string/target, animation likely running - force observe
-        val sameAction = lastTwo[0].action.toString() == lastTwo[1].action.toString()
-        if (sameAction) {
+        // Repeated action signature across a *divergent* window means an animation/lag is likely
+        // in flight: force a fresh observation so the burst cannot chain on a stale screen.
+        val signature = lastTwo[1].action.toString()
+        val priorDistinct = recentActions.dropLast(1).count { it.action.toString() != signature }
+        if (priorDistinct >= 2 && lastTwo[0].action.toString() == signature) {
             currentBurstCount = 0
             return true
         }

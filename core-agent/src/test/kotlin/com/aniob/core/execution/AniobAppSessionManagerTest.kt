@@ -1,5 +1,6 @@
 package com.aniob.core.execution
 
+import com.aniob.core.domain.AniobNode
 import com.aniob.core.domain.AniobScreenState
 import com.aniob.core.execution.AniobAppSessionManager.LaunchMode
 import org.junit.Assert.assertEquals
@@ -90,5 +91,94 @@ class AniobAppSessionManagerTest {
         val manager = AniobAppSessionManager()
         val session = manager.getOrCreateSession("com.brand.new")
         assertEquals("com.brand.new", session.packageName)
+    }
+
+    // --- Addition A: session validation before reuse (cache poisoning guard) ---
+
+    private fun screen(pkg: String, hash: String, nodes: Int = 2) = AniobScreenState(
+        packageName = pkg,
+        treeHash = hash,
+        nodes = (1..nodes).map { AniobNode(id = it, className = "Button", text = "b$it") }
+    )
+
+    @Test
+    fun `validateSessionReuse accepts foreground package with live tree`() {
+        val (manager, _) = warmedManager()
+        manager.onSessionScreenUpdated("com.example.app", screen("com.example.app", "h1"))
+        val result = manager.validateSessionReuse(
+            "com.example.app",
+            liveForegroundPackage = "com.example.app",
+            liveScreenState = screen("com.example.app", "h2")
+        )
+        assertTrue(result.valid)
+    }
+
+    @Test
+    fun `validateSessionReuse rejects when OEM killed the app`() {
+        val (manager, _) = warmedManager()
+        val result = manager.validateSessionReuse(
+            "com.example.app",
+            liveForegroundPackage = "com.android.launcher",
+            liveScreenState = screen("com.android.launcher", "h2")
+        )
+        assertFalse("Background-killed app must not be reused", result.valid)
+        assertTrue(result.reason.contains("not foreground"))
+    }
+
+    @Test
+    fun `validateSessionReuse rejects empty node tree`() {
+        val (manager, _) = warmedManager()
+        val result = manager.validateSessionReuse(
+            "com.example.app",
+            liveForegroundPackage = "com.example.app",
+            liveScreenState = screen("com.example.app", "h1", nodes = 0)
+        )
+        assertFalse(result.valid)
+        assertTrue(result.reason.contains("Empty node tree"))
+    }
+
+    @Test
+    fun `validateSessionReuse rejects stale cached tree hash`() {
+        val (manager, _) = warmedManager()
+        val staleScreen = screen("com.example.app", "sameHash").copy(
+            timestamp = System.currentTimeMillis() - AniobAppSessionManager.TREE_FRESHNESS_MS - 1
+        )
+        manager.onSessionScreenUpdated("com.example.app", staleScreen)
+        val result = manager.validateSessionReuse(
+            "com.example.app",
+            liveForegroundPackage = "com.example.app",
+            liveScreenState = screen("com.example.app", "sameHash")
+        )
+        assertFalse(result.valid)
+        assertTrue(result.reason.contains("stale"))
+    }
+
+    @Test
+    fun `validateSessionReuse rejects missing session`() {
+        val manager = AniobAppSessionManager()
+        assertFalse(
+            manager.validateSessionReuse("com.unknown", "com.unknown", null).valid
+        )
+    }
+
+    @Test
+    fun `ensureReusableOrInvalidate drops poisoned cache`() {
+        val (manager, _) = warmedManager()
+        val result = manager.ensureReusableOrInvalidate(
+            "com.example.app",
+            liveForegroundPackage = "com.android.launcher",
+            liveScreenState = null
+        )
+        assertFalse(result.valid)
+        assertSame(
+            "Cache entry must be dropped after invalidation",
+            null,
+            manager.getSession("com.example.app")
+        )
+        assertEquals(
+            "A subsequent launch plan cold starts the invalidated package",
+            LaunchMode.COLD_START,
+            manager.planAppLaunch("com.example.app").mode
+        )
     }
 }

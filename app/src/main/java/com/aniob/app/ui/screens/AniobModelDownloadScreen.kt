@@ -21,7 +21,21 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aniob.app.model.AniobModelDownloader
 import com.aniob.app.model.AniobModelInfo
 import com.aniob.app.model.DeviceInfo
+import com.aniob.app.model.DownloadProgress
 import kotlinx.coroutines.launch
+
+/** Compact ETA formatter: seconds -> "45s" / "3m 20s" / "1h 05m". */
+internal fun formatEta(seconds: Long): String {
+    if (seconds <= 0L) return "--"
+    val h = seconds / 3600
+    val m = (seconds % 3600) / 60
+    val s = seconds % 60
+    return when {
+        h > 0 -> "%dh %02dm".format(h, m)
+        m > 0 -> "%dm %02ds".format(m, s)
+        else -> "${s}s"
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -35,6 +49,8 @@ fun AniobModelDownloadScreen(
     var deviceInfo by remember { mutableStateOf(downloader.getDeviceInfo()) }
     val downloadStates by downloader.downloadStates.collectAsStateWithLifecycle()
     val activeDownloads by downloader.activeDownloads.collectAsStateWithLifecycle()
+    val pausedDownloads by downloader.pausedDownloads.collectAsStateWithLifecycle()
+    val downloadProgress by downloader.downloadProgressFlow.collectAsStateWithLifecycle()
 
     var models by remember { mutableStateOf(downloader.getAvailableModels()) }
     var defaultModelId by remember { mutableStateOf(downloader.getDefaultModelId()) }
@@ -48,18 +64,24 @@ fun AniobModelDownloadScreen(
         defaultModelId = downloader.getDefaultModelId()
     }
 
+    // Refresh installed/paused model list as soon as a download leaves the active set.
+    LaunchedEffect(activeDownloads, pausedDownloads) {
+        if (activeDownloads.isEmpty()) refreshModels()
+    }
+
     fun startDownload(model: AniobModelInfo) {
         if (model.requiresCharging && !deviceInfo.isCharging && deviceInfo.batteryPct < 50) {
             Toast.makeText(context, "Plug in charging to download ${model.name} safely", Toast.LENGTH_LONG).show()
             return
         }
         coroutineScope.launch {
-            val result = downloader.downloadModel(model.id) { _ -> }
+            val result = downloader.downloadModelWithProgress(model.id) { _ -> }
             if (result.isSuccess) {
                 Toast.makeText(context, "${model.name} installed successfully", Toast.LENGTH_SHORT).show()
                 refreshModels()
-            } else {
+            } else if (!downloader.isPaused(model.id)) {
                 Toast.makeText(context, "Download failed: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                refreshModels()
             }
         }
     }
@@ -172,7 +194,9 @@ fun AniobModelDownloadScreen(
             // 4. Model Cards
             items(models) { model ->
                 val isDownloading = activeDownloads.contains(model.id)
+                val isPaused = pausedDownloads.contains(model.id)
                 val progress = downloadStates[model.id] ?: if (model.isInstalled) 100 else 0
+                val prog = downloadProgress[model.id]
                 val isDefault = defaultModelId == model.id
 
                 ModelItemCard(
@@ -180,7 +204,9 @@ fun AniobModelDownloadScreen(
                     isRecommended = model.id == recommendedId,
                     isDefault = isDefault,
                     isDownloading = isDownloading,
+                    isPaused = isPaused,
                     progress = progress,
+                    downloadProgress = prog,
                     deviceInfo = deviceInfo,
                     onDownload = {
                         if (deviceInfo.totalRamGb < model.minDeviceRamGb) {
@@ -188,6 +214,18 @@ fun AniobModelDownloadScreen(
                         } else {
                             startDownload(model)
                         }
+                    },
+                    onPause = { downloader.pauseDownload(model.id) },
+                    onResume = {
+                        coroutineScope.launch {
+                            downloader.resumeDownload(model.id) { _ -> }
+                            refreshModels()
+                        }
+                    },
+                    onCancel = {
+                        downloader.cancelDownload(model.id)
+                        Toast.makeText(context, "${model.name} download cancelled", Toast.LENGTH_SHORT).show()
+                        refreshModels()
                     },
                     onDelete = {
                         downloader.deleteModel(model.id)
@@ -247,9 +285,14 @@ fun ModelItemCard(
     isRecommended: Boolean,
     isDefault: Boolean,
     isDownloading: Boolean,
+    isPaused: Boolean,
     progress: Int,
+    downloadProgress: DownloadProgress?,
     deviceInfo: DeviceInfo,
     onDownload: () -> Unit,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onCancel: () -> Unit,
     onDelete: () -> Unit,
     onSetDefault: () -> Unit
 ) {
@@ -314,17 +357,41 @@ fun ModelItemCard(
                 }
             }
 
-            if (isDownloading) {
+            if (isDownloading || isPaused) {
+                val mbPerSec = (downloadProgress?.bytesPerSecond ?: 0L) / 1024.0 / 1024.0
+                val etaText = formatEta(downloadProgress?.etaSeconds ?: 0L)
+                val downloadedGb = (downloadProgress?.downloadedBytes ?: 0L) / 1024.0 / 1024.0 / 1024.0
+                val totalGb = downloadProgress?.totalBytes?.takeIf { it > 0 }?.let { it / 1024.0 / 1024.0 / 1024.0 }
+                    ?: model.sizeGb
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     LinearProgressIndicator(
                         progress = { progress / 100f },
                         modifier = Modifier.fillMaxWidth().testTag("download_progress_${model.id}")
                     )
                     Text(
-                        text = "Downloading... $progress%",
+                        text = if (isPaused) {
+                            "Paused \u00b7 $progress% \u00b7 ${"%.2f".format(downloadedGb)}/${"%.2f".format(totalGb)} GB"
+                        } else {
+                            "Downloading... $progress% \u00b7 ${"%.1f".format(mbPerSec)} MB/s \u00b7 $etaText left \u00b7 ${"%.2f".format(downloadedGb)}/${"%.2f".format(totalGb)} GB"
+                        },
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.testTag("download_stats_${model.id}")
                     )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (isPaused) {
+                            Button(onClick = onResume, modifier = Modifier.testTag("resume_${model.id}")) {
+                                Text("Resume")
+                            }
+                        } else {
+                            OutlinedButton(onClick = onPause, modifier = Modifier.testTag("pause_${model.id}")) {
+                                Text("Pause")
+                            }
+                        }
+                        TextButton(onClick = onCancel, modifier = Modifier.testTag("cancel_${model.id}")) {
+                            Text("Cancel", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
                 }
             }
 

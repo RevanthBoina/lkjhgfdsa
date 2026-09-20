@@ -21,6 +21,8 @@ class AniobAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "AniobA11yService"
+        private const val MAX_IDLE_WAIT_MS = 1000L
+        private const val IDLE_POLL_INTERVAL_MS = 50L
         var instance: AniobAccessibilityService? = null
             private set
         var isServiceConnected: Boolean = false
@@ -174,8 +176,12 @@ class AniobAccessibilityService : AccessibilityService() {
 
     /**
      * Executes atomic action via dispatchGesture or direct a11y node actions.
+     *
+     * Every gesture-bearing branch is gated on UI quiescence first: a 300ms Android animation
+     * is long enough for a follow-up tap to land on stale coordinates or be swallowed entirely.
      */
     fun executeAction(action: AniobAction, callback: (Boolean) -> Unit) {
+        gateOnUiQuiescence(action)
         when (action) {
             is AniobAction.Tap -> {
                 val root = rootInActiveWindow
@@ -288,6 +294,36 @@ class AniobAccessibilityService : AccessibilityService() {
 
             is AniobAction.Fail -> {
                 callback(false)
+            }
+        }
+    }
+
+    /**
+     * Package currently owning the active window, read live from the a11y root. Used to detect
+     * an OEM background-kill that invalidated our cached session before we reuse it.
+     */
+    fun currentForegroundPackage(): String? =
+        try {
+            rootInActiveWindow?.packageName?.toString()
+        } catch (_: Exception) {
+            null
+        }
+
+    private fun gateOnUiQuiescence(action: AniobAction) {
+        // Read-only / non-gesture actions do not race an animation, so skip the wait for them.
+        val gesture = action is AniobAction.Tap || action is AniobAction.Click ||
+            action is AniobAction.LongPress || action is AniobAction.Swipe ||
+            action is AniobAction.InputText
+        if (!gesture) return
+        if (com.aniob.core.policy.AniobWaitForIdle.isUiIdle()) return
+        val deadline = System.currentTimeMillis() + MAX_IDLE_WAIT_MS
+        while (System.currentTimeMillis() < deadline) {
+            if (com.aniob.core.policy.AniobWaitForIdle.isUiIdle()) return
+            try {
+                Thread.sleep(IDLE_POLL_INTERVAL_MS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
             }
         }
     }

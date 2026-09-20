@@ -29,6 +29,7 @@ class AniobAppSessionManager {
 
     companion object {
         const val SESSION_TTL_MS: Long = 5 * 60 * 1000L // 5-min reuse window
+        const val TREE_FRESHNESS_MS: Long = 30_000L // cached tree older than this is suspect
     }
 
     enum class LaunchMode {
@@ -100,6 +101,73 @@ class AniobAppSessionManager {
                 lastScreenState = screenState
             )
         }
+    }
+
+    data class SessionValidation(
+        val valid: Boolean,
+        val reason: String
+    )
+
+    /**
+     * Verifies a cached session is still safe to reuse *right now*, rather than trusting the
+     * 5-minute TTL alone. An OEM can kill and relaunch an app in the background within that
+     * window, after which a reuse would drive a stale tree (wrong app, wrong node ids).
+     *
+     * @param liveForegroundPackage package actually foregrounded per ActivityManager/UsageStats
+     * @param liveScreenState fresh capture, when one is available
+     */
+    @Synchronized
+    fun validateSessionReuse(
+        packageName: String,
+        liveForegroundPackage: String?,
+        liveScreenState: AniobScreenState?,
+        now: Long = System.currentTimeMillis()
+    ): SessionValidation {
+        val session = sessions[packageName]
+            ?: return SessionValidation(false, "No cached session for $packageName")
+
+        if (session.isStale(now)) {
+            return SessionValidation(false, "Session for $packageName exceeded 5-min TTL")
+        }
+
+        if (liveForegroundPackage != packageName) {
+            return SessionValidation(
+                false,
+                "App not foreground anymore (foreground=$liveForegroundPackage, expected=$packageName)"
+            )
+        }
+
+        if (liveScreenState != null) {
+            if (liveScreenState.nodes.isEmpty()) {
+                return SessionValidation(false, "Empty node tree for $packageName - surface not ready")
+            }
+            if (liveScreenState.treeHash.isNotBlank() &&
+                liveScreenState.treeHash == session.lastScreenState?.treeHash &&
+                now - (session.lastScreenState?.timestamp ?: 0L) > TREE_FRESHNESS_MS
+            ) {
+                return SessionValidation(false, "Cached tree hash stale (>${TREE_FRESHNESS_MS / 1000}s)")
+            }
+        }
+
+        return SessionValidation(true, "Session valid for reuse")
+    }
+
+    /**
+     * Validates and, when invalid, invalidates the cache so the caller can plan a cold start.
+     */
+    @Synchronized
+    fun ensureReusableOrInvalidate(
+        packageName: String,
+        liveForegroundPackage: String?,
+        liveScreenState: AniobScreenState?,
+        now: Long = System.currentTimeMillis()
+    ): SessionValidation {
+        val validation = validateSessionReuse(packageName, liveForegroundPackage, liveScreenState, now)
+        if (!validation.valid) {
+            sessions.remove(packageName)
+            if (currentForegroundPackage == packageName) currentForegroundPackage = null
+        }
+        return validation
     }
 
     private fun touch(packageName: String) {

@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.aniob.app.model.AniobModelDownloader
 import com.aniob.app.service.AniobAccessibilityService
 import com.aniob.app.ui.AniobUiState
 import com.aniob.app.ui.chat.ChatMessage
@@ -46,7 +47,8 @@ fun AniobChatScreen(
     onSubmitTask: (String) -> Unit,
     onStopTask: () -> Unit,
     onShowTrackerSheet: (Boolean) -> Unit,
-    onFilterChanged: (String) -> Unit
+    onFilterChanged: (String) -> Unit,
+    onManageModels: () -> Unit
 ) {
     val context = LocalContext.current
     var promptInput by remember { mutableStateOf("") }
@@ -275,7 +277,9 @@ fun AniobChatScreen(
                 ) { message ->
                     WhatsAppChatBubble(
                         message = message,
-                        onOpenDetails = { onShowTrackerSheet(true) }
+                        onOpenDetails = { onShowTrackerSheet(true) },
+                        onManageModels = onManageModels,
+                        onRetry = { onSubmitTask(message.retryPrompt ?: "") }
                     )
                 }
 
@@ -366,11 +370,18 @@ fun ExampleTaskRow(title: String, subtitle: String, onClick: () -> Unit) {
 }
 
 @Composable
-fun WhatsAppChatBubble(message: ChatMessage, onOpenDetails: () -> Unit) {
+fun WhatsAppChatBubble(
+    message: ChatMessage,
+    onOpenDetails: () -> Unit,
+    onManageModels: () -> Unit = {},
+    onRetry: () -> Unit = {}
+) {
     val isUser = message.role == "user"
+    val context = LocalContext.current
     val timeString = remember(message.timestamp) {
         SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.timestamp))
     }
+    val isPreflightFailure = message.badge?.contains("Pre-flight") == true
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -396,6 +407,46 @@ fun WhatsAppChatBubble(message: ChatMessage, onOpenDetails: () -> Unit) {
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (isUser) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                if (isPreflightFailure) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (message.content.contains("install an on-device model", ignoreCase = true) ||
+                            message.content.contains("Local model file missing", ignoreCase = true)
+                        ) {
+                            Button(
+                                onClick = onManageModels,
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                modifier = Modifier.testTag("doctor_manage_models_btn")
+                            ) {
+                                Text("Manage Models", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                        if (message.content.contains("Accessibility Service Disabled", ignoreCase = true)) {
+                            Button(
+                                onClick = {
+                                    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                    }
+                                    context.startActivity(intent)
+                                },
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                modifier = Modifier.testTag("doctor_enable_a11y_btn")
+                            ) {
+                                Text("Enable", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                        if (!message.retryPrompt.isNullOrBlank()) {
+                            OutlinedButton(
+                                onClick = onRetry,
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                modifier = Modifier.testTag("doctor_retry_btn")
+                            ) {
+                                Text("Retry", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(4.dp))
 

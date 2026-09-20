@@ -164,7 +164,8 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                         onSubmitTask = { viewModel.submitTask(it) },
                         onStopTask = { viewModel.stopCurrentTask() },
                         onShowTrackerSheet = { viewModel.setShowTrackerSheet(it) },
-                        onFilterChanged = { viewModel.setTrackerFilter(it) }
+                        onFilterChanged = { viewModel.setTrackerFilter(it) },
+                        onManageModels = { currentScreen = AniobScreen.MODELS }
                     )
                 }
             }
@@ -257,9 +258,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
     // Addition A: Why this model? Explanation dialog
     if (showWhyModelDialog) {
         val installedModel = viewModel.getInstalledModelName() ?: "No local model installed"
-        val lastReason = uiState.lastRoutingReason.ifBlank {
-            "Policy: ${uiState.autoRouterMode}. Active local model: $installedModel. Runs 30-50 tok/s on CPU/GPU."
-        }
+        val reason = viewModel.getModelChoiceReason()
         AlertDialog(
             onDismissRequest = { showWhyModelDialog = false },
             title = { Text("Active AI Execution Model") },
@@ -267,7 +266,14 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Current Mode: ${uiState.autoRouterMode.uppercase()}", fontWeight = FontWeight.Bold)
                     Text("Model: $installedModel")
-                    Text("Why this choice?\n$lastReason", style = MaterialTheme.typography.bodyMedium)
+                    Text("Why this choice?\n$reason", style = MaterialTheme.typography.bodyMedium)
+                    val mode = uiState.autoRouterMode.uppercase()
+                    Text(
+                        "Policy: mode $mode keeps prompts on-device whenever a local model is installed; " +
+                            "cloud is used only when local is unavailable or the task needs it.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             },
             confirmButton = {

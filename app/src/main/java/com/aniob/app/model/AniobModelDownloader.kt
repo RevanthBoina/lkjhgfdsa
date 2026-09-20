@@ -16,6 +16,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * On-Device Model Information representation.
@@ -46,7 +48,15 @@ data class DeviceInfo(
     val isWifi: Boolean
 )
 
-data class DownloadProgress(val modelId: String, val progress: Int, val bytesPerSecond: Long, val etaSeconds: Long)
+data class DownloadProgress(
+    val modelId: String,
+    val progress: Int,
+    val bytesPerSecond: Long,
+    val etaSeconds: Long,
+    val isPaused: Boolean = false,
+    val downloadedBytes: Long = 0L,
+    val totalBytes: Long = 0L
+)
 
 class AniobModelDownloader(private val context: Context) {
 
@@ -58,6 +68,13 @@ class AniobModelDownloader(private val context: Context) {
 
     private val _activeDownloads = MutableStateFlow<Set<String>>(emptySet())
     val activeDownloads: StateFlow<Set<String>> = _activeDownloads.asStateFlow()
+
+    private val _pausedDownloads = MutableStateFlow<Set<String>>(emptySet())
+    val pausedDownloads: StateFlow<Set<String>> = _pausedDownloads.asStateFlow()
+
+    /** Cooperative cancellation/pause flags polled inside the streaming loop. */
+    private val cancelRequested = ConcurrentHashMap<String, AtomicBoolean>()
+    private val pauseRequested = ConcurrentHashMap<String, AtomicBoolean>()
 
     private val prefs = context.getSharedPreferences("aniob_models_pref", Context.MODE_PRIVATE)
 
@@ -277,6 +294,9 @@ class AniobModelDownloader(private val context: Context) {
         val total = (model.sizeGb * 1024 * 1024 * 1024).toLong()
         val startTime = System.currentTimeMillis()
         _activeDownloads.value = _activeDownloads.value + modelId
+        _pausedDownloads.value = _pausedDownloads.value - modelId
+        cancelRequested.remove(modelId)
+        pauseRequested.remove(modelId)
 
         try {
             val request = Request.Builder().url(model.url).apply {
@@ -285,12 +305,14 @@ class AniobModelDownloader(private val context: Context) {
             val client = AniobHttpClientSingleton.client
             val response = client.newCall(request).execute()
             if (!response.isSuccessful && response.code != 206) {
-                createLocalModelStub(finalFile, modelId) { p ->
-                    val prog = DownloadProgress(modelId, p, 1024 * 1024, 0)
-                    _downloadProgressFlow.value = _downloadProgressFlow.value + (modelId to prog)
-                    onProgress(prog)
+                // Real, honest failure: never fabricate a placeholder .gguf that the native engine
+                // cannot actually load (that silently reports "installed" while every inference fails).
+                val reason = if (response.code == 416) {
+                    "Partial download out of sync (HTTP 416) - retry from scratch"
+                } else {
+                    "Download failed (HTTP ${response.code})"
                 }
-                return@withContext Result.success(Unit)
+                return@withContext Result.failure(IllegalStateException(reason))
             }
             val input = response.body?.byteStream() ?: return@withContext Result.failure(Exception("Empty body"))
             val output = FileOutputStream(tmpFile, downloaded > 0)
@@ -298,16 +320,35 @@ class AniobModelDownloader(private val context: Context) {
             var bytesRead: Int
             var totalRead = downloaded
             while (input.read(buffer).also { bytesRead = it } != -1) {
+                if (cancelRequested[modelId]?.get() == true) {
+                    output.close()
+                    input.close()
+                    tmpFile.delete()
+                    _downloadProgressFlow.value = _downloadProgressFlow.value - modelId
+                    _downloadStates.value = _downloadStates.value - modelId
+                    return@withContext Result.failure(IllegalStateException("Download cancelled"))
+                }
+                if (pauseRequested[modelId]?.get() == true) {
+                    output.close()
+                    input.close()
+                    // Keep the .tmp file so a later resume picks up via the Range header.
+                    val resumeSize = tmpFile.length()
+                    val paused = DownloadProgress(modelId, progressOf(resumeSize, total), 0L, 0L, isPaused = true, downloadedBytes = resumeSize, totalBytes = total)
+                    _downloadProgressFlow.value = _downloadProgressFlow.value + (modelId to paused)
+                    _activeDownloads.value = _activeDownloads.value - modelId
+                    _pausedDownloads.value = _pausedDownloads.value + modelId
+                    onProgress(paused)
+                    return@withContext Result.failure(IllegalStateException("Download paused"))
+                }
                 output.write(buffer, 0, bytesRead)
                 totalRead += bytesRead
                 val elapsed = (System.currentTimeMillis() - startTime) / 1000L
                 val bps = if (elapsed > 0) (totalRead - downloaded) / elapsed else 0L
                 val remaining = (total - totalRead).coerceAtLeast(0L)
                 val eta = if (bps > 0) remaining / bps else 0L
-                val progress = ((totalRead.toFloat() / total.toFloat()) * 100).toInt().coerceIn(0, 100)
-                val prog = DownloadProgress(modelId, progress, bps, eta)
+                val prog = DownloadProgress(modelId, progressOf(totalRead, total), bps, eta, downloadedBytes = totalRead, totalBytes = total)
                 _downloadProgressFlow.value = _downloadProgressFlow.value + (modelId to prog)
-                _downloadStates.value = _downloadStates.value + (modelId to progress)
+                _downloadStates.value = _downloadStates.value + (modelId to prog.progress)
                 onProgress(prog)
             }
             output.close()
@@ -317,16 +358,45 @@ class AniobModelDownloader(private val context: Context) {
             }
             Result.success(Unit)
         } catch (e: Exception) {
-            createLocalModelStub(finalFile, modelId) { p ->
-                val prog = DownloadProgress(modelId, p, 0, 0)
-                _downloadProgressFlow.value = _downloadProgressFlow.value + (modelId to prog)
-                onProgress(prog)
-            }
-            Result.success(Unit)
+            // Surface the real error. Previously this wrote a fake placeholder .gguf and returned
+            // success, which made a failed 2GB download look installed and then break every inference.
+            _downloadProgressFlow.value = _downloadProgressFlow.value - modelId
+            _downloadStates.value = _downloadStates.value - modelId
+            Result.failure(e)
         } finally {
             _activeDownloads.value = _activeDownloads.value - modelId
+            cancelRequested.remove(modelId)
+            pauseRequested.remove(modelId)
         }
     }
+
+    /** Requests cooperative pause for an in-flight download. The .tmp file is kept for resume. */
+    fun pauseDownload(modelId: String) {
+        if (!_activeDownloads.value.contains(modelId)) return
+        pauseRequested.getOrPut(modelId) { AtomicBoolean() }.set(true)
+    }
+
+    /** Re-starts a paused download; the Range header resumes from the retained .tmp file. */
+    suspend fun resumeDownload(modelId: String, onProgress: (DownloadProgress) -> Unit): Result<Unit> {
+        _pausedDownloads.value = _pausedDownloads.value - modelId
+        pauseRequested.remove(modelId)
+        return downloadModelWithProgress(modelId, onProgress)
+    }
+
+    /** Requests cooperative cancel and drops the partial .tmp file. */
+    fun cancelDownload(modelId: String) {
+        if (!_activeDownloads.value.contains(modelId)) {
+            File(getTempDir(), "$modelId.gguf.tmp").delete()
+            _pausedDownloads.value = _pausedDownloads.value - modelId
+            return
+        }
+        cancelRequested.getOrPut(modelId) { AtomicBoolean() }.set(true)
+    }
+
+    fun isPaused(modelId: String): Boolean = _pausedDownloads.value.contains(modelId)
+
+    private fun progressOf(downloadedBytes: Long, totalBytes: Long): Int =
+        if (totalBytes <= 0) 0 else ((downloadedBytes.toDouble() / totalBytes.toDouble()) * 100).toInt().coerceIn(0, 100)
 
     suspend fun downloadModel(modelId: String, onProgress: (Int) -> Unit): Result<File> = withContext(Dispatchers.IO) {
         val model = ALL_MODELS.find { it.id == modelId }
@@ -363,8 +433,9 @@ class AniobModelDownloader(private val context: Context) {
             val response = client.newCall(requestBuilder.build()).execute()
 
             if (!response.isSuccessful && response.code != 206) {
-                // If remote server returns 404 or fails, create a verified local lightweight model stub for offline operation
-                return@withContext createLocalModelStub(finalFile, modelId, onProgress)
+                return@withContext Result.failure(
+                    IllegalStateException("Download failed (HTTP ${response.code})")
+                )
             }
 
             val body = response.body
@@ -395,24 +466,10 @@ class AniobModelDownloader(private val context: Context) {
             onProgress(100)
             Result.success(finalFile)
         } catch (e: Exception) {
-            // Fallback: create verified local model placeholder so user can immediately use on-device SLM
-            createLocalModelStub(finalFile, modelId, onProgress)
+            // Surface the real error rather than writing a placeholder model file.
+            Result.failure(e)
         } finally {
             _activeDownloads.value = _activeDownloads.value - modelId
-        }
-    }
-
-    private fun createLocalModelStub(targetFile: File, modelId: String, onProgress: (Int) -> Unit): Result<File> {
-        try {
-            for (p in 10..100 step 20) {
-                _downloadStates.value = _downloadStates.value + (modelId to p)
-                onProgress(p)
-                Thread.sleep(50)
-            }
-            targetFile.writeText("GGUF_HEADER_MODEL_ID=$modelId;QUANT=Q4_K_M;SIZE=${System.currentTimeMillis()}")
-            return Result.success(targetFile)
-        } catch (e: Exception) {
-            return Result.failure(e)
         }
     }
 

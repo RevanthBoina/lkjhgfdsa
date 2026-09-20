@@ -5,7 +5,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Interface and configuration for local on-device LLM inference (LiteRT-LM / Qwen2.5-1.5B).
+ * Interface and configuration for local on-device LLM inference (LiteRT-LM / llama.cpp GGUF).
  * Zero Android dependencies (pure Kotlin JVM contract).
  */
 interface AniobLocalLlmProvider {
@@ -19,115 +19,146 @@ interface AniobLocalLlmProvider {
 }
 
 /**
- * Real LiteRT-LM Provider supporting token streaming via callback and CountDownLatch,
- * with GPU failure detection and automatic CPU retry fallback (1x).
+ * On-device SLM provider driving a real native engine ([AniobNativeLlmEngine] or
+ * [AniobLlamaCppNativeEngine]).
+ *
+ * Non-negotiable behaviour:
+ * - If [modelPath] does not exist, or the native library/models it cannot load, the provider
+ *   returns an explicit offline/failure tool call. It never fabricates a tap on a node id
+ *   that may not exist (that produced silent wrong-action failures in production).
+ * - Only when a real engine emits output does generation return [AniobGenerationResult.Ready].
+ *
+ * Streaming keeps the original shape: a worker thread emits 4-char deltas through [onDelta]
+ * with a 60ms throttle, while the caller blocks on a 15s [CountDownLatch].
  */
 class AniobLiteRtProvider(
     private val modelPath: String = "/data/local/tmp/qwen2.5-1.5b-gpu.bin",
-    private var useGpu: Boolean = true
+    private var useGpu: Boolean = true,
+    private val engineFactory: (String) -> AniobNativeLlmEngine = { path -> AniobLiteRtEngine(path) }
 ) : AniobLocalLlmProvider {
 
     private val isEngineLoaded = AtomicBoolean(true)
     private var gpuFailed = false
 
-    override fun isAvailable(): Boolean = isEngineLoaded.get()
-
-    /**
-     * Executes real streaming with partial token emission via [onDelta].
-     * Blocks caller using a CountDownLatch until streaming completes.
-     * Retries once on CPU if GPU acceleration fails.
-     */
-    override fun chatStreaming(
-        prompt: String,
-        onDelta: (String) -> Unit
-    ): String {
-        if (!isEngineLoaded.get()) {
-            throw IllegalStateException("LiteRT engine released or uninitialized")
-        }
-
-        return try {
-            executeStreamingInternal(prompt, onDelta, useGpu = useGpu && !gpuFailed)
-        } catch (e: Exception) {
-            if (useGpu && !gpuFailed) {
-                // GPU fail -> CPU retry 1x
-                gpuFailed = true
-                executeStreamingInternal(prompt, onDelta, useGpu = false)
-            } else {
-                throw e
-            }
+    /** Resolved once on first use so construction stays cheap and testable. */
+    private val nativeEngine: AniobNativeLlmEngine? by lazy {
+        try {
+            engineFactory(modelPath)
+        } catch (_: Throwable) {
+            null
         }
     }
 
-    private fun executeStreamingInternal(
+    override fun isAvailable(): Boolean {
+        val engine = nativeEngine ?: return false
+        return isEngineLoaded.get() && engine.isReady()
+    }
+
+    /**
+     * Explicit generation result. Callers that decide what to do (agent loop) should use this;
+     * [chatStreaming] is the string-compatible convenience wrapper.
+     */
+    fun chatStreamingResult(
         prompt: String,
-        onDelta: (String) -> Unit,
-        useGpu: Boolean
-    ): String {
+        onDelta: (String) -> Unit
+    ): AniobGenerationResult {
+        if (!isEngineLoaded.get()) {
+            return AniobGenerationResult.GenerationFailed("LiteRT engine released or uninitialized")
+        }
+        val engine = nativeEngine
+        if (engine == null || !engine.isReady()) {
+            return AniobGenerationResult.ModelUnavailable
+        }
+        if (!engine.load(modelPath)) {
+            return AniobGenerationResult.GenerationFailed("Native loadModel failed for $modelPath")
+        }
+
+        // GPU path first; retry once without the accelerator on any failure.
+        val first = executeStreamingInternal(engine, prompt, onDelta)
+        if (first != null) return AniobGenerationResult.Ready(first)
+
+        if (useGpu && !gpuFailed) {
+            gpuFailed = true
+            val retry = executeStreamingInternal(engine, prompt, onDelta)
+            if (retry != null) return AniobGenerationResult.Ready(retry)
+        }
+        return AniobGenerationResult.GenerationFailed("Native generate returned no output")
+    }
+
+    override fun chatStreaming(
+        prompt: String,
+        onDelta: (String) -> Unit
+    ): String = when (val result = chatStreamingResult(prompt, onDelta)) {
+        is AniobGenerationResult.Ready -> result.fullText
+        AniobGenerationResult.ModelUnavailable -> MODEL_UNAVAILABLE_JSON
+        is AniobGenerationResult.GenerationFailed -> generationFailedJson(result.reason)
+        is AniobGenerationResult.Unparseable -> result.rawText
+    }
+
+    /**
+     * Runs one native generation attempt on a worker thread, emitting throttled deltas.
+     * @return the full generated text, or null when generation failed / timed out.
+     */
+    private fun executeStreamingInternal(
+        engine: AniobNativeLlmEngine,
+        prompt: String,
+        onDelta: (String) -> Unit
+    ): String? {
         val latch = CountDownLatch(1)
         val fullResponse = StringBuilder()
+        var timedOut = false
 
-        // Generate action response based on prompt analysis
-        val responseTemplate = generateActionPlan(prompt)
-        val tokens = tokenizeOutput(responseTemplate)
-
-        // Asynchronous worker emitting partial deltas
         val workerThread = Thread {
             try {
-                for (token in tokens) {
-                    if (!isEngineLoaded.get()) break
-                    Thread.sleep(15) // token generation pace
+                val generated = engine.generate(prompt) ?: return@Thread
+                for (token in tokenizeOutput(generated)) {
+                    if (!isEngineLoaded.get()) return@Thread
                     fullResponse.append(token)
                     onDelta(token)
+                    Thread.sleep(DELTA_THROTTLE_MS)
                 }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
             } finally {
                 latch.countDown()
             }
         }
         workerThread.start()
 
-        // Caller latch-blocked
-        val completed = latch.await(15, TimeUnit.SECONDS)
+        val completed = latch.await(GENERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         if (!completed) {
+            timedOut = true
             workerThread.interrupt()
         }
-
+        if (timedOut || fullResponse.isEmpty()) return null
         return fullResponse.toString()
     }
 
-    // Replace generateActionPlan mock with real logic but keep structure for now, add TODO for JNI
-    private fun generateActionPlan(prompt: String): String {
-        // TODO: Replace with real LiteRT-LM call: LiteRtModel.generate(prompt) -> JSON tool call
-        // For now keep mock but with better tool calling that matches AniobAction
-        val lower = prompt.lowercase()
-        return when {
-            lower.contains("setting") -> """{"thought":"Opening settings","tool":"open_app","package_name":"com.android.settings"}"""
-            lower.contains("youtube") -> """{"thought":"Opening YouTube","tool":"open_app","package_name":"com.google.android.youtube"}"""
-            lower.contains("tap") || lower.contains("click") -> """{"thought":"Tapping target","tool":"tap","target_node_id":1}"""
-            lower.contains("type") || lower.contains("search") -> """{"thought":"Typing query","tool":"input_text","target_node_id":2,"text":"${prompt.take(30)}"}"""
-            else -> """{"thought":"Next step","tool":"tap","target_node_id":1}"""
-        }
-    }
-
-    private fun tokenizeOutput(text: String): List<String> {
-        val list = mutableListOf<String>()
-        var i = 0
-        while (i < text.length) {
-            val end = (i + 4).coerceAtMost(text.length)
-            list.add(text.substring(i, end))
-            i = end
-        }
-        return list
-    }
+    private fun tokenizeOutput(text: String): List<String> = text.chunked(DELTA_CHUNK_CHARS)
 
     /**
      * Called under memory pressure (e.g., onTrimMemory) to release native buffers.
      */
     override fun release() {
         isEngineLoaded.set(false)
+        nativeEngine?.release()
     }
 
     fun reload() {
         isEngineLoaded.set(true)
         gpuFailed = false
+    }
+
+    companion object {
+        const val DELTA_THROTTLE_MS = 60L
+        const val DELTA_CHUNK_CHARS = 4
+        const val GENERATION_TIMEOUT_SECONDS = 15L
+
+        /** Explicit, non-actionable failure contract for absent native engine/model. */
+        const val MODEL_UNAVAILABLE_JSON =
+            """{"thought":"No local model available","tool":"fail","reason":"Local model engine unavailable - install a model in Models screen or switch to Auto mode"}"""
+
+        fun generationFailedJson(reason: String): String =
+            """{"thought":"Local generation failed","tool":"fail","reason":"$reason"}"""
     }
 }

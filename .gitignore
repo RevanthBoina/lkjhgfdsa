@@ -1,0 +1,11 @@
+# Build outputs
+build/
+*/build/
+.gradle/
+
+# Local machine configuration
+local.properties
+
+# Signing material (never commit keys/keystores)
+*.jks
+*.keystore

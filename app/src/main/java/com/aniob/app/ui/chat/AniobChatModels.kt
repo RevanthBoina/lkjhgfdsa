@@ -17,7 +17,12 @@ data class ChatMessage(
     val action: AniobAction? = null,
     val isStreaming: Boolean = false,
     val badge: String? = null,
-    val provider: String? = null
+    val provider: String? = null,
+    /**
+     * Original user prompt for a failed pre-flight, so the bubble can offer a one-tap Retry.
+     * Only set on actionable failure messages; never on normal assistant replies.
+     */
+    val retryPrompt: String? = null
 )
 
 @Immutable
