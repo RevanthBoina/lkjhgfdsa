@@ -25,6 +25,13 @@ class AniobExecutionRouter(
     private val planningAgent: AniobPlanningAgent? = null,
     private val memoryStore: AniobEmbeddingStore? = null
 ) {
+    /** Shared with the learning pipeline so hydration and replay hit the same store. */
+    val fastPathEngine: AniobReplayEngine get() = replayEngine
+
+    /** Wires a FastPath lookup callback for use outside the ladder (tracker/learning tests). */
+    fun lookup(taskSignature: String): AniobReplayEngine.ReplayTrajectory? =
+        replayEngine.findTrajectory(taskSignature)
+
     sealed class ExecutionPlanResult {
         data class DirectIntent(val shortcut: ResolvedIntentShortcut, val reason: String) : ExecutionPlanResult()
         data class FastPathStep(val action: AniobAction, val reason: String) : ExecutionPlanResult()

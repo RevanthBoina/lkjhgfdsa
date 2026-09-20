@@ -107,6 +107,11 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
         planningAgent = planningAgent,
         memoryStore = memoryStore
     )
+    /** The single learning pipeline; shares the router's FastPath engine and Room. */
+    private val learningPipeline = com.aniob.app.learning.AniobLearningPipelineImpl(
+        database = (application as AniobApplication).database,
+        replayEngine = executionRouter.fastPathEngine
+    )
     private val mockProvider = AniobMockProvider()
     private var localLlmClient: AniobLocalLlmEngine = AniobLocalLlmClient.getEngine()
     private val watchdog = AniobWatchdog(loopThreshold = 3)
@@ -204,6 +209,18 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
             app.metricsCollector.getSessionScores().collect { scores ->
                 _uiState.update { it.copy(sessionScores = scores) }
             }
+        }
+
+        // Cold-start hydration (finding #5): restore FastPath trajectories from Room into the
+        // replay engine before the first task, so "zero-token replay" survives process death.
+        viewModelScope.launch {
+            runCatching { learningPipeline.hydrate() }
+                .onSuccess { loaded ->
+                    if (loaded > 0) {
+                        app.eventLogger.info("AniobViewModel", "Hydrated $loaded FastPath trajectories from Room")
+                    }
+                }
+                .onFailure { app.eventLogger.warn("AniobViewModel", "FastPath hydration failed: ${it.message}") }
         }
 
         // Add initial system greeting
@@ -493,6 +510,7 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
         var actionsDispatched = 0
         var escalations = 0
         var finishRejections = 0
+        verifiedActions.clear()
 
         // Prefrontal-cortex condensation: TaskProgress summary (not full history) is
         // threaded through the ladder so the LLM sees a pure-text progress summary.
@@ -1148,6 +1166,14 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                 providerUsed = primaryProvider,
                 decisionReason = decisionReason
             )
+            // Learning (finding #5/#8): only verified success becomes FastPath knowledge.
+            if (finalSuccess) {
+                val trajectory = verifiedActions.toList()
+                learningPipeline.onTaskSuccess(
+                    TaskContext(instruction = task.rawPrompt, successCriteria = resolvedCriteria),
+                    trajectory
+                )
+            }
         }
 
         _uiState.update {
@@ -1161,8 +1187,12 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun addStepRecord(step: AniobStepRecord) {
+        if (step.verifiedSuccess) verifiedActions.add(step.action)
         _uiState.update { it.copy(steps = it.steps + step) }
     }
+
+    /** Actions of steps that verified, in order — the input to the learning pipeline. */
+    private val verifiedActions = mutableListOf<AniobAction>()
 
     /**
      * Evidence gate for a provisional `Finish`.

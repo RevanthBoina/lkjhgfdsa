@@ -28,6 +28,10 @@ interface AppKnowledgeBaseDao {
 
     @Query("SELECT * FROM app_knowledge_base ORDER BY lastUpdated DESC")
     fun getAllKnowledge(): Flow<List<AppKnowledgeBaseEntity>>
+
+    /** Every persisted trajectory, used to rehydrate the FastPath engine at cold start. */
+    @Query("SELECT * FROM app_knowledge_base")
+    suspend fun getAllKnowledgeOnce(): List<AppKnowledgeBaseEntity>
 }
 
 @Dao
