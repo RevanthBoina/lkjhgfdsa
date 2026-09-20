@@ -55,6 +55,17 @@ class AniobLiteRtProvider(
     }
 
     /**
+     * A loaded native engine is a real action driver only when it is actually available; a
+     * provider constructed around a missing library reports [AniobEngineCapabilities.canDriveActions]
+     * false so the loop quarantines it instead of labelling its output LOCAL_SLM.
+     */
+    fun capabilities(): AniobEngineCapabilities = if (isAvailable()) {
+        AniobEngineCapabilities(canAnswer = true, canDriveActions = true, reason = "Native engine loaded")
+    } else {
+        AniobEngineCapabilities(canAnswer = false, canDriveActions = false, reason = "No usable native engine/model")
+    }
+
+    /**
      * Explicit generation result. Callers that decide what to do (agent loop) should use this;
      * [chatStreaming] is the string-compatible convenience wrapper.
      */

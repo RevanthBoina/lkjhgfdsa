@@ -63,12 +63,14 @@ Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT
      */
     fun parseActionJson(json: String): AniobAction {
         val candidate = TOOL_OBJECT.find(json)?.value ?: json.trim()
-        if (!candidate.contains("\"tool\"")) {
+        if (!candidate.contains("\"tool\"") && !candidate.contains("\"action\"")) {
             throw ActionSchemaException("missing required field 'tool'")
         }
         rejectCoordinateFields(candidate)
 
-        val toolRaw = str(candidate, "tool")
+        // `action` is accepted as an alias for `tool` so older cloud models that emit
+        // {"action":"tap"} still route through this single parser instead of a second one.
+        val toolRaw = str(candidate, "tool") ?: str(candidate, "action")
             ?: throw ActionSchemaException("missing required field 'tool'")
         val tool = toolRaw.trim().uppercase().replace('-', '_')
         val thought = str(candidate, "thought") ?: "Local model step"

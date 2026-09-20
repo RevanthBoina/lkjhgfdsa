@@ -8,6 +8,13 @@ interface AniobLocalLlmEngine {
     fun generateStep(systemPrompt: String, userPrompt: String): String
 
     /**
+     * What this engine can actually be trusted to do. Used to decide routing: an engine that
+     * cannot yet emit schema-valid *actions* on the target device must not be reported as
+     * LOCAL_SLM in metrics (finding #6) — route to cloud/mock with a logged reason instead.
+     */
+    fun capabilities(): AniobEngineCapabilities = AniobEngineCapabilities()
+
+    /**
      * Structured generation outcome. Implementations that can distinguish "no model" from
      * "generated an action" must override this so the agent loop never executes fabricated steps.
      * Default keeps compatibility for simple non-agent engines (answers, not actions).
@@ -22,6 +29,19 @@ interface AniobLocalLlmEngine {
     fun isModelLoaded(): Boolean = isAvailable()
     fun release()
 }
+
+/**
+ * Honest capability report for an on-device engine.
+ *
+ * [canDriveActions] defaults to false until an engine is *proven* on a real device to emit
+ * schema-valid actions. This is the quarantine switch: a model that only answers questions must
+ * never be allowed to move the UI.
+ */
+data class AniobEngineCapabilities(
+    val canAnswer: Boolean = true,
+    val canDriveActions: Boolean = false,
+    val reason: String = "Action driving unverified on this engine"
+)
 
 /**
  * Factory and singleton registry for on-device SLM inference.
@@ -74,6 +94,8 @@ class AniobLocalLlmEngineImpl(
         provider.chatStreamingResult("$systemPrompt\n$userPrompt") { /* stream delta */ }
 
     override fun isAvailable(): Boolean = provider.isAvailable()
+
+    override fun capabilities(): AniobEngineCapabilities = provider.capabilities()
 
     override fun release() {
         provider.release()

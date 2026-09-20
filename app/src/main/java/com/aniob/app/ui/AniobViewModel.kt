@@ -41,6 +41,8 @@ import com.aniob.core.memory.InMemorySharedKnowledgeStore
 import com.aniob.core.policy.AniobObservationPolicy
 import com.aniob.core.policy.AniobWaitForIdle
 import com.aniob.core.providers.AniobGenerationResult
+import com.aniob.core.config.AniobDecodeConfig
+import com.aniob.core.providers.AniobStructuredOutput
 import com.aniob.core.providers.AniobLocalActionResolver
 import com.aniob.core.providers.AniobHybridEngineRouter
 import com.aniob.core.providers.AniobLiteRtProvider
@@ -857,37 +859,90 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                         // full interleaved observation history (prefrontal-cortex condensation).
                         val planningSummary = ladderResult.progressSummary ?: task.clarifiedGoal
                         if (decision.target == RouteTarget.OMNIROUTE_CLOUD) escalations++
-                        val action = if (decision.target == RouteTarget.LOCAL_SLM && localLlmClient.isModelLoaded()) {
+                        // Truthful provider label: only claim LOCAL_SLM when the engine is actually
+                        // loaded AND can drive actions. An engine that only answers must not move
+                        // the UI, so it is quarantined to the mock rung with the real reason logged.
+                        val localCaps = if (decision.target == RouteTarget.LOCAL_SLM) localLlmClient.capabilities() else null
+                        val localCanDrive = decision.target == RouteTarget.LOCAL_SLM &&
+                            localLlmClient.isModelLoaded() && (localCaps?.canDriveActions == true)
+                        if (decision.target == RouteTarget.LOCAL_SLM && !localCanDrive) {
+                            app.eventLogger.warn(
+                                "AniobViewModel",
+                                "Local engine quarantined: ${localCaps?.reason ?: "model not loaded"}"
+                            )
+                            primaryProvider = "MOCK"
+                            decisionReason = "local_quarantined: ${localCaps?.reason ?: "model not loaded"}"
+                            _uiState.update {
+                                it.copy(
+                                    lastProviderUsed = primaryProvider,
+                                    lastRoutingReason = decisionReason
+                                )
+                            }
+                        }
+                        val action = if (localCanDrive) {
                             // Real on-device generation. A missing/broken engine resolves to an
                             // explicit Fail carrying a user-actionable reason - never a fake tap.
                             val generation = localLlmClient.generateStepResult(
-                                "System: Android Agent. Reply with a single JSON tool call.",
+                                configLoader.prompt("system_prompt.txt")
+                                    ?: "System: Android Agent. Reply with a single JSON tool call.",
                                 planningSummary
                             )
                             totalTokens += 80
-                            val localAction = AniobLocalActionResolver.resolve(generation, currentScreen)
-                            if (localAction is AniobAction.Fail) {
+                            val structured = AniobLocalActionResolver.resolveStructured(generation, currentScreen)
+                            if (structured.usedFallback) {
                                 app.eventLogger.warn(
                                     "AniobViewModel",
-                                    "Local SLM could not produce an action: ${localAction.reason}"
+                                    "Local SLM produced no schema-valid action: ${structured.reason}"
                                 )
                             }
-                            localAction
+                            structured.action
                         } else if (decision.target == RouteTarget.LOCAL_SLM) {
-                            // Ladder chose local but no usable model file - surface it instead of faking.
-                            totalTokens += 80
-                            AniobAction.Fail(reason = AniobLocalActionResolver.DEFAULT_UNAVAILABLE_REASON)
+                            // Ladder chose local but the engine is unusable - mock rung acts, labelled MOCK.
+                            mockProvider.planNextStep(planningSummary, currentStep, currentScreen)
                         } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD && _uiState.value.omnirouteApiKey.isNotBlank()) {
                             val omniroute = AniobOmniRouteProvider(
                                 apiKey = _uiState.value.omnirouteApiKey,
                                 model = _uiState.value.omnirouteModel
                             )
-                            val res = omniroute.getNextAction(
-                                configLoader.prompt("system_prompt.txt") ?: "You are Aniob agent.",
-                                planningSummary
-                            )
+                            val systemPrompt = configLoader.prompt("system_prompt.txt") ?: "You are Aniob agent."
+                            val raw = omniroute.getNextActionRaw(systemPrompt, planningSummary)
                             totalTokens += 150
-                            res.getOrElse { mockProvider.planNextStep(planningSummary, currentStep, currentScreen) }
+                            raw.fold(
+                                onSuccess = { text ->
+                                    // Cloud text and local text share ONE parse-or-repair boundary.
+                                    var structured = AniobStructuredOutput.parseOrRepair(
+                                        raw = text,
+                                        screenState = currentScreen,
+                                        decode = AniobDecodeConfig.forRole(AniobDecodeConfig.Role.PLANNER)
+                                    )
+                                    if (structured.usedFallback) {
+                                        // One suspend repair retry, then the deterministic fallback stands.
+                                        val repaired = runCatching {
+                                            omniroute.getNextActionRaw(
+                                                systemPrompt,
+                                                AniobStructuredOutput.repairPrompt(text)
+                                            ).getOrNull()
+                                        }.getOrNull()
+                                        if (repaired != null) {
+                                            structured = AniobStructuredOutput.parseOrRepair(
+                                                raw = repaired,
+                                                screenState = currentScreen,
+                                                decode = AniobDecodeConfig.forRole(AniobDecodeConfig.Role.PLANNER)
+                                            )
+                                        }
+                                    }
+                                    if (structured.usedFallback) {
+                                        app.eventLogger.warn("AniobViewModel", "Cloud output unusable: ${structured.reason}")
+                                    }
+                                    structured.action
+                                },
+                                onFailure = {
+                                    // Cloud unreachable - fall back to mock, but never claim CLOUD.
+                                    primaryProvider = "MOCK"
+                                    _uiState.update { st -> st.copy(lastProviderUsed = primaryProvider) }
+                                    mockProvider.planNextStep(planningSummary, currentStep, currentScreen)
+                                }
+                            )
                         } else {
                             mockProvider.planNextStep(planningSummary, currentStep, currentScreen)
                         }

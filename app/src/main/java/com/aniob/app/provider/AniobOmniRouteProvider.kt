@@ -1,6 +1,7 @@
 package com.aniob.app.provider
 
 import com.aniob.core.domain.AniobAction
+import com.aniob.core.domain.AniobActionSchema
 import com.aniob.core.domain.KeyType
 import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.SwipeDirection
@@ -191,23 +192,35 @@ class AniobOmniRouteProvider(
         systemPrompt: String,
         userPrompt: String,
         screenshotBase64: String? = null
-    ): Result<AniobAction> = withContext(Dispatchers.IO) {
+    ): Result<AniobAction> =
+        // Delegates to the raw fetch and the single canonical parser. No second parser lives here.
+        getNextActionRaw(systemPrompt, userPrompt, screenshotBase64).mapCatching { raw ->
+            AniobActionSchema.parseActionJson(raw)
+        }
+
+    /**
+     * Returns the raw model content instead of a pre-parsed action.
+     *
+     * Providers must return *data*, not behavior (finding #3): the caller routes this through
+     * `AniobStructuredOutput.parseOrRepair` so cloud output shares the one action vocabulary and
+     * benefits from the single repair retry.
+     */
+    suspend fun getNextActionRaw(
+        systemPrompt: String,
+        userPrompt: String,
+        screenshotBase64: String? = null
+    ): Result<String> = withContext(Dispatchers.IO) {
         try {
             val messages = JSONArray()
-
-            // System message
             messages.put(JSONObject().apply {
                 put("role", "system")
                 put("content", systemPrompt)
             })
-
-            // User message with optional image URL
             val userContent = JSONArray()
             userContent.put(JSONObject().apply {
                 put("type", "text")
                 put("text", userPrompt)
             })
-
             if (!screenshotBase64.isNullOrBlank()) {
                 userContent.put(JSONObject().apply {
                     put("type", "image_url")
@@ -216,7 +229,6 @@ class AniobOmniRouteProvider(
                     })
                 })
             }
-
             messages.put(JSONObject().apply {
                 put("role", "user")
                 put("content", userContent)
@@ -241,71 +253,17 @@ class AniobOmniRouteProvider(
 
             val response = client.newCall(request).execute()
             val body = response.body?.string().orEmpty()
-
             if (!response.isSuccessful) {
                 return@withContext Result.failure(Exception("Omniroute Cloud API error (${response.code}): $body"))
             }
-
-            val rootJson = JSONObject(body)
-            val rawContent = rootJson.getJSONArray("choices")
+            val rawContent = JSONObject(body).getJSONArray("choices")
                 .getJSONObject(0)
                 .getJSONObject("message")
                 .getString("content")
-
-            val action = parseActionJson(rawContent)
-            Result.success(action)
+            Result.success(rawContent)
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
-    private fun parseActionJson(jsonString: String): AniobAction {
-        val json = JSONObject(jsonString)
-        val thought = json.optString("thought", "Action planned by Omniroute Cloud")
-        val actionType = json.optString("action", "WAIT").uppercase()
-        val target = parseTarget(json)
-
-        return when (actionType) {
-            "CLICK", "TAP" -> target?.let { AniobAction.Tap(it, thought = thought) }
-                ?: AniobAction.Fail(reason = "Cloud action CLICK carried no target", thought = thought)
-            "INPUT_TEXT" -> target?.let {
-                AniobAction.InputText(it, text = json.optString("text", ""), thought = thought)
-            } ?: AniobAction.Fail(reason = "Cloud action INPUT_TEXT carried no target", thought = thought)
-            "LONG_PRESS" -> target?.let { AniobAction.LongPress(it, thought = thought) }
-                ?: AniobAction.Fail(reason = "Cloud action LONG_PRESS carried no target", thought = thought)
-            "SWIPE" -> {
-                val dirStr = json.optString("swipeDirection", "UP").uppercase()
-                val dir = try { SwipeDirection.valueOf(dirStr) } catch (e: Exception) { SwipeDirection.UP }
-                AniobAction.Swipe(direction = dir, thought = thought)
-            }
-            "PRESS_BACK" -> AniobAction.PressKey(KeyType.BACK, thought = thought)
-            "PRESS_HOME" -> AniobAction.PressKey(KeyType.HOME, thought = thought)
-            "FINISH" -> AniobAction.Finish(summary = json.optString("reason", "Task finished"), thought = thought)
-            "FAIL" -> AniobAction.Fail(reason = json.optString("reason", "Task failed"), thought = thought)
-            else -> AniobAction.Wait(thought = thought)
-        }
-    }
-
-    /**
-     * Reads the semantic target from a cloud action. Prefers the v2 `target` object and falls
-     * back to a legacy `targetNodeId`, which cloud models were trained to emit as a SoM index.
-     */
-    private fun parseTarget(json: JSONObject): SemanticTarget? {
-        json.optJSONObject("target")?.let { obj ->
-            val kind = obj.optString("kind", "").lowercase()
-            val value = obj.optString("value", "")
-            if (value.isNotEmpty()) {
-                return when (kind) {
-                    "som_index", "som", "index" -> value.toIntOrNull()?.let { SemanticTarget.SomIndex(it) }
-                    "resource_id", "view_id", "id" -> SemanticTarget.ResourceId(value)
-                    "text" -> SemanticTarget.Text(value, obj.optBoolean("exact", false))
-                    "content_desc", "content_description", "desc" ->
-                        SemanticTarget.ContentDesc(value, obj.optBoolean("exact", false))
-                    else -> null
-                }
-            }
-        }
-        val legacyId = json.optInt("targetNodeId", -1)
-        return if (legacyId >= 0) SemanticTarget.SomIndex(legacyId) else null
-    }
 }

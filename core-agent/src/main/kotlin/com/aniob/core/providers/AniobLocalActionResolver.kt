@@ -1,5 +1,6 @@
 package com.aniob.core.providers
 
+import com.aniob.core.config.AniobDecodeConfig
 import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.AniobScreenState
 
@@ -17,7 +18,8 @@ object AniobLocalActionResolver {
     fun resolve(
         generation: AniobGenerationResult,
         screenState: AniobScreenState?,
-        unavailableReason: String = DEFAULT_UNAVAILABLE_REASON
+        unavailableReason: String = DEFAULT_UNAVAILABLE_REASON,
+        repairCall: (String) -> String? = { null }
     ): AniobAction = when (generation) {
         AniobGenerationResult.ModelUnavailable -> AniobAction.Fail(reason = unavailableReason)
         is AniobGenerationResult.GenerationFailed ->
@@ -25,7 +27,44 @@ object AniobLocalActionResolver {
         is AniobGenerationResult.Unparseable ->
             AniobAction.Fail(reason = "On-device model returned no actionable tool call")
         is AniobGenerationResult.Ready ->
-            AniobToolCallParser.toAction(generation.fullText, screenState)
+            // Everything the model emits goes through the single parse-or-repair boundary, so
+            // the local path cannot drift from the cloud path's action vocabulary.
+            AniobStructuredOutput.parseOrRepair(
+                raw = generation.fullText,
+                screenState = screenState,
+                decode = AniobDecodeConfig.forRole(AniobDecodeConfig.Role.EXECUTOR),
+                repairCall = repairCall
+            ).action
+    }
+
+    /**
+     * Structured variant used where the caller needs to know whether a fallback was used, so
+     * provider metrics can name the real producer instead of claiming LOCAL_SLM (finding #6).
+     */
+    fun resolveStructured(
+        generation: AniobGenerationResult,
+        screenState: AniobScreenState?,
+        unavailableReason: String = DEFAULT_UNAVAILABLE_REASON,
+        repairCall: (String) -> String? = { null }
+    ): AniobStructuredOutput.StructuredParse = when (generation) {
+        AniobGenerationResult.ModelUnavailable -> AniobStructuredOutput.StructuredParse(
+            AniobAction.Fail(reason = unavailableReason), repaired = false, usedFallback = true,
+            reason = "engine unavailable"
+        )
+        is AniobGenerationResult.GenerationFailed -> AniobStructuredOutput.StructuredParse(
+            AniobAction.Fail(reason = "On-device model failed: ${generation.reason}"),
+            repaired = false, usedFallback = true, reason = generation.reason
+        )
+        is AniobGenerationResult.Unparseable -> AniobStructuredOutput.StructuredParse(
+            AniobAction.Fail(reason = "On-device model returned no actionable tool call"),
+            repaired = false, usedFallback = true, reason = "unparseable"
+        )
+        is AniobGenerationResult.Ready -> AniobStructuredOutput.parseOrRepair(
+            raw = generation.fullText,
+            screenState = screenState,
+            decode = AniobDecodeConfig.forRole(AniobDecodeConfig.Role.EXECUTOR),
+            repairCall = repairCall
+        )
     }
 
     const val DEFAULT_UNAVAILABLE_REASON =
