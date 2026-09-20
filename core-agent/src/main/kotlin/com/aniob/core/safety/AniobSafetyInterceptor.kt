@@ -33,6 +33,7 @@ object AniobSafetyInterceptor {
 
     private val paymentBlocklist = listOf("upi://", "com.android.vending.BILLING", "checkout", "purchase", "payment", "transaction")
     private val sensitiveBlocklist = listOf("otp", "cvv", "password", "pin")
+    private val destructiveBlocklist = listOf("delete account", "erase all", "factory reset", "format storage", "wipe data")
     private val unknownContactKeywords = listOf("unknown", "add new", "new contact", "create contact", "???")
     private val blockedFingerprints = mutableSetOf<String>()
 
@@ -51,11 +52,20 @@ object AniobSafetyInterceptor {
         // "Click(targetNodeId=1, thought='buy now')" is caught). Whole-word boundary
         // matching avoids false positives like "pay" inside "display".
         val paymentMatch = paymentBlocklist.any { block ->
-            actionStr.startsWith(block) || actionStr.contains(" ${block} ")
+            actionStr.startsWith(block) || actionStr.contains(" ${block} ") || actionStr.contains(block)
         }
         if (paymentMatch) {
             blockedFingerprints.add(screenFingerprint)
             return InterceptResult(isAllowed = false, reason = "Payment operation blocked", riskTier = "HIGH")
+        }
+
+        // Destructive wipe actions blocked
+        val destructiveMatch = destructiveBlocklist.any { block ->
+            actionStr.contains(block)
+        }
+        if (destructiveMatch) {
+            blockedFingerprints.add(screenFingerprint)
+            return InterceptResult(isAllowed = false, reason = "Destructive operation blocked", riskTier = "HIGH")
         }
         val sensitiveRegex = sensitiveBlocklist.joinToString("|") { Regex.escape(it) }
             .let { Regex("\\b(?:$it)\\b") }

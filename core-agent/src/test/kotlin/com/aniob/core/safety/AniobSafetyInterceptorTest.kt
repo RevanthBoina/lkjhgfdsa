@@ -27,6 +27,19 @@ class AniobSafetyInterceptorTest {
     }
 
     @Test
+    fun testDestructiveActionBlocked() {
+        val result = AniobSafetyInterceptor.evaluateAction(
+            action = AniobAction.Click(targetNodeId = 1, thought = "confirm factory reset now"),
+            targetNode = null,
+            screenState = screen(),
+            screenFingerprint = "fp_wipe"
+        )
+        assertFalse(result.isAllowed)
+        assertEquals("HIGH", result.riskTier)
+        assertTrue(result.reason.contains("Destructive", ignoreCase = true))
+    }
+
+    @Test
     fun testActionWithPayInsideWordIsNotBlocked() {
         // "display" contains the letters p-a-y but is not a payment op.
         val result = AniobSafetyInterceptor.evaluateAction(

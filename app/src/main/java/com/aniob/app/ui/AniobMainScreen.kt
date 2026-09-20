@@ -40,6 +40,8 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
     var currentScreen by remember { mutableStateOf(AniobScreen.CHAT) }
     var showOverflowMenu by remember { mutableStateOf(false) }
 
+    var showWhyModelDialog by remember { mutableStateOf(false) }
+
     when (currentScreen) {
         AniobScreen.CHAT -> {
             Scaffold(
@@ -60,12 +62,19 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                             }
                         },
                         actions = {
-                            // Model selector chip button
+                            // Model selector chip button (Addition A: mode + modelName & reason explanation)
+                            val installedModel = viewModel.getInstalledModelName() ?: "No Model"
+                            val modeLabel = when (uiState.autoRouterMode.lowercase()) {
+                                "local-first" -> "Local-First"
+                                "local-only" -> "Local-Only"
+                                "cloud-only" -> "Cloud"
+                                "balanced" -> "Balanced"
+                                else -> "Auto"
+                            }
                             AssistChip(
-                                onClick = { currentScreen = AniobScreen.MODELS },
+                                onClick = { showWhyModelDialog = true },
                                 label = {
-                                    val installedModel = viewModel.getInstalledModelName()
-                                    Text(installedModel ?: "Select Model")
+                                    Text("$modeLabel · $installedModel")
                                 },
                                 leadingIcon = {
                                     Icon(Icons.Default.Memory, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -240,6 +249,40 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                     modifier = Modifier.testTag("cancel_action_dialog_btn")
                 ) {
                     Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Addition A: Why this model? Explanation dialog
+    if (showWhyModelDialog) {
+        val installedModel = viewModel.getInstalledModelName() ?: "No local model installed"
+        val lastReason = uiState.lastRoutingReason.ifBlank {
+            "Policy: ${uiState.autoRouterMode}. Active local model: $installedModel. Runs 30-50 tok/s on CPU/GPU."
+        }
+        AlertDialog(
+            onDismissRequest = { showWhyModelDialog = false },
+            title = { Text("Active AI Execution Model") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Current Mode: ${uiState.autoRouterMode.uppercase()}", fontWeight = FontWeight.Bold)
+                    Text("Model: $installedModel")
+                    Text("Why this choice?\n$lastReason", style = MaterialTheme.typography.bodyMedium)
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showWhyModelDialog = false
+                        currentScreen = AniobScreen.MODELS
+                    }
+                ) {
+                    Text("Manage Models")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showWhyModelDialog = false }) {
+                    Text("Dismiss")
                 }
             }
         )

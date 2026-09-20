@@ -40,10 +40,28 @@ fun AniobModelDownloadScreen(
     var defaultModelId by remember { mutableStateOf(downloader.getDefaultModelId()) }
     val recommendedId = remember(deviceInfo) { downloader.getRecommendedModel(deviceInfo) }
 
+    var warningModelToDownload by remember { mutableStateOf<AniobModelInfo?>(null) }
+
     fun refreshModels() {
         deviceInfo = downloader.getDeviceInfo()
         models = downloader.getAvailableModels()
         defaultModelId = downloader.getDefaultModelId()
+    }
+
+    fun startDownload(model: AniobModelInfo) {
+        if (model.requiresCharging && !deviceInfo.isCharging && deviceInfo.batteryPct < 50) {
+            Toast.makeText(context, "Plug in charging to download ${model.name} safely", Toast.LENGTH_LONG).show()
+            return
+        }
+        coroutineScope.launch {
+            val result = downloader.downloadModel(model.id) { _ -> }
+            if (result.isSuccess) {
+                Toast.makeText(context, "${model.name} installed successfully", Toast.LENGTH_SHORT).show()
+                refreshModels()
+            } else {
+                Toast.makeText(context, "Download failed: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     Scaffold(
@@ -165,16 +183,10 @@ fun AniobModelDownloadScreen(
                     progress = progress,
                     deviceInfo = deviceInfo,
                     onDownload = {
-                        coroutineScope.launch {
-                            val result = downloader.downloadModel(model.id) { p ->
-                                // progress handled in flow
-                            }
-                            if (result.isSuccess) {
-                                Toast.makeText(context, "${model.name} installed successfully", Toast.LENGTH_SHORT).show()
-                                refreshModels()
-                            } else {
-                                Toast.makeText(context, "Download failed: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
-                            }
+                        if (deviceInfo.totalRamGb < model.minDeviceRamGb) {
+                            warningModelToDownload = model
+                        } else {
+                            startDownload(model)
                         }
                     },
                     onDelete = {
@@ -193,6 +205,38 @@ fun AniobModelDownloadScreen(
             item {
                 Spacer(modifier = Modifier.height(24.dp))
             }
+        }
+
+        // Addition D: RAM Warning Dialog for heavier models on lower RAM phones
+        if (warningModelToDownload != null) {
+            val targetModel = warningModelToDownload!!
+            AlertDialog(
+                onDismissRequest = { warningModelToDownload = null },
+                title = { Text("High RAM Requirement") },
+                text = {
+                    Text(
+                        "This model (${targetModel.name}) recommends at least ${targetModel.minDeviceRamGb} GB RAM. " +
+                        "Your device has ${deviceInfo.totalRamGb} GB RAM. Running this model may cause memory pressure or slower performance.\n\n" +
+                        "Do you wish to proceed?"
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val m = warningModelToDownload!!
+                            warningModelToDownload = null
+                            startDownload(m)
+                        }
+                    ) {
+                        Text("Download Anyway")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { warningModelToDownload = null }) {
+                        Text("Cancel")
+                    }
+                }
+            )
         }
     }
 }
