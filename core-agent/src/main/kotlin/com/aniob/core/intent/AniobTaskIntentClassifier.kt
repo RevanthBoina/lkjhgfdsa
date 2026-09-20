@@ -1,5 +1,7 @@
 package com.aniob.core.intent
 
+import com.aniob.core.domain.SuccessCriteria
+
 /**
  * Pure JVM Intent Gate Classifier.
  * Classifies tasks BEFORE entering the UI automation loop to avoid hallucinated taps
@@ -77,5 +79,50 @@ object AniobTaskIntentClassifier {
 
         // Default to external AI query for general generation
         return AniobIntent.EXTERNAL_AI_QUERY
+    }
+
+    /**
+     * Deterministically extracts [com.aniob.core.domain.SuccessCriteria] from a raw prompt plus any Grill-Me answers.
+     *
+     * This is what makes an honest `Finish` possible: without criteria the verifier can never
+     * disprove a completion, so the agent could declare success on an unchanged screen. Quoted
+     * strings become text assertions and an "open X" imperative becomes a foreground-package
+     * assertion when [appCatalog] can resolve X. Grill answers are merged in as extra text
+     * assertions so a clarified task is checked against what the user actually asked for.
+     */
+    fun extractCriteria(
+        prompt: String,
+        grillAnswers: Map<String, String> = emptyMap(),
+        appCatalog: Map<String, String> = emptyMap()
+    ): SuccessCriteria {
+        val mustContain = mutableListOf<String>()
+        val mustShowPackage = mutableListOf<String>()
+        val minSteps = if (classify(prompt) == AniobIntent.DEVICE_AUTOMATION) 1 else 0
+
+        // Quoted strings are the user's explicit "this must appear" assertions.
+        Regex("[\"'\u201c\u2018]([^\"'\u201d\u2019]{2,40})[\"'\u201d\u2019]")
+            .findAll(prompt)
+            .map { it.groupValues[1].trim() }
+            .filter { it.isNotEmpty() }
+            .forEach { if (it !in mustContain) mustContain += it }
+
+        // "open X" / "launch X" -> the named app's package must be foreground at the end.
+        val lower = prompt.lowercase()
+        val openMatch = Regex("(?:open|launch|start|go to)\\s+([a-z0-9 .&_-]{2,30})").find(lower)
+        if (openMatch != null) {
+            val target = openMatch.groupValues[1].trim().substringBefore(" and ").trim()
+            appCatalog[target]?.let { pkg -> if (pkg !in mustShowPackage) mustShowPackage += pkg }
+        }
+
+        grillAnswers.values
+            .map { it.trim() }
+            .filter { it.length in 2..40 }
+            .forEach { if (it !in mustContain) mustContain += it }
+
+        return SuccessCriteria(
+            mustContainText = mustContain,
+            mustShowPackage = mustShowPackage,
+            minSteps = minSteps
+        )
     }
 }

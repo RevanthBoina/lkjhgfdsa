@@ -23,6 +23,7 @@ import com.aniob.core.embedding.AniobEmbeddingStore
 import com.aniob.core.exec.ExecOutcome
 import com.aniob.core.exec.ExecReport
 import com.aniob.core.execution.AniobAppSessionManager
+import com.aniob.core.execution.StepPipeline
 import com.aniob.core.external.AniobExternalAiTrigger
 import com.aniob.core.grillme.AniobGrillMeEngine
 import com.aniob.core.grillme.AniobGrillMeResult
@@ -455,6 +456,30 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
         observationPolicy.reset()
         executionTracker.clear()
         refreshLocalEngine()
+
+        // Honest completion (no fake SUCCESS): extract deterministic success criteria BEFORE step 0
+        // so a provisional Finish can be verified against evidence. Without criteria a Finish could
+        // be declared on an unchanged screen.
+        val appCatalog = try {
+            com.aniob.core.knowledge.AniobAppCatalog.getInstance().getAll()
+                .filter { it.appName.isNotBlank() }
+                .associate { entry ->
+                    entry.appName.lowercase() to entry.packageName
+                }
+        } catch (_: Exception) {
+            emptyMap()
+        }
+        val resolvedCriteria = task.successCriteria ?: AniobTaskIntentClassifier.extractCriteria(
+            prompt = task.clarifiedGoal,
+            grillAnswers = task.grillAnswers,
+            appCatalog = appCatalog
+        )
+        val taskContext = com.aniob.core.domain.TaskContext(
+            instruction = task.clarifiedGoal,
+            successCriteria = resolvedCriteria,
+            grillAnswers = task.grillAnswers
+        )
+
         AniobAccessibilityService.isTaskActive = true
         val startTime = System.currentTimeMillis()
         var currentStep = 0
@@ -465,6 +490,7 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
         var screenReads = 0
         var actionsDispatched = 0
         var escalations = 0
+        var finishRejections = 0
 
         // Prefrontal-cortex condensation: TaskProgress summary (not full history) is
         // threaded through the ladder so the LLM sees a pure-text progress summary.
@@ -644,7 +670,19 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                             verifiedSuccess = true
                         )
                         addStepRecord(stepRecord)
-                        finalSuccess = true
+                        // A system-intent shortcut is a provisional success too: verify the resulting
+                        // screen against criteria before declaring victory (no fake SUCCESS).
+                        val intentVerdict = DeterministicVerifier.verifyFinish(resolvedCriteria, screenAfter, currentStep + 1)
+                        if (intentVerdict.isExpected) {
+                            finalSuccess = true
+                        } else {
+                            // No evidence either way (e.g. no criteria) still counts as dispatched,
+                            // but a *disproved* criterion means the shortcut did not achieve the goal.
+                            finalSuccess = !resolvedCriteria.hasObservableCheck
+                            if (!finalSuccess) {
+                                _uiState.update { it.copy(statusMessage = "Intent dispatched but goal not verified: ${intentVerdict.reason}") }
+                            }
+                        }
                         break
                     }
 
@@ -719,6 +757,20 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                         )
 
                         if (executed is AniobAction.Finish || executed is AniobAction.Fail) {
+                            if (executed is AniobAction.Finish) {
+                                val verdict = verifyProvisionalFinish(executed, step.screenAfter, currentStep + 1, resolvedCriteria)
+                                if (!verdict.isExpected) {
+                                    finishRejections++
+                                    if (finishRejections < StepPipeline.MAX_REJECTED_FINISHES) {
+                                        _uiState.update { it.copy(statusMessage = "Finish rejected (${finishRejections}/${StepPipeline.MAX_REJECTED_FINISHES}): ${verdict.reason}") }
+                                        screenBefore = step.screenAfter
+                                        currentStep++
+                                        continue
+                                    }
+                                    finalSuccess = false
+                                    break
+                                }
+                            }
                             finalSuccess = executed is AniobAction.Finish
                             break
                         }
@@ -762,6 +814,20 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                         )
 
                         if (executed is AniobAction.Finish || executed is AniobAction.Fail) {
+                            if (executed is AniobAction.Finish) {
+                                val verdict = verifyProvisionalFinish(executed, step.screenAfter, currentStep + 1, resolvedCriteria)
+                                if (!verdict.isExpected) {
+                                    finishRejections++
+                                    if (finishRejections < StepPipeline.MAX_REJECTED_FINISHES) {
+                                        _uiState.update { it.copy(statusMessage = "Finish rejected (${finishRejections}/${StepPipeline.MAX_REJECTED_FINISHES}): ${verdict.reason}") }
+                                        screenBefore = step.screenAfter
+                                        currentStep++
+                                        continue
+                                    }
+                                    finalSuccess = false
+                                    break
+                                }
+                            }
                             finalSuccess = executed is AniobAction.Finish
                             break
                         }
@@ -928,6 +994,20 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                         addStepRecord(stepRecord)
 
                         if (executed is AniobAction.Finish || executed is AniobAction.Fail) {
+                            if (executed is AniobAction.Finish) {
+                                val verdict = verifyProvisionalFinish(executed, screenAfter, currentStep + 1, resolvedCriteria)
+                                if (!verdict.isExpected) {
+                                    finishRejections++
+                                    if (finishRejections < StepPipeline.MAX_REJECTED_FINISHES) {
+                                        _uiState.update { it.copy(statusMessage = "Finish rejected (${finishRejections}/${StepPipeline.MAX_REJECTED_FINISHES}): ${verdict.reason}") }
+                                        screenBefore = screenAfter
+                                        currentStep++
+                                        continue
+                                    }
+                                    finalSuccess = false
+                                    break
+                                }
+                            }
                             finalSuccess = executed is AniobAction.Finish
                             break
                         }
@@ -1028,6 +1108,21 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
     private fun addStepRecord(step: AniobStepRecord) {
         _uiState.update { it.copy(steps = it.steps + step) }
     }
+
+    /**
+     * Evidence gate for a provisional `Finish`.
+     *
+     * Shared by every ladder branch so none of them can declare success on an unverified screen.
+     * An empty criteria set carries no evidence, so it is reported unverified — the caller then
+     * treats the Finish as rejected rather than silently accepting it.
+     */
+    private fun verifyProvisionalFinish(
+        finish: AniobAction.Finish,
+        finalScreen: AniobScreenState,
+        steps: Int,
+        criteria: SuccessCriteria?
+    ): DeterministicVerifier.VerificationResult =
+        DeterministicVerifier.verifyFinish(criteria, finalScreen, steps)
 
     private suspend fun executeActionSync(a11y: AniobAccessibilityService?, action: AniobAction) {
         // Block until the UI is quiescent so we never dispatch into a running animation.

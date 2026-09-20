@@ -12,6 +12,8 @@ data class TaskContext(
     val instruction: String,
     val successCriteria: SuccessCriteria = SuccessCriteria(),
     val condensedHistory: List<String> = emptyList(),
+    /** Verified-or-not actions executed so far, in order. Feeds learning + finish evidence. */
+    val trajectory: List<AniobAction> = emptyList(),
     val stepIndex: Int = 0,
     val lastScreenState: AniobScreenState? = null,
     val retrievedDocs: List<String> = emptyList(),
@@ -34,6 +36,9 @@ data class TaskContext(
             lastScreenState = screen,
             condensedHistory = if (historyEntry == null) condensedHistory else condensedHistory + historyEntry
         )
+
+    /** Appends the action of the step being closed so the trajectory stays in lockstep with history. */
+    fun withAction(action: AniobAction): TaskContext = copy(trajectory = trajectory + action)
 
     fun withFailure(): TaskContext = copy(consecutiveFailures = consecutiveFailures + 1)
 

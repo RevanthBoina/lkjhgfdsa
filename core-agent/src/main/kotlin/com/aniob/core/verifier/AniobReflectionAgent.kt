@@ -40,5 +40,34 @@ class AniobReflectionAgent {
         }
         return ReflectionResult(true, "Screen changed ${screenBefore.treeHash.take(6)} -> ${screenAfter.treeHash.take(6)} verified=$verifiedSuccess")
     }
+
+    /**
+     * Judges a provisional `Finish`.
+     *
+     * Ordering matters for token cost: a deterministic pass is accepted immediately, a
+     * fully-checkable deterministic failure is rejected *without* spending an LLM call, and only
+     * a partially checkable case reaches [llmJudge] — exactly one call.
+     */
+    fun reflectFinish(
+        criteria: com.aniob.core.domain.SuccessCriteria,
+        finalScreen: AniobScreenState,
+        steps: Int,
+        deterministic: DeterministicVerifier.VerificationResult,
+        llmJudge: (String) -> com.aniob.core.execution.ReflectionOutcome = {
+            com.aniob.core.execution.ReflectionOutcome.rejected(it, it)
+        }
+    ): com.aniob.core.execution.ReflectionOutcome {
+        if (deterministic.isExpected) {
+            return com.aniob.core.execution.ReflectionOutcome.confirmed(deterministic.reason)
+        }
+        // Fully checkable -> deterministic verdict is authoritative, no LLM needed.
+        if (criteria.isFullyCheckable) {
+            return com.aniob.core.execution.ReflectionOutcome.rejected(
+                deterministic.reason,
+                "The screen does not satisfy the task criteria yet (${deterministic.reason})."
+            )
+        }
+        return llmJudge(deterministic.reason)
+    }
 }
 
