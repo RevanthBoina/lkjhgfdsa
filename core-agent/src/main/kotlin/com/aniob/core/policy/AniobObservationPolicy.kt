@@ -68,6 +68,13 @@ class AniobObservationPolicy(
         val bothConfirmed = lastTwo.all { it.verifiedSuccess }
         val noScroll = lastTwo.none { it.wasScroll }
 
+        // If last two actions hit same action string/target, animation likely running - force observe
+        val sameAction = lastTwo[0].action.toString() == lastTwo[1].action.toString()
+        if (sameAction) {
+            currentBurstCount = 0
+            return true
+        }
+
         val canBurst = sameApp && bothConfirmed && noScroll
         if (canBurst) {
             // Confident burst: Skip intermediate capture (reduces perception latency to ~40ms)

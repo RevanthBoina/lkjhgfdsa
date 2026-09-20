@@ -61,6 +61,7 @@ sealed class AniobAction {
         val distancePx: Int = 600,
         val startX: Int = 0,
         val startY: Int = 0,
+        val containerId: Int? = null,
         override val thought: String = "Swiping $direction"
     ) : AniobAction() {
         override val toolName: String = "swipe"

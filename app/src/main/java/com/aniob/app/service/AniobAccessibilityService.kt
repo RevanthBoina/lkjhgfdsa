@@ -64,6 +64,7 @@ class AniobAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
                 contentChangedSinceLastStep = true
+                com.aniob.core.policy.AniobWaitForIdle.onContentChanged()
             }
         }
     }
@@ -153,6 +154,22 @@ class AniobAccessibilityService : AccessibilityService() {
             traverseNode(child, list)
             child.recycle()
         }
+    }
+
+    fun findScrollableNode(): AccessibilityNodeInfo? {
+        val root = rootInActiveWindow ?: return null
+        return findScrollableRecursive(root)
+    }
+
+    private fun findScrollableRecursive(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isScrollable) return node
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val result = findScrollableRecursive(child)
+            if (result != null) return result
+            child.recycle()
+        }
+        return null
     }
 
     /**

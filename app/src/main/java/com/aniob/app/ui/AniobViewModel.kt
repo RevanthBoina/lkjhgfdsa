@@ -301,6 +301,48 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
 
+            // Step 1.5: Pre-flight Doctor Check (<500ms fail-fast before burning tokens or execution timeout)
+            val resolvedShortcut = AniobIntentResolver.resolve(trimmed)
+            val doctorResult = com.aniob.core.tools.AniobDoctor.preflightCheck(
+                taskPrompt = trimmed,
+                targetPackage = resolvedShortcut?.targetPackage,
+                isAccessibilityConnected = AniobAccessibilityService.isServiceConnected,
+                modelsDir = modelDownloader.getModelsDir(),
+                installedModelId = modelDownloader.getDefaultModelId(),
+                isNetworkAvailable = AniobDeviceTelemetry.getRealState(app).isNetworkAvailable,
+                autoRouterMode = _uiState.value.autoRouterMode,
+                totalRamGb = AniobDeviceTelemetry.getRealState(app).totalRamGb
+            )
+            if (!doctorResult.allPassed) {
+                val failedChecksSummary = doctorResult.checks.filter { !it.passed }.joinToString { "${it.name}: ${it.reason}" }
+                val doctorErrorMsg = ChatMessage(
+                    id = "msg_doctor_${System.currentTimeMillis()}",
+                    role = "assistant",
+                    content = "Cannot start task: ${doctorResult.failReason}. Checks: $failedChecksSummary",
+                    badge = "⚠️ Pre-flight Failed",
+                    provider = "DOCTOR"
+                )
+                _uiState.update {
+                    it.copy(
+                        isRunning = false,
+                        statusMessage = "Pre-flight check failed",
+                        chatMessages = it.chatMessages + doctorErrorMsg,
+                        lastRoutingReason = doctorResult.failReason ?: "Doctor pre-flight failed"
+                    )
+                }
+                app.metricsCollector.recordSession(
+                    taskId = taskId,
+                    prompt = trimmed,
+                    isSuccess = false,
+                    steps = 0,
+                    durationMs = 0,
+                    tokensUsed = 0,
+                    providerUsed = "DOCTOR",
+                    decisionReason = doctorResult.failReason ?: "Doctor pre-flight failed"
+                )
+                return@launch
+            }
+
             // Task is self-contained -> Proceed directly
             executeTaskPipeline(task)
         }
@@ -860,7 +902,9 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(steps = it.steps + step) }
     }
 
-    private fun executeActionSync(a11y: AniobAccessibilityService?, action: AniobAction) {
+    private suspend fun executeActionSync(a11y: AniobAccessibilityService?, action: AniobAction) {
+        // Wait-for-idle before acting - eliminates flakiness and animation racing
+        com.aniob.core.policy.AniobWaitForIdle.waitForIdle(1000)
         a11y?.executeAction(action) { /* callback */ }
     }
 
