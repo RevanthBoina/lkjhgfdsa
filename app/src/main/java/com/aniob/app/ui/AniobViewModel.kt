@@ -117,6 +117,8 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
 
     private val app = application as AniobApplication
     private val modelDownloader = AniobModelDownloader(application)
+    private val configLoader = com.aniob.app.config.AniobConfigLoader(application)
+    private val agentLimits: com.aniob.core.config.AgentLimits by lazy { configLoader.agentLimits() }
     private val hippocampusTracker by lazy {
         AniobHippocampusTracker(
             skillsDir = File(app.getExternalFilesDir(null) ?: app.filesDir, "skill_library/skills"),
@@ -523,7 +525,7 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
 
-        val maxSteps = 10
+        val maxSteps = agentLimits.maxStepsPerTask
 
         try {
             while (currentStep < maxSteps && _uiState.value.isRunning) {
@@ -814,7 +816,10 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                                 apiKey = _uiState.value.omnirouteApiKey,
                                 model = _uiState.value.omnirouteModel
                             )
-                            val res = omniroute.getNextAction("You are Aniob agent.", planningSummary)
+                            val res = omniroute.getNextAction(
+                                configLoader.prompt("system_prompt.txt") ?: "You are Aniob agent.",
+                                planningSummary
+                            )
                             totalTokens += 150
                             res.getOrElse { mockProvider.planNextStep(planningSummary, currentStep, currentScreen) }
                         } else {

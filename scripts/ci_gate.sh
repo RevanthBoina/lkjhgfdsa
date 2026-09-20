@@ -24,5 +24,13 @@ if grep -rn "import android\." core-agent/src/main/ 2>/dev/null; then
 fi
 echo "core-agent purity verified (0 android.* imports)."
 
+# 4. Check bundled configs/ assets have not drifted from the repo files
+chmod +x scripts/config-assets-sync-check.sh
+./scripts/config-assets-sync-check.sh
+
+# 5. Check skill library assets have not drifted
+chmod +x scripts/skill-assets-sync-check.sh
+./scripts/skill-assets-sync-check.sh
+
 echo "=== ALL CI GATES PASSED SUCCESSFULLY ==="
 exit 0

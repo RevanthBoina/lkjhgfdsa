@@ -175,3 +175,27 @@ download:
   resumable: true
   verify_sha256: true
   notification_channel: "aniob_model_download"
+
+# Per-role generation parameters (PROMPT A). Consumed by AniobDecodeConfig via
+# AniobConfigLoader (assets) with compiled defaults when absent.
+generation:
+  planner:
+    temperature: 0.0
+    max_tokens: 512
+    json_mode: true
+  executor:
+    temperature: 0.0
+    max_tokens: 128
+    json_mode: true
+  reflector:
+    temperature: 0.2
+    max_tokens: 256
+    json_mode: true
+  grill:
+    temperature: 0.3
+    max_tokens: 512
+    json_mode: true
+  explorer:
+    temperature: 0.4
+    max_tokens: 256
+    json_mode: true
