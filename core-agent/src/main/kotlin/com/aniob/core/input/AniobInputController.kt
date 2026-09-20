@@ -1,10 +1,13 @@
 package com.aniob.core.input
 
-import com.aniob.core.domain.AniobAction
-import com.aniob.core.domain.TargetSpec
+import com.aniob.core.execution.DispatchCommand
 
 /**
- * Pure JVM Input planner and gesture coordinate resolver.
+ * Pure JVM gesture planner.
+ *
+ * Coordinates arrive pre-resolved inside a [DispatchCommand] and are clamped to the screen here.
+ * This class must never read an action's fields directly — that is what made a stale or
+ * hallucinated coordinate reachable before.
  */
 object AniobInputController {
 
@@ -17,44 +20,53 @@ object AniobInputController {
         val durationMs: Long
     )
 
-    fun resolveGesture(action: AniobAction, screenWidth: Int = 1080, screenHeight: Int = 2400): GestureCommand {
-        return when (action) {
-            is AniobAction.Tap -> GestureCommand(
+    fun resolveGesture(command: DispatchCommand, screenWidth: Int = 1080, screenHeight: Int = 2400): GestureCommand? {
+        val maxX = (screenWidth - 1).coerceAtLeast(0)
+        val maxY = (screenHeight - 1).coerceAtLeast(0)
+        return when (command) {
+            is DispatchCommand.TapAt -> GestureCommand(
                 type = "TAP",
-                startX = action.x.coerceIn(0, screenWidth),
-                startY = action.y.coerceIn(0, screenHeight),
-                endX = action.x.coerceIn(0, screenWidth),
-                endY = action.y.coerceIn(0, screenHeight),
+                startX = command.x.coerceIn(0, maxX),
+                startY = command.y.coerceIn(0, maxY),
+                endX = command.x.coerceIn(0, maxX),
+                endY = command.y.coerceIn(0, maxY),
                 durationMs = 50L
             )
-            is AniobAction.LongPress -> GestureCommand(
+            is DispatchCommand.LongPressAt -> GestureCommand(
                 type = "LONG_PRESS",
-                startX = action.x.coerceIn(0, screenWidth),
-                startY = action.y.coerceIn(0, screenHeight),
-                endX = action.x.coerceIn(0, screenWidth),
-                endY = action.y.coerceIn(0, screenHeight),
-                durationMs = action.durationMs
+                startX = command.x.coerceIn(0, maxX),
+                startY = command.y.coerceIn(0, maxY),
+                endX = command.x.coerceIn(0, maxX),
+                endY = command.y.coerceIn(0, maxY),
+                durationMs = command.durationMs
             )
-            is AniobAction.Swipe -> {
-                val midX = screenWidth / 2
-                val midY = screenHeight / 2
-                val dist = action.distancePx
-                val (endX, endY) = when (action.direction) {
-                    com.aniob.core.domain.SwipeDirection.UP -> midX to (midY - dist).coerceAtLeast(100)
-                    com.aniob.core.domain.SwipeDirection.DOWN -> midX to (midY + dist).coerceAtMost(screenHeight - 100)
-                    com.aniob.core.domain.SwipeDirection.LEFT -> (midX - dist).coerceAtLeast(100) to midY
-                    com.aniob.core.domain.SwipeDirection.RIGHT -> (midX + dist).coerceAtMost(screenWidth - 100) to midY
-                }
-                GestureCommand(
-                    type = "SWIPE",
-                    startX = midX,
-                    startY = midY,
-                    endX = endX,
-                    endY = endY,
-                    durationMs = 300L
-                )
-            }
-            else -> GestureCommand("UNKNOWN", 0, 0, 0, 0, 0L)
+            is DispatchCommand.SwipeGesture -> GestureCommand(
+                type = "SWIPE",
+                startX = command.startX.coerceIn(0, maxX),
+                startY = command.startY.coerceIn(0, maxY),
+                endX = command.endX.coerceIn(0, maxX),
+                endY = command.endY.coerceIn(0, maxY),
+                durationMs = command.durationMs
+            )
+            else -> null
         }
+    }
+
+    /** Builds a swipe gesture centered on the screen, used when no container was resolved. */
+    fun centeredSwipe(
+        direction: String,
+        distancePx: Int,
+        screenWidth: Int = 1080,
+        screenHeight: Int = 2400
+    ): GestureCommand {
+        val midX = screenWidth / 2
+        val midY = screenHeight / 2
+        val (endX, endY) = when (direction.uppercase()) {
+            "UP" -> midX to (midY - distancePx).coerceAtLeast(100)
+            "DOWN" -> midX to (midY + distancePx).coerceAtMost(screenHeight - 100)
+            "LEFT" -> (midX - distancePx).coerceAtLeast(100) to midY
+            else -> (midX + distancePx).coerceAtMost(screenWidth - 100) to midY
+        }
+        return GestureCommand("SWIPE", midX, midY, endX, endY, 300L)
     }
 }

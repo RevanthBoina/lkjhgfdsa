@@ -3,6 +3,7 @@ package com.aniob.core.providers
 import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.AniobNode
 import com.aniob.core.domain.AniobScreenState
+import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.SwipeDirection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -12,46 +13,71 @@ import org.junit.Test
 
 class AniobToolCallParserTest {
 
+    private fun screenOf(vararg ids: Int) = AniobScreenState(
+        packageName = "com.android.settings",
+        nodes = ids.map { AniobNode(id = it, className = "TextView", text = "n$it") }
+    )
+
     @Test
-    fun `parses strict tap tool call`() {
-        val call = AniobToolCallParser.parse("""{"thought":"Tap search","tool":"tap","target_node_id":4}""")
-        assertEquals("tap", call?.tool)
-        assertEquals(4, call?.targetNodeId)
-        assertEquals("Tap search", call?.thought)
+    fun `parses strict tap tool call with som target`() {
+        val action = AniobToolCallParser.parseToAction(
+            """{"thought":"Tap search","tool":"tap","target":{"kind":"som_index","value":4}}"""
+        )
+        assertEquals(AniobAction.Tap(SemanticTarget.SomIndex(4), "Tap search"), action)
     }
 
     @Test
     fun `parses tool call embedded in prose`() {
         val raw = "Sure, here is the step:\n{\"thought\":\"open settings\",\"tool\":\"open_app\",\"package_name\":\"com.android.settings\"}\nDone."
-        val call = AniobToolCallParser.parse(raw)
-        assertEquals("open_app", call?.tool)
-        assertEquals("com.android.settings", call?.packageName)
+        val action = AniobToolCallParser.parseToAction(raw)
+        assertEquals(AniobAction.OpenApp("com.android.settings", thought = "open settings"), action)
     }
 
     @Test
     fun `returns null when no tool key`() {
-        assertNull(AniobToolCallParser.parse("I think we should search for it"))
-        assertNull(AniobToolCallParser.parse(""))
+        assertNull(AniobToolCallParser.parseToAction("I think we should search for it"))
+        assertNull(AniobToolCallParser.parseToAction(""))
     }
 
     @Test
     fun `maps tap to action only for existing node`() {
-        val call = AniobToolCallParser.parse("""{"thought":"x","tool":"tap","target_node_id":7}""")!!
-        val action = AniobToolCallParser.toAction(call, validNodeIds = setOf(1, 2, 3))
+        val action = AniobToolCallParser.toAction(
+            """{"thought":"x","tool":"tap","target":{"kind":"som_index","value":7}}""",
+            screenOf(1, 2, 3)
+        )
         assertTrue(action is AniobAction.Fail)
     }
 
     @Test
-    fun `maps tap to click for valid node`() {
-        val call = AniobToolCallParser.parse("""{"thought":"x","tool":"tap","target_node_id":2}""")!!
-        val action = AniobToolCallParser.toAction(call, validNodeIds = setOf(1, 2, 3))
-        assertEquals(2, (action as AniobAction.Click).targetNodeId)
+    fun `maps tap to Tap for valid node`() {
+        val action = AniobToolCallParser.toAction(
+            """{"thought":"x","tool":"tap","target":{"kind":"som_index","value":2}}""",
+            screenOf(1, 2, 3)
+        )
+        assertEquals(SemanticTarget.SomIndex(2), (action as AniobAction.Tap).target)
     }
 
     @Test
-    fun `swipe direction defaults to down`() {
-        val call = AniobToolCallParser.parse("""{"thought":"x","tool":"swipe"}""")!!
-        assertEquals(SwipeDirection.DOWN, (AniobToolCallParser.toAction(call) as AniobAction.Swipe).direction)
+    fun `swipe parses an explicit direction`() {
+        val action = AniobToolCallParser.toAction(
+            """{"thought":"x","tool":"swipe","direction":"DOWN"}""",
+            screenOf(1)
+        )
+        assertEquals(SwipeDirection.DOWN, (action as AniobAction.Swipe).direction)
+    }
+
+    @Test
+    fun `swipe without direction fails closed rather than guessing`() {
+        val action = AniobToolCallParser.toAction("""{"thought":"x","tool":"swipe"}""", screenOf(1))
+        assertTrue(action is AniobAction.Fail)
+    }
+
+    @Test
+    fun `coordinate fields are rejected by the single parser`() {
+        val action = AniobToolCallParser.parseToAction(
+            """{"thought":"x","tool":"tap","target":{"kind":"som_index","value":1},"x":100,"y":200}"""
+        )
+        assertNull(action)
     }
 }
 
@@ -88,19 +114,19 @@ class AniobLocalActionResolverTest {
     @Test
     fun `ready output with hallucinated node id fails instead of tapping`() {
         val action = AniobLocalActionResolver.resolve(
-            AniobGenerationResult.Ready("""{"thought":"tap","tool":"tap","target_node_id":99}"""),
+            AniobGenerationResult.Ready("""{"thought":"tap","tool":"tap","target":{"kind":"som_index","value":99}}"""),
             screen
         )
         assertTrue(action is AniobAction.Fail)
     }
 
     @Test
-    fun `ready output with valid node resolves to click`() {
+    fun `ready output with valid node resolves to tap`() {
         val action = AniobLocalActionResolver.resolve(
-            AniobGenerationResult.Ready("""{"thought":"tap","tool":"tap","target_node_id":1}"""),
+            AniobGenerationResult.Ready("""{"thought":"tap","tool":"tap","target":{"kind":"som_index","value":1}}"""),
             screen
         )
-        assertEquals(1, (action as AniobAction.Click).targetNodeId)
+        assertEquals(SemanticTarget.SomIndex(1), (action as AniobAction.Tap).target)
     }
 }
 

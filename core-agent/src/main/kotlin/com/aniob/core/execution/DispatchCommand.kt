@@ -1,0 +1,55 @@
+package com.aniob.core.execution
+
+import com.aniob.core.domain.SemanticTarget
+
+/**
+ * A resolved, executable instruction — pixels included.
+ *
+ * `DispatchCommand` is the ONLY type in the system that carries absolute coordinates. It is
+ * produced exclusively by `AniobActionExecutor.planDispatch` from a *live* screen capture, so
+ * a coordinate can never originate from model output.
+ */
+sealed interface DispatchCommand {
+    val targetDescription: String
+
+    data class TapAt(val x: Int, val y: Int, override val targetDescription: String) : DispatchCommand
+
+    data class LongPressAt(
+        val x: Int,
+        val y: Int,
+        val durationMs: Long,
+        override val targetDescription: String
+    ) : DispatchCommand
+
+    data class SetText(
+        val nodeId: Int,
+        val text: String,
+        val clearFirst: Boolean = false,
+        override val targetDescription: String
+    ) : DispatchCommand
+
+    data class SwipeGesture(
+        val startX: Int,
+        val startY: Int,
+        val endX: Int,
+        val endY: Int,
+        val durationMs: Long = 300L,
+        override val targetDescription: String
+    ) : DispatchCommand
+
+    /** Non-gesture intents: open app, system keys, clipboard, screen reads, finish/fail. */
+    data class SystemIntent(
+        val name: String,
+        val argument: String? = null,
+        override val targetDescription: String = name
+    ) : DispatchCommand
+
+    /** Nothing to execute — e.g. a grounding miss. Never a guessed tap. */
+    data class NoOp(val reason: String) : DispatchCommand {
+        override val targetDescription: String = "noop:$reason"
+    }
+
+    companion object {
+        fun groundingMiss(target: SemanticTarget): NoOp = NoOp("grounding_miss:${target.describe()}")
+    }
+}

@@ -2,6 +2,7 @@ package com.aniob.app.provider
 
 import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.KeyType
+import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.SwipeDirection
 import com.aniob.app.network.AniobHttpClientSingleton
 import com.aniob.core.external.AniobCloudLlmProvider
@@ -262,15 +263,16 @@ class AniobOmniRouteProvider(
         val json = JSONObject(jsonString)
         val thought = json.optString("thought", "Action planned by Omniroute Cloud")
         val actionType = json.optString("action", "WAIT").uppercase()
-        val targetNodeId = json.optInt("targetNodeId", 1)
+        val target = parseTarget(json)
 
         return when (actionType) {
-            "CLICK" -> AniobAction.Click(targetNodeId = targetNodeId, thought = thought)
-            "INPUT_TEXT" -> AniobAction.InputText(
-                targetNodeId = targetNodeId,
-                text = json.optString("text", ""),
-                thought = thought
-            )
+            "CLICK", "TAP" -> target?.let { AniobAction.Tap(it, thought = thought) }
+                ?: AniobAction.Fail(reason = "Cloud action CLICK carried no target", thought = thought)
+            "INPUT_TEXT" -> target?.let {
+                AniobAction.InputText(it, text = json.optString("text", ""), thought = thought)
+            } ?: AniobAction.Fail(reason = "Cloud action INPUT_TEXT carried no target", thought = thought)
+            "LONG_PRESS" -> target?.let { AniobAction.LongPress(it, thought = thought) }
+                ?: AniobAction.Fail(reason = "Cloud action LONG_PRESS carried no target", thought = thought)
             "SWIPE" -> {
                 val dirStr = json.optString("swipeDirection", "UP").uppercase()
                 val dir = try { SwipeDirection.valueOf(dirStr) } catch (e: Exception) { SwipeDirection.UP }
@@ -280,7 +282,30 @@ class AniobOmniRouteProvider(
             "PRESS_HOME" -> AniobAction.PressKey(KeyType.HOME, thought = thought)
             "FINISH" -> AniobAction.Finish(summary = json.optString("reason", "Task finished"), thought = thought)
             "FAIL" -> AniobAction.Fail(reason = json.optString("reason", "Task failed"), thought = thought)
-            else -> AniobAction.Wait(durationMs = 1000L, thought = thought)
+            else -> AniobAction.Wait(thought = thought)
         }
+    }
+
+    /**
+     * Reads the semantic target from a cloud action. Prefers the v2 `target` object and falls
+     * back to a legacy `targetNodeId`, which cloud models were trained to emit as a SoM index.
+     */
+    private fun parseTarget(json: JSONObject): SemanticTarget? {
+        json.optJSONObject("target")?.let { obj ->
+            val kind = obj.optString("kind", "").lowercase()
+            val value = obj.optString("value", "")
+            if (value.isNotEmpty()) {
+                return when (kind) {
+                    "som_index", "som", "index" -> value.toIntOrNull()?.let { SemanticTarget.SomIndex(it) }
+                    "resource_id", "view_id", "id" -> SemanticTarget.ResourceId(value)
+                    "text" -> SemanticTarget.Text(value, obj.optBoolean("exact", false))
+                    "content_desc", "content_description", "desc" ->
+                        SemanticTarget.ContentDesc(value, obj.optBoolean("exact", false))
+                    else -> null
+                }
+            }
+        }
+        val legacyId = json.optInt("targetNodeId", -1)
+        return if (legacyId >= 0) SemanticTarget.SomIndex(legacyId) else null
     }
 }

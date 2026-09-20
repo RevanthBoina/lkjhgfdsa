@@ -12,7 +12,9 @@ data class AniobTask(
     val steps: List<AniobStepRecord> = emptyList(),
     val startedAt: Long = System.currentTimeMillis(),
     val finishedAt: Long? = null,
-    val providerUsed: String = "UNDECIDED"
+    val providerUsed: String = "UNDECIDED",
+    /** Populated after Grill-Me, before step 0. Null means "no deterministic finish evidence". */
+    val successCriteria: SuccessCriteria? = null
 ) {
     val durationMs: Long get() = (finishedAt ?: System.currentTimeMillis()) - startedAt
     val totalTokens: Int get() = steps.sumOf { it.tokensUsed }

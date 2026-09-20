@@ -24,15 +24,8 @@ object AniobLocalActionResolver {
             AniobAction.Fail(reason = "On-device model failed: ${generation.reason}")
         is AniobGenerationResult.Unparseable ->
             AniobAction.Fail(reason = "On-device model returned no actionable tool call")
-        is AniobGenerationResult.Ready -> {
-            val call = AniobToolCallParser.parse(generation.fullText)
-            if (call == null) {
-                AniobAction.Fail(reason = "On-device model returned unparseable step")
-            } else {
-                val validIds = screenState?.nodes?.map { it.id }?.toSet().orEmpty()
-                AniobToolCallParser.toAction(call, validIds)
-            }
-        }
+        is AniobGenerationResult.Ready ->
+            AniobToolCallParser.toAction(generation.fullText, screenState)
     }
 
     const val DEFAULT_UNAVAILABLE_REASON =

@@ -68,11 +68,10 @@ class AniobObservationPolicy(
         val bothConfirmed = lastTwo.all { it.verifiedSuccess }
         val noScroll = lastTwo.none { it.wasScroll }
 
-        // Repeated action signature across a *divergent* window means an animation/lag is likely
-        // in flight: force a fresh observation so the burst cannot chain on a stale screen.
-        val signature = lastTwo[1].action.toString()
-        val priorDistinct = recentActions.dropLast(1).count { it.action.toString() != signature }
-        if (priorDistinct >= 2 && lastTwo[0].action.toString() == signature) {
+        // Repeated identical action means the previous gesture likely landed mid-animation and
+        // produced no visible change. Force a fresh observation instead of chaining a burst on
+        // a screen that may still be animating.
+        if (lastTwo[0].action.describeAction() == lastTwo[1].action.describeAction()) {
             currentBurstCount = 0
             return true
         }

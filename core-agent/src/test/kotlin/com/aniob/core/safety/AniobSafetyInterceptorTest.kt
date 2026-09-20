@@ -1,6 +1,7 @@
 package com.aniob.core.safety
 
 import com.aniob.core.domain.AniobAction
+import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.AniobNode
 import com.aniob.core.domain.AniobRect
 import com.aniob.core.domain.AniobScreenState
@@ -17,7 +18,7 @@ class AniobSafetyInterceptorTest {
     @Test
     fun testPaymentActionBlocked() {
         val result = AniobSafetyInterceptor.evaluateAction(
-            action = AniobAction.Click(targetNodeId = 1, thought = "complete the payment now"),
+            action = AniobAction.Tap(SemanticTarget.SomIndex(1), thought = "complete the payment now"),
             targetNode = null,
             screenState = screen(),
             screenFingerprint = "fp_pay"
@@ -29,7 +30,7 @@ class AniobSafetyInterceptorTest {
     @Test
     fun testDestructiveActionBlocked() {
         val result = AniobSafetyInterceptor.evaluateAction(
-            action = AniobAction.Click(targetNodeId = 1, thought = "confirm factory reset now"),
+            action = AniobAction.Tap(SemanticTarget.SomIndex(1), thought = "confirm factory reset now"),
             targetNode = null,
             screenState = screen(),
             screenFingerprint = "fp_wipe"
@@ -43,7 +44,7 @@ class AniobSafetyInterceptorTest {
     fun testActionWithPayInsideWordIsNotBlocked() {
         // "display" contains the letters p-a-y but is not a payment op.
         val result = AniobSafetyInterceptor.evaluateAction(
-            action = AniobAction.InputText(targetNodeId = 3, text = "display the results"),
+            action = AniobAction.InputText(SemanticTarget.SomIndex(3), text = "display the results"),
             targetNode = AniobNode(id = 3, className = "EditText", bounds = AniobRect(0, 0, 10, 10), isEditable = true),
             screenState = screen(),
             screenFingerprint = "fp_display"
@@ -55,7 +56,7 @@ class AniobSafetyInterceptorTest {
     fun testOtpOnEditableNodeBlocked() {
         val editable = AniobNode(id = 2, className = "EditText", bounds = AniobRect(0, 0, 10, 10), isEditable = true)
         val result = AniobSafetyInterceptor.evaluateAction(
-            action = AniobAction.InputText(targetNodeId = 2, text = "my otp is 1234"),
+            action = AniobAction.InputText(SemanticTarget.SomIndex(2), text = "my otp is 1234"),
             targetNode = editable,
             screenState = screen(),
             screenFingerprint = "fp_otp"
@@ -92,7 +93,7 @@ class AniobSafetyInterceptorTest {
     @Test
     fun testNormalActionAllowedLowRisk() {
         val result = AniobSafetyInterceptor.evaluateAction(
-            action = AniobAction.Tap(x = 50, y = 60),
+            action = AniobAction.Tap(SemanticTarget.Text("Wi-Fi")),
             targetNode = null,
             screenState = screen(),
             screenFingerprint = "fp_normal"

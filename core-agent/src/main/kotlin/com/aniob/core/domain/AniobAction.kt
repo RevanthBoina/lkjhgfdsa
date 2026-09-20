@@ -1,67 +1,43 @@
 package com.aniob.core.domain
 
 /**
- * Target specification for resilient element targeting.
- */
-data class TargetSpec(
-    val nodeId: Int? = null,
-    val text: String? = null,
-    val contentDescription: String? = null,
-    val resourceId: String? = null,
-    val className: String? = null,
-    val bounds: AniobRect? = null,
-    val x: Int? = null,
-    val y: Int? = null
-)
-
-/**
- * Canonical 15-Tool Action definitions for Aniob autonomous agent.
+ * Canonical action set for the Aniob autonomous agent (v2, semantic-only).
+ *
+ * Invariant: **no LLM-reachable field can express a coordinate.** [Tap], [LongPress] and
+ * [InputText] name their element with a [SemanticTarget] only. Pixels are derived from the
+ * live tree by `AniobGroundingResolver` at dispatch time. Any x/y a model might emit is
+ * rejected by `AniobActionSchema.parseActionJson` with a field-level error.
+ *
  * Strictly pure Kotlin JVM domain model.
  */
 sealed class AniobAction {
     abstract val thought: String
     abstract val toolName: String
 
-    // 1. tap (alias Click)
+    // 1. tap
     data class Tap(
-        val targetNodeId: Int? = null,
-        val targetSpec: TargetSpec? = null,
-        val x: Int = 0,
-        val y: Int = 0,
+        val target: SemanticTarget,
         override val thought: String = "Tapping target element"
     ) : AniobAction() {
         override val toolName: String = "tap"
-    }
-
-    // Backwards compatibility alias for Click
-    data class Click(
-        val targetNodeId: Int,
-        val x: Int = 0,
-        val y: Int = 0,
-        override val thought: String = "Clicking element $targetNodeId"
-    ) : AniobAction() {
-        override val toolName: String = "tap"
+        fun describeTarget(): String = target.describe()
     }
 
     // 2. long_press
     data class LongPress(
-        val targetNodeId: Int? = null,
-        val targetSpec: TargetSpec? = null,
-        val x: Int = 0,
-        val y: Int = 0,
+        val target: SemanticTarget,
         val durationMs: Long = 1000L,
         override val thought: String = "Long pressing target element"
     ) : AniobAction() {
         override val toolName: String = "long_press"
+        fun describeTarget(): String = target.describe()
     }
 
     // 3. swipe
     data class Swipe(
         val direction: SwipeDirection,
         val distancePx: Int = 600,
-        val startX: Int = 0,
-        val startY: Int = 0,
-        val containerId: Int? = null,
+        val container: SemanticTarget? = null,
         override val thought: String = "Swiping $direction"
     ) : AniobAction() {
         override val toolName: String = "swipe"
@@ -69,12 +45,13 @@ sealed class AniobAction {
 
     // 4. input_text
     data class InputText(
-        val targetNodeId: Int,
+        val target: SemanticTarget,
         val text: String,
         val clearFirst: Boolean = false,
-        override val thought: String = "Typing text into element $targetNodeId"
+        override val thought: String = "Typing text into target element"
     ) : AniobAction() {
         override val toolName: String = "input_text"
+        fun describeTarget(): String = target.describe()
     }
 
     // 5. open_app
@@ -146,12 +123,21 @@ sealed class AniobAction {
         override val toolName: String = "system_key"
     }
 
-    // 13. wait
+    // 13. wait — duration clamped so a model cannot stall the loop indefinitely
     data class Wait(
-        val durationMs: Long = 1000L,
+        val durationMs: Long = DEFAULT_WAIT_MS,
         override val thought: String = "Waiting ${durationMs}ms for UI to settle"
     ) : AniobAction() {
         override val toolName: String = "wait"
+
+        /** Returns a copy whose duration lies within [MIN_WAIT_MS]..[MAX_WAIT_MS]. */
+        fun clamped(): Wait = copy(durationMs = durationMs.coerceIn(MIN_WAIT_MS, MAX_WAIT_MS))
+
+        companion object {
+            const val MIN_WAIT_MS = 200L
+            const val MAX_WAIT_MS = 5000L
+            const val DEFAULT_WAIT_MS = 1000L
+        }
     }
 
     // 14. confirm_with_user
@@ -177,6 +163,30 @@ sealed class AniobAction {
         override val thought: String = "Execution failed: $reason"
     ) : AniobAction() {
         override val toolName: String = "fail"
+    }
+
+    /** Semantic identity of this action for logs, watchdogs and learning signatures. */
+    fun describeAction(): String = when (this) {
+        is Tap -> "TAP_${target.describe()}"
+        is LongPress -> "LONG_PRESS_${target.describe()}"
+        is InputText -> "INPUT_${target.describe()}_${text.hashCode()}"
+        is Swipe -> "SWIPE_$direction"
+        is OpenApp -> "OPEN_APP_$packageName"
+        is SystemKey -> "SYSTEM_KEY_$key"
+        is PressKey -> "PRESS_KEY_$key"
+        is Wait -> "WAIT_${durationMs}"
+        is Finish -> "FINISH"
+        is Fail -> "FAIL"
+        is ConfirmWithUser -> "CONFIRM"
+        else -> toolName
+    }
+
+    /** The element this action targets, or null for whole-screen/global actions. */
+    fun semanticTarget(): SemanticTarget? = when (this) {
+        is Tap -> target
+        is LongPress -> target
+        is InputText -> target
+        else -> null
     }
 }
 

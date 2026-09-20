@@ -1,16 +1,20 @@
 package com.aniob.core.providers
 
 import com.aniob.core.domain.AniobAction
+import com.aniob.core.domain.AniobActionSchema
 import com.aniob.core.domain.KeyType
+import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.SwipeDirection
 
 /**
  * Parsed shape of the JSON tool call an on-device SLM is expected to emit.
+ *
+ * v2: the element is named by a [SemanticTarget]; node ids are no longer expressible.
  */
 data class AniobToolCall(
     val thought: String,
     val tool: String,
-    val targetNodeId: Int? = null,
+    val target: SemanticTarget? = null,
     val text: String? = null,
     val packageName: String? = null,
     val direction: SwipeDirection? = null,
@@ -43,78 +47,47 @@ sealed class AniobGenerationResult {
 }
 
 /**
- * Parses the strict single-step JSON schema emitted by local SLM providers:
- * `{"thought": "...", "tool": "tap", "target_node_id": 3}`.
+ * Thin adapter over the single canonical parser.
+ *
+ * v2 note: this object performs NO JSON parsing of its own. It delegates to
+ * [AniobActionSchema.parseActionJson] and only validates SoM targets against the live screen,
+ * so the "hallucinated node id" guarantee survives the action-model rewrite.
  */
 object AniobToolCallParser {
 
-    private val TOOL_OBJECT = Regex("\\{[^{}]*\"tool\"\\s*:\\s*\"[^\"]+\"[^{}]*}", RegexOption.DOT_MATCHES_ALL)
-    private val STRING_FIELD: (String) -> Regex = { field ->
-        Regex("\"$field\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
-    }
-    private val INT_FIELD: (String) -> Regex = { field ->
-        Regex("\"$field\"\\s*:\\s*(-?\\d+)")
-    }
-
-    fun parse(rawText: String): AniobToolCall? {
-        val candidate = TOOL_OBJECT.find(rawText)?.value ?: rawText.trim()
-        if (!candidate.contains("\"tool\"")) return null
-        val tool = str(candidate, "tool") ?: str(candidate, "action") ?: return null
-
-        val targetNodeId = int(candidate, "target_node_id")
-            ?: int(candidate, "targetNodeId")
-            ?: int(candidate, "node_id")
-
-        return AniobToolCall(
-            thought = str(candidate, "thought") ?: "Local model step",
-            tool = tool.trim().lowercase(),
-            targetNodeId = targetNodeId,
-            text = str(candidate, "text"),
-            packageName = str(candidate, "package_name") ?: str(candidate, "packageName"),
-            direction = str(candidate, "direction")?.let(::swipeDirection),
-            key = str(candidate, "key")?.let(::keyType),
-            summary = str(candidate, "summary"),
-            reason = str(candidate, "reason")
-        )
-    }
+    /** Parses raw model text into the canonical action, or null when it is not a valid action. */
+    fun parseToAction(rawText: String): AniobAction? = AniobActionSchema.parseActionJsonOrNull(rawText)
 
     /**
-     * Maps a parsed tool call onto the canonical 15-tool action model.
-     * [validNodeIds] guards taps against hallucinated node ids.
+     * Maps raw model text onto an action, failing explicitly when an SoM index is not present
+     * on [screen]. Semantic targets (text/resource-id/desc) defer to the grounding resolver.
      */
-    fun toAction(call: AniobToolCall, validNodeIds: Set<Int> = emptySet()): AniobAction {
-        fun nodeOrNull(): Int? = call.targetNodeId?.takeIf { validNodeIds.isEmpty() || it in validNodeIds }
-        return when (call.tool) {
-            "tap", "click" -> nodeOrNull()?.let { AniobAction.Click(targetNodeId = it, thought = call.thought) }
-                ?: AniobAction.Fail(reason = "Local model proposed ${call.tool} on missing node ${call.targetNodeId}", thought = call.thought)
-            "long_press" -> nodeOrNull()?.let { AniobAction.LongPress(targetNodeId = it, thought = call.thought) }
-                ?: AniobAction.Fail(reason = "Local model proposed long_press on missing node ${call.targetNodeId}", thought = call.thought)
-            "input_text", "type" -> nodeOrNull()?.let {
-                AniobAction.InputText(targetNodeId = it, text = call.text.orEmpty(), thought = call.thought)
-            } ?: AniobAction.Fail(reason = "Local model proposed input_text on missing node ${call.targetNodeId}", thought = call.thought)
-            "swipe", "scroll" -> AniobAction.Swipe(direction = call.direction ?: SwipeDirection.DOWN, thought = call.thought)
-            "open_app" -> AniobAction.OpenApp(packageName = call.packageName.orEmpty(), thought = call.thought)
-            "system_key", "press_key" -> AniobAction.PressKey(key = call.key ?: KeyType.BACK, thought = call.thought)
-            "finish" -> AniobAction.Finish(summary = call.summary ?: "Task completed", thought = call.thought)
-            "fail" -> AniobAction.Fail(reason = call.reason ?: "Local model reported failure", thought = call.thought)
-            else -> AniobAction.Fail(reason = "Unsupported local tool '${call.tool}'", thought = call.thought)
+    fun toAction(rawText: String, screen: com.aniob.core.domain.AniobScreenState?): AniobAction {
+        val action = parseToAction(rawText)
+            ?: return AniobAction.Fail(reason = "Local model output was not a valid action", thought = "unparseable")
+        return validateAgainstScreen(action, screen)
+    }
+
+    private fun validateAgainstScreen(
+        action: AniobAction,
+        screen: com.aniob.core.domain.AniobScreenState?
+    ): AniobAction {
+        if (screen == null) return action
+        val validIds = screen.nodes.map { it.id }.toSet()
+        fun check(target: SemanticTarget, failReason: String): AniobAction? {
+            if (target is SemanticTarget.SomIndex && target.index !in validIds) {
+                return AniobAction.Fail(
+                    reason = "$failReason on missing SoM index ${target.index}",
+                    thought = "hallucinated target"
+                )
+            }
+            return null
+        }
+        return when (action) {
+            is AniobAction.Tap -> check(action.target, "Local model proposed tap") ?: action
+            is AniobAction.LongPress -> check(action.target, "Local model proposed long_press") ?: action
+            is AniobAction.InputText -> check(action.target, "Local model proposed input_text") ?: action
+            else -> action
         }
     }
-
-    private fun str(json: String, field: String): String? {
-        val match = STRING_FIELD(field).find(json) ?: return null
-        return match.groupValues[1]
-            .replace("\\\"", "\"")
-            .replace("\\\\", "\\")
-            .replace("\\n", "\n")
-            .replace("\\t", "\t")
-    }
-
-    private fun int(json: String, field: String): Int? = INT_FIELD(field).find(json)?.groupValues?.get(1)?.toIntOrNull()
-
-    private fun swipeDirection(raw: String): SwipeDirection? =
-        SwipeDirection.entries.firstOrNull { it.name.equals(raw.trim(), ignoreCase = true) }
-
-    private fun keyType(raw: String): KeyType? =
-        KeyType.entries.firstOrNull { it.name.equals(raw.trim(), ignoreCase = true) }
 }

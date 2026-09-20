@@ -2,6 +2,7 @@ package com.aniob.core.ladder
 
 import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.AniobScreenState
+import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.router.AniobAutoRouter
 import com.aniob.core.router.RouteDecision
 import com.aniob.core.router.RouteTarget
@@ -58,23 +59,19 @@ class AniobExecutionRouter(
         if (trajectory != null) {
             val cachedAction = replayEngine.nextAction(trajectory, stepIndex, screenState)
             if (cachedAction != null) {
-                // If action targets an element not currently in screenState, try scroll-until-found
-                val targetId = when (cachedAction) {
-                    is AniobAction.Tap -> cachedAction.targetNodeId
-                    is AniobAction.Click -> cachedAction.targetNodeId
-                    else -> null
-                }
-                if (targetId != null && screenState.findNodeById(targetId) == null) {
+                // If the action names an element not currently on screen, try scroll-until-found
+                val target = cachedAction.semanticTarget()
+                if (target is SemanticTarget.SomIndex && screenState.nodes.none { it.id == target.index }) {
                     val scrollResult = com.aniob.core.tools.AniobScrollHelper.scrollUntilFound(
                         screenState = screenState,
-                        targetPredicate = { it.id == targetId || it.text.contains(taskPrompt, true) },
+                        targetPredicate = { it.id == target.index || it.text.contains(taskPrompt, true) },
                         taskPrompt = taskPrompt,
                         capture = { screenState },
                         executeSwipe = { true }
                     )
                     if (scrollResult.found && scrollResult.node != null) {
                         return ExecutionPlanResult.FastPathStep(
-                            action = AniobAction.Click(scrollResult.node.id),
+                            action = AniobAction.Tap(SemanticTarget.SomIndex(scrollResult.node.id)),
                             reason = "Scroll-until-found success after ${scrollResult.swipes} swipes"
                         )
                     }
@@ -93,22 +90,18 @@ class AniobExecutionRouter(
             val step = skill.steps.getOrNull(stepIndex)
             if (step != null) {
                 val action = step.toAniobAction()
-                val targetId = when (action) {
-                    is AniobAction.Tap -> action.targetNodeId
-                    is AniobAction.Click -> action.targetNodeId
-                    else -> null
-                }
-                if (targetId != null && screenState.findNodeById(targetId) == null) {
+                val target = action.semanticTarget()
+                if (target is SemanticTarget.SomIndex && screenState.nodes.none { it.id == target.index }) {
                     val scrollResult = com.aniob.core.tools.AniobScrollHelper.scrollUntilFound(
                         screenState = screenState,
-                        targetPredicate = { it.id == targetId || it.text.contains(taskPrompt, true) },
+                        targetPredicate = { it.id == target.index || it.text.contains(taskPrompt, true) },
                         taskPrompt = taskPrompt,
                         capture = { screenState },
                         executeSwipe = { true }
                     )
                     if (scrollResult.found && scrollResult.node != null) {
                         return ExecutionPlanResult.FastPathStep(
-                            action = AniobAction.Click(scrollResult.node.id),
+                            action = AniobAction.Tap(SemanticTarget.SomIndex(scrollResult.node.id)),
                             reason = "Scroll-until-found success after ${scrollResult.swipes} swipes"
                         )
                     }

@@ -3,6 +3,7 @@ package com.aniob.core.tools
 import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.AniobNode
 import com.aniob.core.domain.AniobScreenState
+import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.SwipeDirection
 
 data class ScrollResult(val found: Boolean, val node: AniobNode?, val swipes: Int)
@@ -45,7 +46,7 @@ object AniobScrollHelper {
             val swipeAction = AniobAction.Swipe(
                 direction = direction,
                 distancePx = 500,
-                containerId = container.id
+                container = SemanticTarget.SomIndex(container.id)
             )
             val success = executeSwipe(swipeAction)
             if (!success) break

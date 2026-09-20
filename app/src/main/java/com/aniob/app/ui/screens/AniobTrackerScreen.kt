@@ -343,11 +343,10 @@ fun ExpandableStepRow(
 }
 
 private fun formatActionSummary(action: AniobAction): String = when (action) {
-    is AniobAction.Tap -> "TAP(${action.x}, ${action.y})"
-    is AniobAction.Click -> "CLICK(node=${action.targetNodeId})"
-    is AniobAction.LongPress -> "LONG_PRESS(${action.x}, ${action.y}, ${action.durationMs}ms)"
+    is AniobAction.Tap -> "TAP(${action.target.describe()})"
+    is AniobAction.LongPress -> "LONG_PRESS(${action.target.describe()}, ${action.durationMs}ms)"
     is AniobAction.OpenApp -> "OPEN_APP(${action.packageName})"
-    is AniobAction.InputText -> "TYPE(\"${action.text}\" -> node=${action.targetNodeId})"
+    is AniobAction.InputText -> "TYPE(\"${action.text}\" -> ${action.target.describe()})"
     is AniobAction.Swipe -> "SWIPE(${action.direction})"
     is AniobAction.PressKey -> "KEY(${action.key})"
     is AniobAction.SystemKey -> "SYS_KEY(${action.key})"

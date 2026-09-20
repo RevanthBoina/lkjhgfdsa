@@ -17,17 +17,8 @@ class AniobWatchdog(
     private val history = mutableListOf<ActionHistoryEntry>()
 
     fun record(screenHash: String, action: AniobAction) {
-        val actionKey = when (action) {
-            is AniobAction.Tap -> "TAP_${action.x}_${action.y}"
-            is AniobAction.Click -> "CLICK_${action.targetNodeId}"
-            is AniobAction.InputText -> "INPUT_${action.targetNodeId}_${action.text}"
-            is AniobAction.Swipe -> "SWIPE_${action.direction}"
-            is AniobAction.PressKey -> "KEY_${action.key}"
-            is AniobAction.Wait -> "WAIT"
-            is AniobAction.Finish -> "FINISH"
-            is AniobAction.Fail -> "FAIL"
-            else -> "${action.toolName}_${action.hashCode()}"
-        }
+        // Semantic keys only — coordinates are not part of an action's identity any more.
+        val actionKey = action.describeAction()
         history.add(ActionHistoryEntry(screenHash, actionKey))
         if (history.size > 20) {
             history.removeAt(0)

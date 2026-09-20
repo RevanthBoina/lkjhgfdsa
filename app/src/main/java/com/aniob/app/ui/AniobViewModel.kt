@@ -1053,19 +1053,11 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
         val screenAfter = a11y?.captureCurrentScreenState() ?: currentScreen
         val verification = DeterministicVerifier.verify(action, currentScreen, screenAfter)
 
-        val recoverable = targetNodeIdOf(action) != null && isTargetLikelyMissing(verification)
+        val recoverable = action.semanticTarget() != null && isTargetLikelyMissing(verification)
         if (!recoverable) return VerifiedStep(screenAfter, action, verification, false)
 
         return scrollRecoverAndRetry(a11y, action, taskPrompt, currentScreen)
             ?: VerifiedStep(screenAfter, action, verification, false)
-    }
-
-    private fun targetNodeIdOf(action: AniobAction): Int? = when (action) {
-        is AniobAction.Tap -> action.targetNodeId
-        is AniobAction.Click -> action.targetNodeId
-        is AniobAction.LongPress -> action.targetNodeId
-        is AniobAction.InputText -> action.targetNodeId
-        else -> null
     }
 
     private fun isTargetLikelyMissing(verification: DeterministicVerifier.VerificationResult): Boolean {
@@ -1085,12 +1077,14 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
         val service = a11y ?: return null
         val keywords = promptKeywords(taskPrompt)
 
-        fun matches(node: AniobNode): Boolean =
-            node.id == targetNodeIdOf(action) ||
-                keywords.any { kw ->
-                    node.text.contains(kw, ignoreCase = true) ||
-                        node.contentDescription.contains(kw, ignoreCase = true)
-                }
+        fun matches(node: AniobNode): Boolean {
+            val target = action.semanticTarget()
+            if (target is SemanticTarget.SomIndex && node.id == target.index) return true
+            return keywords.any { kw ->
+                node.text.contains(kw, ignoreCase = true) ||
+                    node.contentDescription.contains(kw, ignoreCase = true)
+            }
+        }
 
         val scrollResult = AniobScrollHelper.scrollUntilFound(
             screenState = currentScreen,
@@ -1104,10 +1098,11 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
         // Re-capture so node ids line up with the scrolled layout, then locate the target again.
         val revealedScreen = service.captureCurrentScreenState()
         val revealedNode = revealedScreen.nodes.firstOrNull(::matches) ?: scrollResult.node ?: return null
+        val revealedTarget = SemanticTarget.SomIndex(revealedNode.id)
         val retryAction = when (action) {
-            is AniobAction.InputText -> action.copy(targetNodeId = revealedNode.id)
-            is AniobAction.LongPress -> action.copy(targetNodeId = revealedNode.id)
-            else -> AniobAction.Click(targetNodeId = revealedNode.id, thought = action.thought)
+            is AniobAction.InputText -> action.copy(target = revealedTarget)
+            is AniobAction.LongPress -> action.copy(target = revealedTarget)
+            else -> AniobAction.Tap(target = revealedTarget, thought = action.thought)
         }
 
         app.eventLogger.info(

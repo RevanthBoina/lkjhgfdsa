@@ -11,6 +11,8 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.aniob.core.diff.AniobScreenDiff
 import com.aniob.core.domain.*
+import com.aniob.core.execution.AniobActionExecutor
+import com.aniob.core.execution.DispatchCommand
 import com.aniob.core.optimizer.AniobTokenOptimizer
 
 /**
@@ -175,67 +177,107 @@ class AniobAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Executes atomic action via dispatchGesture or direct a11y node actions.
+     * Executes an atomic action via dispatchGesture, node actions, or a system intent.
      *
-     * Every gesture-bearing branch is gated on UI quiescence first: a 300ms Android animation
-     * is long enough for a follow-up tap to land on stale coordinates or be swallowed entirely.
+     * Two contracts hold on every call:
+     * 1. Gesture-bearing actions are gated on UI quiescence first — a 300ms Android animation is
+     *    long enough for a follow-up tap to land on stale coordinates or be swallowed entirely.
+     * 2. The target is grounded against a **fresh** capture taken right here, never the cached
+     *    planning screen. A miss calls back `false` and logs `grounding_miss`; we never fall back
+     *    to a guessed coordinate.
      */
     fun executeAction(action: AniobAction, callback: (Boolean) -> Unit) {
+        val liveScreen = try {
+            captureCurrentScreenState()
+        } catch (_: Exception) {
+            lastScreenState
+        } ?: AniobScreenState(packageName = currentForegroundPackage().orEmpty())
+
         gateOnUiQuiescence(action)
-        when (action) {
-            is AniobAction.Tap -> {
-                val root = rootInActiveWindow
-                val screenState = lastScreenState
-                val targetNode = action.targetNodeId?.let { screenState?.findNodeById(it) }
 
-                val tapX = if (action.x > 0) action.x.toFloat() else targetNode?.centerX?.toFloat() ?: 500f
-                val tapY = if (action.y > 0) action.y.toFloat() else targetNode?.centerY?.toFloat() ?: 500f
+        when (val command = AniobActionExecutor.planDispatch(action, liveScreen)) {
+            is DispatchCommand.TapAt -> dispatchTap(command.x.toFloat(), command.y.toFloat(), callback)
 
-                dispatchTap(tapX, tapY, callback)
+            is DispatchCommand.LongPressAt ->
+                dispatchLongPress(command.x.toFloat(), command.y.toFloat(), command.durationMs, callback)
+
+            is DispatchCommand.SetText -> {
+                setTextOnNode(command, liveScreen, callback)
             }
 
-            is AniobAction.Click -> {
-                val root = rootInActiveWindow
-                val screenState = lastScreenState
-                val targetNode = screenState?.findNodeById(action.targetNodeId)
-
-                val tapX = if (action.x > 0) action.x.toFloat() else targetNode?.centerX?.toFloat() ?: 500f
-                val tapY = if (action.y > 0) action.y.toFloat() else targetNode?.centerY?.toFloat() ?: 500f
-
-                dispatchTap(tapX, tapY, callback)
+            is DispatchCommand.SwipeGesture -> {
+                dispatchGesturePath(command, callback)
             }
 
-            is AniobAction.LongPress -> {
-                val root = rootInActiveWindow
-                val screenState = lastScreenState
-                val targetNode = action.targetNodeId?.let { screenState?.findNodeById(it) }
+            is DispatchCommand.SystemIntent -> handleSystemIntent(action, command, callback)
 
-                val tapX = if (action.x > 0) action.x.toFloat() else targetNode?.centerX?.toFloat() ?: 500f
-                val tapY = if (action.y > 0) action.y.toFloat() else targetNode?.centerY?.toFloat() ?: 500f
-
-                dispatchLongPress(tapX, tapY, action.durationMs, callback)
+            is DispatchCommand.NoOp -> {
+                Log.w(TAG, "grounding_miss: ${command.reason}")
+                callback(false)
             }
+        }
+    }
 
-            is AniobAction.InputText -> {
-                val root = rootInActiveWindow
-                val screenState = lastScreenState
-                val targetNode = screenState?.findNodeById(action.targetNodeId)
-                // Focus and set text
-                if (root != null && targetNode != null) {
-                    val found = findAccessibilityNodeByBounds(root, targetNode.bounds)
-                    if (found != null) {
-                        val arguments = Bundle()
-                        arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, action.text)
-                        val success = found.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
-                        callback(success)
-                        return
-                    }
+    /** Sets text by locating the node by id within the live tree. */
+    private fun setTextOnNode(
+        command: DispatchCommand.SetText,
+        liveScreen: AniobScreenState,
+        callback: (Boolean) -> Unit
+    ) {
+        val root = rootInActiveWindow
+        val targetNode = liveScreen.findNodeById(command.nodeId)
+        if (root != null && targetNode != null) {
+            val found = findAccessibilityNodeByBounds(root, targetNode.bounds)
+            if (found != null) {
+                if (command.clearFirst) {
+                    val clearArgs = Bundle()
+                    clearArgs.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+                    found.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs)
                 }
-                callback(true)
+                val arguments = Bundle()
+                arguments.putCharSequence(
+                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                    command.text
+                )
+                callback(found.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments))
+                return
             }
+        }
+        callback(false)
+    }
 
-            is AniobAction.OpenApp -> {
-                val intent = packageManager.getLaunchIntentForPackage(action.packageName)
+    private fun dispatchGesturePath(command: DispatchCommand.SwipeGesture, callback: (Boolean) -> Unit) {
+        val path = Path()
+        path.moveTo(command.startX.toFloat(), command.startY.toFloat())
+        path.lineTo(command.endX.toFloat(), command.endY.toFloat())
+        val stroke = GestureDescription.StrokeDescription(
+            path,
+            0L,
+            command.durationMs.coerceAtLeast(1L)
+        )
+        dispatchGesture(
+            GestureDescription.Builder().addStroke(stroke).build(),
+            object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    callback(true)
+                }
+
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    callback(false)
+                }
+            },
+            null
+        )
+    }
+
+    private fun handleSystemIntent(
+        action: AniobAction,
+        command: DispatchCommand.SystemIntent,
+        callback: (Boolean) -> Unit
+    ) {
+        when (command.name) {
+            "OPEN_APP" -> {
+                val intent = packageManager.getLaunchIntentForPackage(command.argument.orEmpty())
                 if (intent != null) {
                     intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                     startActivity(intent)
@@ -244,57 +286,19 @@ class AniobAccessibilityService : AccessibilityService() {
                     callback(false)
                 }
             }
-
-            is AniobAction.Swipe -> {
-                dispatchSwipe(action.direction, action.distancePx, callback)
-            }
-
-            is AniobAction.SystemKey -> {
-                val globalAction = when (action.key) {
-                    KeyType.BACK -> GLOBAL_ACTION_BACK
+            "SYSTEM_KEY" -> {
+                val globalAction = when ((action as? AniobAction.SystemKey)?.key ?: (action as? AniobAction.PressKey)?.key) {
                     KeyType.HOME -> GLOBAL_ACTION_HOME
                     KeyType.RECENTS -> GLOBAL_ACTION_RECENTS
                     else -> GLOBAL_ACTION_BACK
                 }
-                val success = performGlobalAction(globalAction)
-                callback(success)
+                callback(performGlobalAction(globalAction))
             }
-
-            is AniobAction.PressKey -> {
-                val globalAction = when (action.key) {
-                    KeyType.BACK -> GLOBAL_ACTION_BACK
-                    KeyType.HOME -> GLOBAL_ACTION_HOME
-                    KeyType.RECENTS -> GLOBAL_ACTION_RECENTS
-                    else -> GLOBAL_ACTION_BACK
-                }
-                val success = performGlobalAction(globalAction)
-                callback(success)
-            }
-
-            is AniobAction.Wait -> {
-                callback(true)
-            }
-
-            is AniobAction.ConfirmWithUser -> {
-                callback(true)
-            }
-
-            is AniobAction.GetScreenInfo,
-            is AniobAction.TakeScreenshot,
-            is AniobAction.GetDeviceInfo,
-            is AniobAction.GetNotifications,
-            is AniobAction.GetInstalledApps,
-            is AniobAction.Clipboard -> {
-                callback(true)
-            }
-
-            is AniobAction.Finish -> {
-                callback(true)
-            }
-
-            is AniobAction.Fail -> {
-                callback(false)
-            }
+            "CONFIRM_WITH_USER" -> callback(true)
+            "FINISH", "WAIT", "CLIPBOARD", "GET_SCREEN_INFO", "TAKE_SCREENSHOT",
+            "GET_DEVICE_INFO", "GET_NOTIFICATIONS", "GET_INSTALLED_APPS" -> callback(true)
+            "FAIL" -> callback(false)
+            else -> callback(true)
         }
     }
 
@@ -311,9 +315,8 @@ class AniobAccessibilityService : AccessibilityService() {
 
     private fun gateOnUiQuiescence(action: AniobAction) {
         // Read-only / non-gesture actions do not race an animation, so skip the wait for them.
-        val gesture = action is AniobAction.Tap || action is AniobAction.Click ||
-            action is AniobAction.LongPress || action is AniobAction.Swipe ||
-            action is AniobAction.InputText
+        val gesture = action is AniobAction.Tap || action is AniobAction.LongPress ||
+            action is AniobAction.Swipe || action is AniobAction.InputText
         if (!gesture) return
         if (com.aniob.core.policy.AniobWaitForIdle.isUiIdle()) return
         val deadline = System.currentTimeMillis() + MAX_IDLE_WAIT_MS
@@ -347,37 +350,6 @@ class AniobAccessibilityService : AccessibilityService() {
         val path = Path()
         path.moveTo(x, y)
         val stroke = GestureDescription.StrokeDescription(path, 0, 50)
-        val builder = GestureDescription.Builder().addStroke(stroke)
-        dispatchGesture(builder.build(), object : GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) {
-                callback(true)
-            }
-            override fun onCancelled(gestureDescription: GestureDescription?) {
-                callback(false)
-            }
-        }, null)
-    }
-
-    private fun dispatchSwipe(direction: SwipeDirection, distance: Int, callback: (Boolean) -> Unit) {
-        val displayMetrics = resources.displayMetrics
-        val startX = displayMetrics.widthPixels / 2f
-        val startY = displayMetrics.heightPixels / 2f
-
-        val endX = when (direction) {
-            SwipeDirection.LEFT -> startX - distance
-            SwipeDirection.RIGHT -> startX + distance
-            else -> startX
-        }
-        val endY = when (direction) {
-            SwipeDirection.UP -> startY - distance
-            SwipeDirection.DOWN -> startY + distance
-            else -> startY
-        }
-
-        val path = Path()
-        path.moveTo(startX, startY)
-        path.lineTo(endX, endY)
-        val stroke = GestureDescription.StrokeDescription(path, 0, 300)
         val builder = GestureDescription.Builder().addStroke(stroke)
         dispatchGesture(builder.build(), object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {

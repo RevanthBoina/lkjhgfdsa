@@ -1,0 +1,92 @@
+package com.aniob.core.domain
+
+/**
+ * Per-task context carried through every step of the loop.
+ *
+ * The role-specific view builders exist to keep each LLM call's prompt minimal and on-task:
+ * a planner never sees a raw screen dump (it gets a condensed history and the criteria), an
+ * executor never sees the full history (it gets the goal and the current screen), and a
+ * reflector sees exactly the before/after delta plus the action that caused it.
+ */
+data class TaskContext(
+    val instruction: String,
+    val successCriteria: SuccessCriteria = SuccessCriteria(),
+    val condensedHistory: List<String> = emptyList(),
+    val stepIndex: Int = 0,
+    val lastScreenState: AniobScreenState? = null,
+    val retrievedDocs: List<String> = emptyList(),
+    val grillAnswers: Map<String, String> = emptyMap(),
+    val tokenBudget: TokenBudget = TokenBudget(),
+    val consecutiveFailures: Int = 0,
+    val rejectedFinishCount: Int = 0
+) {
+    data class TokenBudget(
+        val maxTotal: Int = 32_000,
+        val usedEstimate: Int = 0
+    ) {
+        val remaining: Int get() = (maxTotal - usedEstimate).coerceAtLeast(0)
+        val isExhausted: Boolean get() = remaining == 0
+    }
+
+    fun withStep(index: Int, screen: AniobScreenState?, historyEntry: String?): TaskContext =
+        copy(
+            stepIndex = index,
+            lastScreenState = screen,
+            condensedHistory = if (historyEntry == null) condensedHistory else condensedHistory + historyEntry
+        )
+
+    fun withFailure(): TaskContext = copy(consecutiveFailures = consecutiveFailures + 1)
+
+    fun withSuccess(): TaskContext = copy(consecutiveFailures = 0)
+
+    fun withRejectedFinish(feedback: String): TaskContext = copy(
+        rejectedFinishCount = rejectedFinishCount + 1,
+        condensedHistory = condensedHistory + "REJECTED FINISH: $feedback"
+    )
+
+    fun addTokens(estimate: Int): TaskContext =
+        copy(tokenBudget = tokenBudget.copy(usedEstimate = tokenBudget.usedEstimate + estimate))
+
+    /**
+     * Planner view: goal, criteria, grill answers and condensed history.
+     * Deliberately EXCLUDES the raw node dump — the planner reasons about strategy, not pixels.
+     */
+    fun plannerView(): String = buildString {
+        appendLine("GOAL: $instruction")
+        if (!successCriteria.isEmpty) appendLine("SUCCESS CRITERIA: $successCriteria")
+        if (grillAnswers.isNotEmpty()) {
+            appendLine("CLARIFICATIONS: " + grillAnswers.entries.joinToString("; ") { "${it.key}=${it.value}" })
+        }
+        if (retrievedDocs.isNotEmpty()) {
+            appendLine("RETRIEVED KNOWLEDGE:")
+            retrievedDocs.forEach { appendLine("- $it") }
+        }
+        appendLine("PROGRESS (condensed):")
+        if (condensedHistory.isEmpty()) appendLine("- (no steps yet)") else condensedHistory.forEach { appendLine("- $it") }
+    }
+
+    /**
+     * Executor view: goal plus the current actionable screen.
+     * Deliberately EXCLUDES the full history — only the immediate step matters.
+     */
+    fun executorView(screen: AniobScreenState): String = buildString {
+        appendLine("GOAL: $instruction")
+        if (!successCriteria.isEmpty) appendLine("SUCCESS CRITERIA: $successCriteria")
+        if (condensedHistory.isNotEmpty()) appendLine("LAST STEP: ${condensedHistory.last()}")
+        appendLine("SCREEN: package=${screen.packageName} activity=${screen.activityName}")
+    }
+
+    /**
+     * Reflector view: goal + criteria + the before/after pair + the action that caused it.
+     * Deliberately EXCLUDES everything else.
+     */
+    fun reflectorView(before: AniobScreenState?, after: AniobScreenState, lastAction: AniobAction?): String = buildString {
+        appendLine("GOAL: $instruction")
+        if (!successCriteria.isEmpty) appendLine("SUCCESS CRITERIA: $successCriteria")
+        appendLine("ACTION: ${lastAction?.describeAction() ?: "(none)"}")
+        appendLine("BEFORE: package=${before?.packageName ?: "(none)"} hash=${before?.treeHash ?: "-"} nodes=${before?.nodes?.size ?: 0}")
+        appendLine("AFTER:  package=${after.packageName} hash=${after.treeHash} nodes=${after.nodes.size}")
+        appendLine("CONSECUTIVE FAILURES: $consecutiveFailures")
+        appendLine("REJECTED FINISHES: $rejectedFinishCount")
+    }
+}

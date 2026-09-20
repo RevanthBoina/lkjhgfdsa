@@ -1,6 +1,7 @@
 package com.aniob.core.verifier
 
 import com.aniob.core.domain.AniobAction
+import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.AniobNode
 import com.aniob.core.domain.AniobRect
 import com.aniob.core.domain.AniobScreenState
@@ -27,7 +28,7 @@ class DeterministicVerifierTest {
         val after = screen(nodeCount = 2, treeHash = "abc123")
 
         val result = DeterministicVerifier.verify(
-            AniobAction.Tap(targetNodeId = 1, x = 100, y = 100),
+            AniobAction.Tap(SemanticTarget.SomIndex(1)),
             before,
             after
         )
@@ -42,7 +43,7 @@ class DeterministicVerifierTest {
         val before = screen(nodeCount = 2, treeHash = "abc123")
         val after = screen(nodeCount = 2, treeHash = "def456")
 
-        val result = DeterministicVerifier.verify(AniobAction.Tap(targetNodeId = 1), before, after)
+        val result = DeterministicVerifier.verify(AniobAction.Tap(SemanticTarget.SomIndex(1)), before, after)
 
         assertTrue(result.isExpected)
         assertTrue(result.reason.contains("transitioned"))
@@ -53,7 +54,7 @@ class DeterministicVerifierTest {
         val before = screen(nodeCount = 1, treeHash = "same")
         val after = screen(nodeCount = 1, treeHash = "same")
 
-        val press = DeterministicVerifier.verify(AniobAction.LongPress(targetNodeId = 0, durationMs = 800), before, after)
+        val press = DeterministicVerifier.verify(AniobAction.LongPress(SemanticTarget.SomIndex(0), durationMs = 800), before, after)
         assertFalse(press.isExpected)
         assertTrue(press.reason.contains("No-effect"))
 

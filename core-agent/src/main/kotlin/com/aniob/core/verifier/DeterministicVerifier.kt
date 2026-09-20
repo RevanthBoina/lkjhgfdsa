@@ -2,6 +2,8 @@ package com.aniob.core.verifier
 
 import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.AniobScreenState
+import com.aniob.core.domain.SuccessCriteria
+import com.aniob.core.domain.matches
 
 /**
  * High-speed deterministic action verifier (<10ms, ZERO LLM calls).
@@ -27,9 +29,11 @@ object DeterministicVerifier {
     ): VerificationResult {
         val start = System.currentTimeMillis()
 
-        // If this was a terminal action, it is automatically successful
+        // A Finish is PROVISIONAL — it carries no evidence, so it is never auto-successed.
+        // The pipeline must call verifyFinish() with the task's SuccessCriteria before it may
+        // report SUCCESS. Fail, however, is a genuine terminal failure.
         if (action is AniobAction.Finish) {
-            return VerificationResult(true, System.currentTimeMillis() - start, "Task declared finished.")
+            return VerificationResult(false, System.currentTimeMillis() - start, "Finish is provisional: no evidence")
         }
         if (action is AniobAction.Fail) {
             return VerificationResult(false, System.currentTimeMillis() - start, action.reason)
@@ -44,20 +48,7 @@ object DeterministicVerifier {
                 if (screenBefore.treeHash != screenAfter.treeHash || screenBefore.packageName != screenAfter.packageName) {
                     true to "Tap confirmed: screen transitioned."
                 } else {
-                    false to "No-effect: treeHash unchanged after Tap at (${action.x}, ${action.y})."
-                }
-            }
-
-            is AniobAction.Click -> {
-                val targetBefore = screenBefore.findNodeById(action.targetNodeId)
-                val targetAfter = screenAfter.findNodeById(action.targetNodeId)
-                // Success if screen changed or target node changed state or disappeared
-                val screenChanged = screenBefore.treeHash != screenAfter.treeHash
-                val stateChanged = targetBefore != null && (targetAfter == null || targetAfter.text != targetBefore.text || targetAfter.isSelected != targetBefore.isSelected)
-                if (screenChanged || stateChanged) {
-                    true to "Click confirmed: UI state transitioned."
-                } else {
-                    false to "Click had no observable effect on UI."
+                    false to "No-effect: treeHash unchanged after Tap on ${action.describeTarget()}."
                 }
             }
 
@@ -78,7 +69,7 @@ object DeterministicVerifier {
             }
 
             is AniobAction.InputText -> {
-                val targetAfter = screenAfter.findNodeById(action.targetNodeId)
+                val targetAfter = screenAfter.nodes.firstOrNull { action.target.matches(it) }
                 if (targetAfter != null && targetAfter.text.contains(action.text, ignoreCase = true)) {
                     true to "InputText confirmed: text present in target node."
                 } else if (screenBefore.treeHash != screenAfter.treeHash) {
@@ -131,5 +122,35 @@ object DeterministicVerifier {
 
         val duration = System.currentTimeMillis() - start
         return VerificationResult(isExpected = result.first, durationMs = duration, reason = result.second)
+    }
+
+    /**
+     * Decides whether a provisional [AniobAction.Finish] may become SUCCESS.
+     *
+     * This is the evidence gate: the task's [SuccessCriteria] must be satisfied against the final
+     * screen before the loop is allowed to declare victory. An empty criteria set carries no
+     * evidence, so it is reported as unverified rather than silently accepted — the reflector
+     * then decides whether to accept it.
+     */
+    fun verifyFinish(
+        criteria: SuccessCriteria?,
+        finalScreen: AniobScreenState,
+        steps: Int
+    ): VerificationResult {
+        val start = System.currentTimeMillis()
+        if (criteria == null || criteria.isEmpty) {
+            return VerificationResult(
+                false,
+                System.currentTimeMillis() - start,
+                "No success criteria to verify against"
+            )
+        }
+        val unmet = criteria.unmet(finalScreen, steps)
+        val duration = System.currentTimeMillis() - start
+        return if (unmet.isEmpty()) {
+            VerificationResult(true, duration, "Finish evidence satisfied: all criteria met")
+        } else {
+            VerificationResult(false, duration, "Unmet criteria: ${unmet.joinToString("; ")}")
+        }
     }
 }

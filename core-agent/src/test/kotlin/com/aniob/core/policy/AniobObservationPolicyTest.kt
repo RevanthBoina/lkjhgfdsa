@@ -1,6 +1,7 @@
 package com.aniob.core.policy
 
 import com.aniob.core.domain.AniobAction
+import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.SwipeDirection
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -8,7 +9,7 @@ import org.junit.Test
 
 class AniobObservationPolicyTest {
 
-    private fun tap(id: Int) = AniobAction.Click(targetNodeId = id)
+    private fun tap(id: Int) = AniobAction.Tap(SemanticTarget.SomIndex(id))
 
     @Test
     fun `empty history forces observation`() {

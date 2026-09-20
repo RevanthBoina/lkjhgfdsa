@@ -1,6 +1,7 @@
 package com.aniob.core.tools
 
 import com.aniob.core.domain.AniobAction
+import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.AniobNode
 import com.aniob.core.domain.AniobRect
 import com.aniob.core.domain.AniobScreenState
@@ -137,7 +138,11 @@ class AniobScrollHelperTest {
             targetPredicate = { false },
             taskPrompt = "scroll down",
             capture = { screen },
-            executeSwipe = { containerId = (it as AniobAction.Swipe).containerId; true }
+            executeSwipe = {
+            val container = (it as AniobAction.Swipe).container
+            containerId = (container as? SemanticTarget.SomIndex)?.index
+            true
+        }
         )
         assertEquals(99, containerId)
     }

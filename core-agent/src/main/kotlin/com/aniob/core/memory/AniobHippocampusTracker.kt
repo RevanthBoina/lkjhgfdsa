@@ -1,6 +1,7 @@
 package com.aniob.core.memory
 
 import com.aniob.core.domain.AniobAction
+import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.SwipeDirection
 import java.io.File
 
@@ -169,11 +170,13 @@ class AniobHippocampusTracker(
         builder.appendLine("    action: \"${action.toolName}\"")
         when (action) {
             is AniobAction.OpenApp -> builder.appendLine("    package: \"${action.packageName}\"")
-            is AniobAction.Tap -> action.targetNodeId?.let { builder.appendLine("    target_id: $it") }
-            is AniobAction.Click -> builder.appendLine("    target_id: ${action.targetNodeId}")
-            is AniobAction.LongPress -> action.targetNodeId?.let { builder.appendLine("    target_id: $it") }
+            is AniobAction.Tap -> appendTarget(builder, action.target)
+            is AniobAction.LongPress -> {
+                appendTarget(builder, action.target)
+                builder.appendLine("    duration_ms: ${action.durationMs}")
+            }
             is AniobAction.InputText -> {
-                builder.appendLine("    target_id: ${action.targetNodeId}")
+                appendTarget(builder, action.target)
                 builder.appendLine("    text: \"${sanitizeLine(action.text)}\"")
             }
             is AniobAction.Swipe -> builder.appendLine("    direction: \"${action.direction.name}\"")
@@ -183,6 +186,31 @@ class AniobHippocampusTracker(
             else -> Unit
         }
         builder.appendLine("    description: \"${sanitizeLine(thought)}\"")
+    }
+
+    /** Emits the v2.1 `target:` block. Only semantic kinds are ever written — never coordinates. */
+    private fun appendTarget(builder: StringBuilder, target: SemanticTarget) {
+        builder.appendLine("    target:")
+        when (target) {
+            is SemanticTarget.SomIndex -> {
+                builder.appendLine("      kind: \"som_index\"")
+                builder.appendLine("      value: ${target.index}")
+            }
+            is SemanticTarget.ResourceId -> {
+                builder.appendLine("      kind: \"resource_id\"")
+                builder.appendLine("      value: \"${sanitizeLine(target.id)}\"")
+            }
+            is SemanticTarget.Text -> {
+                builder.appendLine("      kind: \"text\"")
+                builder.appendLine("      value: \"${sanitizeLine(target.text)}\"")
+                builder.appendLine("      exact: ${target.exact}")
+            }
+            is SemanticTarget.ContentDesc -> {
+                builder.appendLine("      kind: \"content_desc\"")
+                builder.appendLine("      value: \"${sanitizeLine(target.desc)}\"")
+                builder.appendLine("      exact: ${target.exact}")
+            }
+        }
     }
 
     private fun sanitizeLine(s: String): String = sanitize(s).replace("\"", "\\\"")

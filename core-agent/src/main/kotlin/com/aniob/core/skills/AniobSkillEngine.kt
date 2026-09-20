@@ -1,5 +1,6 @@
 package com.aniob.core.skills
 
+import com.aniob.core.domain.SemanticTarget
 import java.io.InputStream
 
 /**
@@ -44,20 +45,49 @@ class AniobSkillEngine {
         var currentAction = "tap"
         var currentSelector: String? = null
         var currentTargetId: Int? = null
+        var currentTarget: SemanticTarget? = null
         var currentText: String? = null
         var currentPkg: String? = null
+        var currentKey: String? = null
+        var currentDirection: String? = null
         var currentDesc = ""
+
+        // v2.1 target block accumulator
+        var inTargetBlock = false
+        var targetKind: String? = null
+        var targetValue: String? = null
+        var targetExact = false
+
+        fun flushTarget() {
+            if (inTargetBlock && targetKind != null && targetValue != null) {
+                currentTarget = when (targetKind!!.lowercase()) {
+                    "som_index", "som", "index" -> targetValue!!.toIntOrNull()?.let { SemanticTarget.SomIndex(it) }
+                    "resource_id", "id", "view_id" -> SemanticTarget.ResourceId(targetValue!!)
+                    "text" -> SemanticTarget.Text(targetValue!!, targetExact)
+                    "content_desc", "content_description", "desc" -> SemanticTarget.ContentDesc(targetValue!!, targetExact)
+                    else -> null
+                }
+            }
+            inTargetBlock = false
+            targetKind = null
+            targetValue = null
+            targetExact = false
+        }
 
         fun flushStep() {
             if (currentAction.isNotBlank()) {
+                flushTarget()
                 steps.add(
                     SkillStep(
                         stepIndex = currentStepIdx,
                         actionType = currentAction,
                         selector = currentSelector,
                         targetNodeId = currentTargetId,
+                        target = currentTarget,
                         text = currentText,
                         packageName = currentPkg,
+                        key = currentKey,
+                        direction = currentDirection,
                         description = currentDesc
                     )
                 )
@@ -65,8 +95,11 @@ class AniobSkillEngine {
                 currentAction = "tap"
                 currentSelector = null
                 currentTargetId = null
+                currentTarget = null
                 currentText = null
                 currentPkg = null
+                currentKey = null
+                currentDirection = null
                 currentDesc = ""
             }
         }
@@ -113,9 +146,25 @@ class AniobSkillEngine {
                         flushStep()
                     }
                 }
-                inSteps && line.startsWith("action:") -> currentAction = line.substringAfter("action:").trim()
+                inSteps && line.startsWith("action:") -> {
+                    flushTarget()
+                    currentAction = line.substringAfter("action:").trim()
+                }
                 inSteps && line.startsWith("package:") -> currentPkg = line.substringAfter("package:").trim()
                 inSteps && line.startsWith("target_id:") -> currentTargetId = line.substringAfter("target_id:").trim().toIntOrNull()
+                // v2.1 semantic target block
+                inSteps && line == "target:" -> {
+                    flushTarget()
+                    inTargetBlock = true
+                }
+                inTargetBlock && line.startsWith("kind:") ->
+                    targetKind = line.substringAfter("kind:").trim().removeSurrounding("\"")
+                inTargetBlock && line.startsWith("value:") ->
+                    targetValue = line.substringAfter("value:").trim().removeSurrounding("\"")
+                inTargetBlock && line.startsWith("exact:") ->
+                    targetExact = line.substringAfter("exact:").trim().toBoolean()
+                inSteps && line.startsWith("key:") -> currentKey = line.substringAfter("key:").trim().removeSurrounding("\"")
+                inSteps && line.startsWith("direction:") -> currentDirection = line.substringAfter("direction:").trim().removeSurrounding("\"")
                 inSteps && line.startsWith("text:") -> currentText = line.substringAfter("text:").trim().removeSurrounding("\"")
                 inSteps && line.startsWith("description:") -> currentDesc = line.substringAfter("description:").trim().removeSurrounding("\"")
             }
