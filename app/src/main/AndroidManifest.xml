@@ -36,7 +36,30 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Deep links (UX-0 §2): aniob://chat|tracker|result|skills|confirm -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="aniob" />
+            </intent-filter>
+            <!-- Launcher shortcuts (UX-6 §2): New task, Teach a task, Skills. -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/aniob_shortcuts" />
         </activity>
+
+        <!-- Quick Settings tile (UX-6 §2): idle → "Ask Aniob", running → "Stop task". -->
+        <service
+            android:name=".service.AniobTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_stat_aniob"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
         <service
             android:name=".service.AniobAccessibilityService"

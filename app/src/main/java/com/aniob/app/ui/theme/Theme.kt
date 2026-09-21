@@ -1,5 +1,9 @@
 package com.aniob.app.ui.theme
 
+import android.content.Context
+import android.provider.Settings
+import androidx.compose.animation.core.AnimationSpec
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -44,4 +48,22 @@ fun AniobTheme(
         colorScheme = colorScheme,
         content = content
     )
+}
+
+/**
+ * Motion tokens (UX-7 §1). Restrained: 200ms nav transitions, and a static path that honours the
+ * platform reduce-motion setting.
+ */
+object AniobMotion {
+    const val NAV_DURATION_MS = 200
+    val NAV_SPEC: AnimationSpec<Int> get() = tween(NAV_DURATION_MS)
+
+    fun instant(): AnimationSpec<Float> = tween(0)
+
+    /** Reads `Settings.Global.ANIMATOR_DURATION_SCALE`; 0 means animations are disabled. */
+    fun isReducedMotionEnabled(context: Context): Boolean = try {
+        Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+    } catch (_: Exception) {
+        false
+    }
 }

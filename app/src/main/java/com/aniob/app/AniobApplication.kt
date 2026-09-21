@@ -6,6 +6,7 @@ import android.content.res.Configuration
 import com.aniob.app.db.AniobDatabase
 import com.aniob.app.metrics.EventLogger
 import com.aniob.app.metrics.MetricsCollector
+import com.aniob.app.system.AniobSystemState
 
 class AniobApplication : Application(), ComponentCallbacks2 {
 
@@ -14,6 +15,10 @@ class AniobApplication : Application(), ComponentCallbacks2 {
     lateinit var eventLogger: EventLogger
         private set
     lateinit var metricsCollector: MetricsCollector
+        private set
+
+    /** The single reactive source of permission/service truth (UX-0 §1). */
+    lateinit var systemState: AniobSystemState
         private set
 
     /**
@@ -33,6 +38,7 @@ class AniobApplication : Application(), ComponentCallbacks2 {
         database = AniobDatabase.getDatabase(this)
         eventLogger = EventLogger(database)
         metricsCollector = MetricsCollector(database)
+        systemState = AniobSystemState(this).also { it.start() }
 
         eventLogger.info("AniobApplication", "Aniob Agent Engine initialized successfully.")
     }

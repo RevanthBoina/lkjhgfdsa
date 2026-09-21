@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher shortcuts (UX-6 §2). Targets are deep links consumed in MainActivity.onNewIntent. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="new_task"
+        android:enabled="true"
+        android:icon="@drawable/ic_stat_aniob"
+        android:shortcutShortLabel="@string/shortcut_new_task"
+        android:shortcutLongLabel="@string/shortcut_new_task">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.aniob.app"
+            android:targetClass="com.aniob.app.MainActivity"
+            android:data="aniob://chat" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="teach_task"
+        android:enabled="true"
+        android:icon="@drawable/ic_stat_aniob"
+        android:shortcutShortLabel="@string/shortcut_teach"
+        android:shortcutLongLabel="@string/shortcut_teach">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.aniob.app"
+            android:targetClass="com.aniob.app.MainActivity"
+            android:data="aniob://chat?teach=1" />
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="skills"
+        android:enabled="true"
+        android:icon="@drawable/ic_stat_aniob"
+        android:shortcutShortLabel="@string/shortcut_skills"
+        android:shortcutLongLabel="@string/shortcut_skills">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.aniob.app"
+            android:targetClass="com.aniob.app.MainActivity"
+            android:data="aniob://skills" />
+    </shortcut>
+</shortcuts>

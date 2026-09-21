@@ -2,20 +2,22 @@ package com.aniob.app.background
 
 import android.app.Activity
 import android.content.Context
-import android.content.Intent
-import com.aniob.app.MainActivity
+import com.aniob.app.overlay.AniobOverlayPill
 import java.lang.ref.WeakReference
 
 /**
  * Manages background automation integrity:
- * - On task start: minimizes Aniob activity (`moveTaskToBack(true)`) so Accessibility Service
- *   perceives the target application rather than Aniob's own chat UI (eliminating self-observation loops).
- * - Starts foreground service to protect process priority.
- * - On task completion: brings Aniob back to foreground with result.
+ * - On task start: minimizes Aniob (`moveTaskToBack(true)`) so the Accessibility Service
+ *   perceives the target application rather than Aniob's own chat UI (no self-observation loop).
+ * - Starts the foreground service to protect process priority.
+ * - On task completion: notification-only. The old return-to-front activity start was removed
+ *   (UX-6) because background activity starts are restricted since Android 10 and usually fail
+ *   silently; the in-app result card renders on next open via the persisted summary.
  */
 object AniobBackgroundController {
 
     private var currentActivityRef: WeakReference<Activity>? = null
+    private var pill: AniobOverlayPill? = null
 
     fun registerActivity(activity: Activity) {
         currentActivityRef = WeakReference(activity)
@@ -28,10 +30,16 @@ object AniobBackgroundController {
     }
 
     fun onTaskStarted(context: Context, prompt: String) {
-        // Start Foreground Service
         AniobForegroundService.startService(context, prompt)
 
-        // Minimize Aniob activity so target app is in active window
+        // Status pill 2.0 (UX-3): narration + pause/stop while the user watches.
+        pill = AniobOverlayPill(
+            context = context,
+            onCancelTask = { AniobForegroundService.requestStop() },
+            onPauseToggle = { AniobForegroundService.requestPauseToggle() },
+            onOpenApp = { AniobForegroundService.requestOpenApp(context) }
+        ).also { it.show(0, "Getting ready") }
+
         currentActivityRef?.get()?.let { activity ->
             activity.runOnUiThread {
                 activity.moveTaskToBack(true)
@@ -39,15 +47,28 @@ object AniobBackgroundController {
         }
     }
 
-    fun onTaskFinished(context: Context, summary: String) {
-        // Stop Foreground Service
-        AniobForegroundService.stopService(context)
+    /** Narration line for the pill + notification; called from the ViewModel's record path. */
+    fun onStepNarrated(stepIndex: Int, narration: String) {
+        pill?.updateStep(stepIndex, narration)
+        AniobForegroundService.updateProgress(stepIndex, narration)
+    }
 
-        // Return to Aniob chatroom
-        val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            putExtra("task_result_summary", summary)
-        }
-        context.startActivity(intent)
+    fun onTaskPaused(paused: Boolean) {
+        pill?.setPaused(paused)
+    }
+
+    fun onTaskFinished(context: Context, summary: String) {
+        pill?.showDoneAndDismiss()
+        pill = null
+        // Quiet Return: notification-only completion. No background activity start (UX-6).
+        AniobForegroundService.finishWithNotification(context, summary)
+    }
+
+    /** A11y was revoked mid-run: drop the pill and post the recovery door (UX-6). */
+    fun onAccessibilityLost(context: Context) {
+        pill?.hide()
+        pill = null
+        AniobForegroundService.notifyAccessibilityLost(context)
     }
 }
+

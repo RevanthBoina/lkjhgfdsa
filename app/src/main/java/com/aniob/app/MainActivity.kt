@@ -1,5 +1,6 @@
 package com.aniob.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -19,11 +20,31 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         AniobBackgroundController.registerActivity(this)
         enableEdgeToEdge()
+
+        // Deep links (UX-0 §2): aniob://chat|tracker|result|skills|confirm.
+        viewModel.handleDeepLink(intent?.dataString)
+
         setContent {
             AniobTheme {
                 AniobMainScreen(viewModel = viewModel)
             }
         }
+    }
+
+    /**
+     * Catches result/pill deep links while the activity is alive. Before UX-0 the result extra
+     * was passed but no `onNewIntent` existed, so the user saw nothing (U3).
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        viewModel.handleDeepLink(intent.dataString)
+    }
+
+    /** Every return from Settings re-reads permission state so banners never go stale (U2). */
+    override fun onResume() {
+        super.onResume()
+        (application as AniobApplication).systemState.refresh()
     }
 
     override fun onTrimMemory(level: Int) {

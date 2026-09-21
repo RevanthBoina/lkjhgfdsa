@@ -28,9 +28,24 @@ class AniobExecutionRouter(
     /** Shared with the learning pipeline so hydration and replay hit the same store. */
     val fastPathEngine: AniobReplayEngine get() = replayEngine
 
+    /**
+     * UX-4: the Trust Center's FastPath switch is REAL — when off, the replay lookup is skipped
+     * entirely, so a disabled toggle provably yields zero replay hits.
+     */
+    var fastPathEnabled: Boolean = true
+
+    /** UX-5: skills the user disabled are skipped by both matchers. */
+    private var disabledSkills: Set<String> = emptySet()
+
+    fun setDisabledSkills(names: Set<String>) {
+        disabledSkills = names.toSet()
+    }
+
+    fun isSkillDisabled(name: String): Boolean = disabledSkills.contains(name)
+
     /** Wires a FastPath lookup callback for use outside the ladder (tracker/learning tests). */
     fun lookup(taskSignature: String): AniobReplayEngine.ReplayTrajectory? =
-        replayEngine.findTrajectory(taskSignature)
+        if (fastPathEnabled) replayEngine.findTrajectory(taskSignature) else null
 
     sealed class ExecutionPlanResult {
         data class DirectIntent(val shortcut: ResolvedIntentShortcut, val reason: String) : ExecutionPlanResult()
@@ -62,7 +77,8 @@ class AniobExecutionRouter(
         }
 
         // Step 1: FastPath trajectory replay with fingerprint verification (0ms LLM, 0 tokens)
-        val trajectory = replayEngine.findTrajectory(taskSignature)
+        // UX-4: the FastPath switch isn't decorative — OFF skips the lookup entirely.
+        val trajectory = if (fastPathEnabled) replayEngine.findTrajectory(taskSignature) else null
         if (trajectory != null) {
             val cachedAction = replayEngine.nextAction(trajectory, stepIndex, screenState)
             if (cachedAction != null) {
@@ -92,8 +108,10 @@ class AniobExecutionRouter(
 
         // Step 2: Tier 1.5 YAML or Semantic Skill Match
         val skillMatch = semanticSkillMatcher?.findBestSkill(taskPrompt) ?: skillMatcher.match(taskPrompt)
-        if (skillMatch.matched && skillMatch.skill != null) {
-            val skill = skillMatch.skill
+        // UX-5: a disabled skill never participates, so the Enable/Disable switch is real.
+        val skillUsable = skillMatch.skill != null && !disabledSkills.contains(skillMatch.skill.name)
+        if (skillMatch.matched && skillUsable) {
+            val skill = skillMatch.skill!!
             val step = skill.steps.getOrNull(stepIndex)
             if (step != null) {
                 val action = step.toAniobAction()

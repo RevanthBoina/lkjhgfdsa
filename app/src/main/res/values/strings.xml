@@ -20,4 +20,13 @@
     <string name="status_success">Success</string>
     <string name="status_failed">Failed</string>
     <string name="status_grilling">Awaiting Clarification</string>
+
+    <!-- Launcher shortcuts (UX-6) -->
+    <string name="shortcut_new_task">New task</string>
+    <string name="shortcut_teach">Teach a task</string>
+    <string name="shortcut_skills">Skills</string>
+
+    <!-- Quick Settings tile (UX-6) -->
+    <string name="tile_idle">Ask Aniob</string>
+    <string name="tile_running">Stop task</string>
 </resources>

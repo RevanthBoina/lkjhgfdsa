@@ -30,6 +30,13 @@ class AniobAccessibilityService : AccessibilityService() {
         var isServiceConnected: Boolean = false
             private set
         var isTaskActive: Boolean = false
+
+        /**
+         * Fired when the service is destroyed, carrying whether a task was still running.
+         * UX-6 turns this into the "Aniob lost access" recovery surface. Zero-cost when unset.
+         */
+        @Volatile
+        var onServiceLost: ((wasTaskActive: Boolean) -> Unit)? = null
     }
 
     private var contentChangedSinceLastStep: Boolean = true
@@ -39,6 +46,7 @@ class AniobAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         isServiceConnected = true
+        notifySystemState()
         // Build AppCatalog with toast like reference
         try {
             android.widget.Toast.makeText(this, "Building app catalog...", android.widget.Toast.LENGTH_SHORT).show()
@@ -81,6 +89,19 @@ class AniobAccessibilityService : AccessibilityService() {
         super.onDestroy()
         instance = null
         isServiceConnected = false
+        // A11y dies mid-task: surface the loss so UX-6's recovery flow can react.
+        AniobAccessibilityService.onServiceLost?.invoke(AniobAccessibilityService.isTaskActive)
+        AniobAccessibilityService.isTaskActive = false
+        notifySystemState()
+    }
+
+    /** Pushes the new connection truth into the reactive system state (UX-0 §1). */
+    private fun notifySystemState() {
+        try {
+            com.aniob.app.AniobApplication.instance.systemState.onAccessibilityChanged(isServiceConnected)
+        } catch (_: Exception) {
+            // Application not initialised in this process (e.g. isolated test); safe to skip.
+        }
     }
 
     /**

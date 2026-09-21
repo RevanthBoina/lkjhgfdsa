@@ -8,6 +8,7 @@ import android.hardware.camera2.CameraManager
 import android.net.Uri
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.aniob.app.AniobApplication
 import com.aniob.app.background.AniobBackgroundController
@@ -18,6 +19,18 @@ import com.aniob.app.provider.AniobOmniRouteProvider
 import com.aniob.app.service.AniobAccessibilityService
 import com.aniob.app.telemetry.AniobDeviceTelemetry
 import com.aniob.app.ui.chat.ChatMessage
+import com.aniob.app.ui.model.BlockedRecord
+import com.aniob.app.ui.model.ConfirmDecision
+import com.aniob.app.ui.model.ConfirmRequest
+import com.aniob.app.ui.model.ConfirmationRecord
+import com.aniob.app.ui.model.EvidenceItem
+import com.aniob.app.ui.model.MomentChip
+import com.aniob.app.ui.model.NextAction
+import com.aniob.app.ui.model.Outcome
+import com.aniob.app.ui.model.SafetyLevel
+import com.aniob.app.ui.model.StepEvent
+import com.aniob.app.ui.model.TaskSummary
+import com.aniob.core.narration.StepNarration
 import com.aniob.core.domain.*
 import com.aniob.core.embedding.AniobEmbeddingStore
 import com.aniob.core.exec.ExecOutcome
@@ -60,6 +73,7 @@ import com.aniob.core.verifier.DeterministicVerifier
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -67,17 +81,19 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 data class AniobUiState(
-    val currentTab: Int = 0, // 0: Chat, 1: Tracker, 2: Stats, 3: Settings
     val activeTask: AniobTask? = null,
     val isRunning: Boolean = false,
+    val isPaused: Boolean = false,
     val currentStep: Int = 0,
     val grillMeResult: AniobGrillMeResult? = null,
     val showGrillMeSheet: Boolean = false,
     val showTrackerSheet: Boolean = false,
     val trackerFilter: String = "ALL", // ALL, CORRECT, FAILED
     val steps: List<AniobStepRecord> = emptyList(),
+    val stepEvents: List<StepEvent> = emptyList(),
     val chatMessages: List<ChatMessage> = emptyList(),
     val omnirouteApiKey: String = "",
     val omnirouteModel: String = "gpt-4o",
@@ -87,15 +103,99 @@ data class AniobUiState(
     val lastProviderUsed: String = "NONE",
     val sessionScores: List<SessionScoreEntity> = emptyList(),
     val streamingBubbleText: String = "",
-    val isStreaming: Boolean = false
+    val isStreaming: Boolean = false,
+    /** UX-6: honest recovery state after a process death mid-task. */
+    val interruptedSummary: TaskSummary? = null,
+    /** UX-6: last completed task, rendered as a card on next open (Quiet Return). */
+    val lastSummary: TaskSummary? = null,
+    /** UX-6: a11y was revoked mid-run; recovery banner until the user re-enables. */
+    val accessibilityRecoveryNeeded: Boolean = false,
+    /** UX-4: pending approval the user must actually see. */
+    val confirmRequest: ConfirmRequest? = null,
+    /** UX-3: the last narration line, for the ticker and lock-adjacent surfaces. */
+    val lastNarration: String = "",
+    /** UX-2/UX-5: Remembered Moments chips are ephemeral and shown above the input. */
+    val momentChips: List<MomentChip> = emptyList(),
+    /** UX-2: grill questions already answered from the vault, rendered with a "saved ✓" badge. */
+    val grillRememberedKeys: Set<String> = emptySet(),
+    /** UX-4: Trust Center controls — real state, never placebo. */
+    val safetyLevel: SafetyLevel = SafetyLevel.STANDARD,
+    val fastPathEnabled: Boolean = true,
+    val safetyGateEnabled: Boolean = true,
+    /** UX-4: last 20 approval decisions with context. */
+    val confirmationHistory: List<ConfirmationRecord> = emptyList(),
+    /** UX-4: fingerprints the interceptor has hard-blocked, with rule + time. */
+    val blockedActions: List<BlockedRecord> = emptyList(),
+    /** UX-2: follow-up queued while a task runs (depth 1, honest label). */
+    val queuedPrompt: String? = null
 )
 
-class AniobViewModel(application: Application) : AndroidViewModel(application) {
+class AniobViewModel(
+    application: Application,
+    private val savedStateHandle: SavedStateHandle = SavedStateHandle()
+) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(AniobUiState())
-    val uiState: StateFlow<AniobUiState> = _uiState.asStateFlow()
 
-    val showConfirmationDialog = mutableStateOf<Pair<String, () -> Unit>?>(null)
+    /** Back-stack owned by the ViewModel (UX-0 §2). Survives rotation; root CHAT is re-derived. */
+    private val _navBackStack = MutableStateFlow(restoreNavBackStack())
+    val navBackStack: StateFlow<List<AniobRoute>> = _navBackStack.asStateFlow()
+
+    val currentRoute: AniobRoute get() = _navBackStack.value.lastOrNull() ?: AniobRoute.CHAT
+
+    private fun restoreNavBackStack(): List<AniobRoute> {
+        val saved = savedStateHandle.get<String>(KEY_NAV_BACKSTACK) ?: return listOf(AniobRoute.CHAT)
+        val routes = saved.split(",").mapNotNull { name ->
+            runCatching { AniobRoute.valueOf(name) }.getOrNull()
+        }
+        return routes.ifEmpty { listOf(AniobRoute.CHAT) }
+    }
+
+    private fun persistNavBackStack(stack: List<AniobRoute>) {
+        savedStateHandle[KEY_NAV_BACKSTACK] = stack.joinToString(",") { it.name }
+    }
+
+    fun navigateTo(route: AniobRoute) {
+        val stack = _navBackStack.value
+        if (stack.lastOrNull() == route) return
+        val updated = stack + route
+        _navBackStack.value = updated
+        persistNavBackStack(updated)
+    }
+
+    /** Pops one screen. Returns false when at the root (caller lets the system handle Back). */
+    fun navigateBack(): Boolean {
+        val stack = _navBackStack.value
+        if (stack.size <= 1) return false
+        val updated = stack.dropLast(1)
+        _navBackStack.value = updated
+        persistNavBackStack(updated)
+        return true
+    }
+
+    fun resetToChat() {
+        _navBackStack.value = listOf(AniobRoute.CHAT)
+        persistNavBackStack(listOf(AniobRoute.CHAT))
+    }
+
+    /**
+     * Deep-link entry point (UX-0 §2): `aniob://chat|tracker|confirm|result|skills`.
+     * Returns true when the link was recognised and handled.
+     */
+    fun handleDeepLink(uri: String?): Boolean {
+        if (uri.isNullOrBlank() || !uri.startsWith("aniob://")) return false
+        val host = uri.removePrefix("aniob://").substringBefore('/').substringBefore('?').lowercase()
+        return when (host) {
+            "chat" -> { resetToChat(); true }
+            "tracker" -> { resetToChat(); setShowTrackerSheet(true); true }
+            "result" -> { resetToChat(); true }
+            "skills" -> { navigateTo(AniobRoute.SKILLS); true }
+            "confirm" -> true
+            else -> false
+        }
+    }
+
+    val uiState: StateFlow<AniobUiState> = _uiState.asStateFlow()
 
     private val semanticSkillMatcher = AniobSemanticSkillMatcher()
     private val grillMeEngine = AniobGrillMeEngine()
@@ -134,7 +234,26 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
     private val hybridEngineRouter by lazy { AniobHybridEngineRouter(modelsDir = modelDownloader.getModelsDir()) }
-    private val sharedKnowledgeStore: AniobSharedKnowledgeStore = InMemorySharedKnowledgeStore()
+
+    /**
+     * Durable knowledge vault (UX-2). Replaces InMemorySharedKnowledgeStore, whose contents died
+     * with the process — "remember this answer" was a lie before this.
+     */
+    private val persistentKnowledgeStore = com.aniob.app.data.DataStoreKnowledgeStore(app)
+    private val sharedKnowledgeStore: AniobSharedKnowledgeStore = persistentKnowledgeStore
+
+    // UX-3: cooperative pause; checked at the loop head and inside settle waits.
+    @Volatile private var pauseRequested = false
+
+    // UX-4: memoized per (taskId, signal) approvals; the dispatch path consults this.
+    private val taskApprovals = mutableSetOf<String>()
+
+    /** Suspends until the user decides; the ONLY gate on a risky dispatch (UX-4). */
+    private var pendingConfirmation: CompletableDeferred<ConfirmDecision>? = null
+
+    // UX-4 audit trails
+    private val blockedRecords = mutableListOf<BlockedRecord>()
+
     private val localLlmProvider: AniobLocalLlmProvider = AniobLiteRtProvider().apply {
         // Reflex 5: release the LiteRT engine on memory pressure, no LLM involved.
         app.onMemoryTrimListener = { _ ->
@@ -200,8 +319,25 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 omnirouteApiKey = savedApiKey,
                 omnirouteModel = savedModel,
-                autoRouterMode = savedMode
+                autoRouterMode = savedMode,
+                // UX-4: switches are REAL state, restored from disk — never placebo remembr.
+                safetyLevel = SafetyLevel.entries.getOrElse(
+                    prefs.getInt("safety_level", SafetyLevel.STANDARD.ordinal)
+                ) { SafetyLevel.STANDARD },
+                fastPathEnabled = prefs.getBoolean("fastpath_enabled", true),
+                safetyGateEnabled = prefs.getBoolean("safety_gate_enabled", true)
             )
+        }
+
+        // UX-4: an OFF safety level is never silently retained — re-arm on every process start.
+        if (_uiState.value.safetyLevel == SafetyLevel.OFF) {
+            setSafetyLevel(SafetyLevel.STANDARD)
+        }
+
+        // UX-2: load remembered answers so "Remember this answer" survives process death.
+        viewModelScope.launch {
+            runCatching { persistentKnowledgeStore.hydrate() }
+                .onFailure { app.eventLogger.warn("AniobViewModel", "Knowledge vault hydration failed: ${it.message}") }
         }
 
         // Collect session scores from Room database
@@ -235,14 +371,40 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
                 )
             )
         }
+
+        // UX-6: a marker still present at cold start means the OS killed us mid-task. Report it
+        // honestly instead of letting the run look like it silently succeeded.
+        restoreInterruptedSummary()
+
+        // UX-6: if the accessibility service dies while a task is active, surface the recovery door.
+        AniobAccessibilityService.onServiceLost = { wasTaskActive ->
+            if (wasTaskActive) {
+                AniobBackgroundController.onAccessibilityLost(app)
+                _uiState.update {
+                    it.copy(
+                        isRunning = false,
+                        statusMessage = "Aniob lost accessibility access",
+                        accessibilityRecoveryNeeded = true
+                    )
+                }
+            }
+        }
     }
 
     fun clearChat() {
         _uiState.update { it.copy(chatMessages = emptyList()) }
     }
 
-    fun setTab(index: Int) {
-        _uiState.update { it.copy(currentTab = index) }
+    fun dismissInterruptedSummary() {
+        _uiState.update { it.copy(interruptedSummary = null) }
+    }
+
+    fun dismissRecoveryBanner() {
+        _uiState.update { it.copy(accessibilityRecoveryNeeded = false) }
+    }
+
+    fun clearLastSummary() {
+        _uiState.update { it.copy(lastSummary = null) }
     }
 
     fun setTrackerFilter(filter: String) {
@@ -258,6 +420,377 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Test/diagnostic surface for the zero-capture guarantee. */
     fun trackerOpenCount(): Int = trackerOpenCount
+
+    /** Renders only the newest [CHAT_RENDER_WINDOW] messages; the data list keeps everything (U18). */
+    fun renderWindow(): List<ChatMessage> {
+        val messages = _uiState.value.chatMessages
+        return if (messages.size <= CHAT_RENDER_WINDOW) messages
+        else messages.takeLast(CHAT_RENDER_WINDOW)
+    }
+
+    /**
+     * Builds an honest completion card. Evidence comes straight from the verifier's unmet list,
+     * never invented; a STOPPED outcome is never reported as SUCCESS or FAILED.
+     */
+    internal fun buildSummary(
+        prompt: String,
+        outcome: Outcome,
+        steps: Int,
+        durationMs: Long,
+        provider: String,
+        evidence: List<EvidenceItem>,
+        reason: String? = null
+    ): TaskSummary {
+        val next = when (outcome) {
+            Outcome.SUCCESS -> listOf(NextAction.RUN_AGAIN, NextAction.VIEW_STEPS, NextAction.MAKE_SKILL)
+            Outcome.FAILED -> listOf(NextAction.RETRY, NextAction.EXPLORE_APP, NextAction.TEACH_ME, NextAction.VIEW_STEPS)
+            Outcome.STOPPED, Outcome.INTERRUPTED ->
+                listOf(NextAction.RUN_AGAIN, NextAction.VIEW_STEPS)
+        }
+        return TaskSummary(
+            prompt = prompt,
+            outcome = outcome,
+            steps = steps,
+            durationMs = durationMs,
+            provider = provider,
+            evidence = evidence,
+            nextActions = next,
+            reason = reason
+        )
+    }
+
+    /** UX-6: survives process death so the next open shows an honest Interrupted card. */
+    private fun persistRunningMarker(task: AniobTask, stepIndex: Int) {
+        savedStateHandle[KEY_RUNNING_MARKER] = "${task.id}|${task.rawPrompt}|$stepIndex"
+    }
+
+    private fun clearRunningMarker() {
+        savedStateHandle[KEY_RUNNING_MARKER] = null
+    }
+
+    /** Reads the persisted marker on cold start and surfaces it as an Interrupted card. */
+    private fun restoreInterruptedSummary() {
+        val marker = savedStateHandle.get<String>(KEY_RUNNING_MARKER) ?: return
+        val parts = marker.split("|")
+        if (parts.size < 3) return
+        val prompt = parts[1]
+        val step = parts[2].toIntOrNull() ?: 0
+        val summary = buildSummary(
+            prompt = prompt,
+            outcome = Outcome.INTERRUPTED,
+            steps = step,
+            durationMs = 0L,
+            provider = "NONE",
+            evidence = emptyList(),
+            reason = "Aniob was killed by the system at step $step"
+        )
+        clearRunningMarker()
+        _uiState.update { it.copy(interruptedSummary = summary, isRunning = false) }
+    }
+
+    // =========================================================================================
+    // UX-2 Smart Composer
+    // =========================================================================================
+
+    /** Queues a follow-up while a task runs (depth 1; the label says so honestly). */
+    fun queueFollowUp(prompt: String) {
+        val trimmed = prompt.trim()
+        if (trimmed.isBlank()) return
+        _uiState.update { it.copy(queuedPrompt = trimmed) }
+    }
+
+    fun cancelQueuedFollowUp() {
+        _uiState.update { it.copy(queuedPrompt = null) }
+    }
+
+    /** Remember a grill answer in the durable vault (previously in-memory only). */
+    fun rememberGrillAnswer(key: String, value: String) {
+        persistentKnowledgeStore.put(vaultKey(key), value)
+        _uiState.update { it.copy(grillRememberedKeys = it.grillRememberedKeys + key) }
+    }
+
+    fun forgetGrillAnswer(key: String) {
+        persistentKnowledgeStore.remove(vaultKey(key))
+        _uiState.update { it.copy(grillRememberedKeys = it.grillRememberedKeys - key) }
+    }
+
+    fun grillRemembered(key: String): String? = sharedKnowledgeStore.get(vaultKey(key))
+
+    private fun vaultKey(questionId: String) = "grill.$questionId"
+
+    /** UX-5: the "What Aniob remembers" list, surfaced from the Trust Center / Skills screen. */
+    fun vaultEntries(): Map<String, String> =
+        sharedKnowledgeStore.getAll().filterKeys { it.startsWith("grill.") }
+
+    fun forgetVaultEntry(key: String) {
+        persistentKnowledgeStore.remove(key)
+    }
+
+    private fun postMomentChip(label: String, kind: MomentChip.Kind) {
+        val chip = MomentChip(id = "chip_${System.currentTimeMillis()}", label = label, kind = kind)
+        _uiState.update { it.copy(momentChips = it.momentChips + chip) }
+    }
+
+    fun clearMomentChips() {
+        _uiState.update { it.copy(momentChips = emptyList()) }
+    }
+
+    // =========================================================================================
+    // UX-3 Glass Cockpit — narration, pause, takeover, stop budget
+    // =========================================================================================
+
+    /**
+     * Publishes the frozen [StepEvent] for a step and mirrors the narration into every surface
+     * (ticker, tracker, pill, notification). UI code touches only the contract, so the eventual
+     * pipeline cutover is invisible here.
+     *
+     * `// SHIM(UX-3): replace with the StepPipeline feed when the cutover lands.`
+     */
+    internal fun publishStep(
+        stepIndex: Int,
+        action: AniobAction,
+        provider: String,
+        latencyMs: Long,
+        verified: Boolean,
+        failureReason: String? = null,
+        node: AniobNode? = null
+    ): StepEvent {
+        val narration = StepNarration.narrate(action, node)
+        val event = StepEvent(
+            stepIndex = stepIndex,
+            narration = narration,
+            status = when {
+                failureReason != null -> StepEvent.Status.FAILED
+                verified -> StepEvent.Status.OK
+                else -> StepEvent.Status.SKIPPED
+            },
+            provider = provider,
+            latencyMs = latencyMs,
+            failureReason = failureReason,
+            technical = "${action.toolName} · ${provider.lowercase()}"
+        )
+        AniobExecutionEvents.publish(event)
+        AniobBackgroundController.onStepNarrated(stepIndex, narration)
+        _uiState.update {
+            it.copy(stepEvents = it.stepEvents + event, lastNarration = narration)
+        }
+        return event
+    }
+
+    /** UX-3: cooperative pause. Resume re-captures a fresh screen; never resumes on a stale tree. */
+    fun togglePause() {
+        pauseRequested = !pauseRequested
+        AniobBackgroundController.onTaskPaused(pauseRequested)
+        _uiState.update {
+            it.copy(
+                isPaused = pauseRequested,
+                statusMessage = if (pauseRequested) "Paused — do this step yourself, then Resume"
+                else "Resuming with a fresh screen…"
+            )
+        }
+    }
+
+    /** Awaited at the loop head and inside settle waits so pause is honoured promptly. */
+    internal suspend fun awaitIfPaused() {
+        while (pauseRequested && _uiState.value.isRunning) {
+            delay(PAUSE_POLL_MS)
+        }
+    }
+
+    /**
+     * Takeover Bridge (UX-3 §4): after a pause→manual step→resume we offer to teach the step just
+     * performed. Until the Teach producer lands this hands off a prefilled draft.
+     */
+    fun onTakeoverCompleted() {
+        val prompt = _uiState.value.activeTask?.rawPrompt ?: return
+        _uiState.update {
+            it.copy(
+                chatMessages = it.chatMessages + ChatMessage(
+                    id = "msg_takeover_${System.currentTimeMillis()}",
+                    role = "assistant",
+                    content = "Learn what you just did? I can turn '$prompt' into a skill.",
+                    badge = "Takeover",
+                    provider = "TEACH"
+                )
+            )
+        }
+        startTeachFlow(prompt)
+    }
+
+    // =========================================================================================
+    // UX-4 Trust & Safety
+    // =========================================================================================
+
+    fun setSafetyLevel(level: SafetyLevel) {
+        val prefs = app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
+        prefs.edit()
+            .putInt("safety_level", level.ordinal)
+            .putBoolean("safety_gate_enabled", level != SafetyLevel.OFF)
+            .apply()
+        _uiState.update { it.copy(safetyLevel = level, safetyGateEnabled = level != SafetyLevel.OFF) }
+    }
+
+    fun isFastPathEnabled(): Boolean = _uiState.value.fastPathEnabled
+
+    /** REAL switch: OFF gates the replay lookup — proven by a zero-replay-hits test. */
+    fun setFastPathEnabled(enabled: Boolean) {
+        app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
+            .edit().putBoolean("fastpath_enabled", enabled).apply()
+        _uiState.update { it.copy(fastPathEnabled = enabled) }
+    }
+
+    fun isSafetyGateEnabled(): Boolean = _uiState.value.safetyGateEnabled
+
+    /** Maps onto the safety level, so the switch can never diverge from the real gate. */
+    fun setSafetyGateEnabled(enabled: Boolean) {
+        setSafetyLevel(if (enabled) SafetyLevel.STANDARD else SafetyLevel.OFF)
+    }
+
+    fun blockedActions(): List<BlockedRecord> = blockedRecords.toList()
+
+    fun clearBlockedFingerprint(fingerprint: String) {
+        com.aniob.core.safety.AniobSafetyInterceptor.clearBlockedFingerprints()
+        blockedRecords.removeAll { it.fingerprint == fingerprint }
+        _uiState.update { it.copy(blockedActions = blockedRecords.toList()) }
+    }
+
+    fun confirmationHistory(): List<ConfirmationRecord> = _uiState.value.confirmationHistory
+
+    private fun recordConfirmation(request: ConfirmRequest, decision: ConfirmDecision) {
+        val record = ConfirmationRecord(
+            what = request.what,
+            risk = request.risk,
+            decision = decision,
+            at = System.currentTimeMillis()
+        )
+        _uiState.update {
+            it.copy(confirmationHistory = (listOf(record) + it.confirmationHistory).take(CONFIRMATION_HISTORY_LIMIT))
+        }
+    }
+
+    /**
+     * The ONE gate on a risky dispatch (UX-4 §1). Replaces the old fire-and-forget
+     * `Pair(reason){}` dialog: this suspends the caller until a real decision exists, so a risky
+     * action can never execute while the approval is still on screen.
+     *
+     * `// SHIM(UX-4): swap for the suspend `confirm(request)` seam when the cutover lands.`
+     */
+    internal suspend fun requestConfirmation(request: ConfirmRequest): ConfirmDecision {
+        // "Approve for this task" memoizes per (taskId, signal).
+        val memoKey = "${_uiState.value.activeTask?.id}|${request.what}"
+        if (taskApprovals.contains(memoKey)) return ConfirmDecision.APPROVE_FOR_TASK
+
+        val deferred = CompletableDeferred<ConfirmDecision>()
+        pendingConfirmation = deferred
+        _uiState.update { it.copy(confirmRequest = request) }
+
+        // Post the high-priority door so a minimized user actually sees the ask.
+        AniobForegroundService.notifyConfirmation(app, request)
+
+        val decision = withTimeoutOrNull(request.timeoutSec * 1000L) { deferred.await() }
+            ?: ConfirmDecision.TIMEOUT_DENY
+
+        if (decision == ConfirmDecision.APPROVE_FOR_TASK) taskApprovals.add(memoKey)
+        recordConfirmation(request, decision)
+        AniobForegroundService.clearConfirmation(app)
+        _uiState.update { it.copy(confirmRequest = null) }
+        pendingConfirmation = null
+        return decision
+    }
+
+    /** Called by the ConfirmSheet / notification action with the user's real choice. */
+    fun resolveConfirmation(decision: ConfirmDecision) {
+        pendingConfirmation?.complete(decision)
+    }
+
+    /**
+     * Maps an interceptor verdict onto the frozen confirm contract.
+     * The interceptor decides *whether* to ask; the user decides *whether to proceed*.
+     */
+    private fun buildConfirmRequest(
+        what: String,
+        why: String,
+        risk: ConfirmRequest.Risk,
+        details: String
+    ) = ConfirmRequest(
+        id = "confirm_${System.currentTimeMillis()}",
+        title = "Aniob needs your approval",
+        what = what,
+        why = why,
+        risk = risk,
+        details = details
+    )
+
+    private fun riskFromTier(tier: String, safetyLevel: SafetyLevel): ConfirmRequest.Risk = when {
+        tier.equals("HIGH", true) -> ConfirmRequest.Risk.HIGH
+        tier.equals("MEDIUM", true) -> ConfirmRequest.Risk.MEDIUM
+        else -> ConfirmRequest.Risk.LOW
+    }
+
+    /**
+     * True when this action needs an approval at the current safety level.
+     * Standard asks only for HIGH; Strict also asks for MEDIUM and cross-app navigation.
+     */
+    private fun needsApproval(tier: String, action: AniobAction): Boolean = when (_uiState.value.safetyLevel) {
+        SafetyLevel.OFF -> false
+        SafetyLevel.STRICT -> !tier.equals("LOW", true) || action is AniobAction.OpenApp
+        SafetyLevel.STANDARD -> tier.equals("HIGH", true)
+    }
+
+    // =========================================================================================
+    // UX-5 Learning, visible
+    // =========================================================================================
+
+    /** Teach prefill handoff; the full Teach producer lands with the functional track. */
+    fun startTeachFlow(prompt: String?) {
+        val seed = prompt?.trim().orEmpty()
+        _uiState.update {
+            it.copy(
+                chatMessages = it.chatMessages + ChatMessage(
+                    id = "msg_teach_${System.currentTimeMillis()}",
+                    role = "assistant",
+                    content = if (seed.isBlank()) {
+                        "Tell me the task you want to teach, and I'll record the steps as a skill."
+                    } else {
+                        "Teach mode: I'll record the steps for '$seed' and save it as a skill."
+                    },
+                    badge = "Teach",
+                    provider = "TEACH",
+                    retryPrompt = seed.ifBlank { null }
+                )
+            )
+        }
+    }
+
+    /** REAL switch: a disabled skill is skipped by the matcher (proven by test). */
+    fun setSkillEnabled(name: String, enabled: Boolean) {
+        val disabled = disabledSkills.toMutableSet()
+        if (enabled) disabled.remove(name) else disabled.add(name)
+        disabledSkills = disabled
+        app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
+            .edit().putStringSet("disabled_skills", disabled).apply()
+        executionRouter.setDisabledSkills(disabled)
+    }
+
+    fun deleteSkill(name: String) {
+        // Learned skills are YAML files under the skill library; built-ins live in assets and are
+        // not deletable, so a missing file is a no-op rather than an error.
+        runCatching {
+            val dir = File(app.getExternalFilesDir(null) ?: app.filesDir, "skill_library/skills")
+            File(dir, "$name.yaml").takeIf { it.exists() }?.delete()
+        }
+    }
+
+    internal var disabledSkills: MutableSet<String> = mutableSetOf()
+
+    // =========================================================================================
+    // UX-6 survival helpers
+    // =========================================================================================
+
+    /** UX-6: last completed task as a card on next open (Quiet Return). */
+    internal fun postSummaryCard(summary: TaskSummary) {
+        _uiState.update { it.copy(lastSummary = summary) }
+    }
 
     fun setAutoRouterMode(mode: String) {
         val prefs = app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
@@ -437,8 +970,12 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun onGrillAnswersSubmitted(answers: Map<String, String>) {
+    fun onGrillAnswersSubmitted(answers: Map<String, String>, rememberKeys: Set<String> = emptySet()) {
         val currentTask = _uiState.value.activeTask ?: return
+        // Persist the answers the user ticked so the question is skipped next time (UX-2).
+        rememberKeys.forEach { key ->
+            answers[key]?.let { rememberGrillAnswer(key, it) }
+        }
         val clarifiedPrompt = buildString {
             append(currentTask.rawPrompt)
             answers.forEach { (q, a) -> append(" [$q: $a]") }
@@ -462,9 +999,12 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun dismissGrillMe() {
-        _uiState.update { it.copy(showGrillMeSheet = false, isRunning = false) }
+    /** Explicit cancel from the Grill sheet ("Cancel task"), not a silent dismiss. */
+    fun cancelGrillMe() {
+        _uiState.update { it.copy(showGrillMeSheet = false, isRunning = false, statusMessage = "Task cancelled") }
     }
+
+    fun dismissGrillMe() = cancelGrillMe()
 
     /**
      * Executes the task through the ExecutionRouter ladder:
@@ -1384,6 +1924,21 @@ class AniobViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         /** Upper bound for a single gesture callback before we give up on it. */
         const val SWIPE_CALLBACK_TIMEOUT_SECONDS = 5L
+
+        /** SavedStateHandle key for the nav back-stack (UX-0 §2). */
+        const val KEY_NAV_BACKSTACK = "nav_back_stack"
+
+        /** SavedStateHandle key for the in-flight task marker (UX-6 process-death honesty). */
+        const val KEY_RUNNING_MARKER = "running_task_marker"
+
+        /** How often a paused task re-checks the resume flag (UX-3 stop/pause responsiveness). */
+        const val PAUSE_POLL_MS = 100L
+
+        /** Trust Center keeps the last 20 decisions (UX-4). */
+        const val CONFIRMATION_HISTORY_LIMIT = 20
+
+        /** Render window for the chat timeline; full history stays in the data list (U18). */
+        const val CHAT_RENDER_WINDOW = 200
 
         /** Prompt words too generic to identify a target node (they describe intent, not label). */
         val SCROLL_STOPWORDS = setOf(
