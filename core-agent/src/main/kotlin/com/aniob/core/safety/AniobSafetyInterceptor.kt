@@ -104,4 +104,6 @@ object AniobSafetyInterceptor {
     fun clearBlockedFingerprints() {
         blockedFingerprints.clear()
     }
+
+    fun getBlockedFingerprints(): Set<String> = blockedFingerprints.toSet()
 }

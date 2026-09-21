@@ -30,7 +30,8 @@ fun AniobSettingsScreen(
     onBack: () -> Unit = {},
     onNavigateToModels: () -> Unit = {},
     onNavigateToStats: () -> Unit = {},
-    onNavigateToOnboarding: () -> Unit = {}
+    onNavigateToOnboarding: () -> Unit = {},
+    onNavigateToTrust: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var apiKeyInput by remember { mutableStateOf(uiState.omnirouteApiKey) }

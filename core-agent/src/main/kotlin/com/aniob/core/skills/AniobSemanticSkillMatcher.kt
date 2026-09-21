@@ -24,6 +24,8 @@ class AniobSemanticSkillMatcher(
         }
     }
 
+    fun getLoadedSkills(): List<AniobSkill> = skillEngine.getLoadedSkills()
+
     fun findBestSkill(prompt: String): AniobSkillMatcher.MatchResult {
         val kw = keywordMatcher.match(prompt)
         if (kw.matched) return kw

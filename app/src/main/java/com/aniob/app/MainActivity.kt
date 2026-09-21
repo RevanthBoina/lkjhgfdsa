@@ -19,6 +19,17 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AniobBackgroundController.registerActivity(this)
+        // UX-4: wire notification Approve/Deny actions into the suspending confirm gate.
+        com.aniob.app.background.AniobForegroundService.onConfirmDecision = { decision ->
+            viewModel.resolveConfirmation(decision)
+        }
+        // UX-3: wire Stop/Pause notification actions.
+        com.aniob.app.background.AniobForegroundService.onStopRequestedFromNotification = {
+            viewModel.stopCurrentTask()
+        }
+        com.aniob.app.background.AniobForegroundService.onPauseToggleFromNotification = {
+            viewModel.togglePause()
+        }
         enableEdgeToEdge()
 
         // Deep links (UX-0 §2): aniob://chat|tracker|result|skills|confirm.

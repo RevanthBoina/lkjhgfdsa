@@ -235,6 +235,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
 
             AniobRoute.SKILLS -> AniobSkillsScreen(
                 uiState = uiState,
+                skills = viewModel.getLoadedSkills(),
                 onBack = { viewModel.navigateBack() },
                 onTeach = { viewModel.startTeachFlow(null) },
                 onReplay = { prompt -> viewModel.resetToChat(); viewModel.submitTask(prompt) },
@@ -246,15 +247,15 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
 
             AniobRoute.TRUST -> AniobTrustCenterScreen(
                 onBack = { viewModel.navigateBack() },
-                safetyLevel = viewModel.safetyLevel,
+                safetyLevel = uiState.safetyLevel,
                 onSafetyLevelChanged = { viewModel.setSafetyLevel(it) },
                 fastPathEnabled = viewModel.isFastPathEnabled(),
                 onFastPathChanged = { viewModel.setFastPathEnabled(it) },
                 gateEnabled = viewModel.isSafetyGateEnabled(),
                 onGateChanged = { viewModel.setSafetyGateEnabled(it) },
-                blockedEntries = viewModel.blockedActions(),
+                blockedEntries = uiState.blockedActions,
                 onClearBlocked = { fp -> viewModel.clearBlockedFingerprint(fp) },
-                confirmationHistory = viewModel.confirmationHistory(),
+                confirmationHistory = uiState.confirmationHistory,
                 vaultEntries = { viewModel.vaultEntries() },
                 onForgetVault = { key -> viewModel.forgetVaultEntry(key) }
             )

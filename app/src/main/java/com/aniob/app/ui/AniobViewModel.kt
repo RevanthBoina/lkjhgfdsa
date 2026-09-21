@@ -6,12 +6,12 @@ import android.content.Intent
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.net.Uri
-import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.aniob.app.AniobApplication
 import com.aniob.app.background.AniobBackgroundController
+import com.aniob.app.background.AniobForegroundService
 import com.aniob.app.db.SessionScoreEntity
 import com.aniob.app.model.AniobModelDownloader
 import com.aniob.app.provider.AniobMockProvider
@@ -127,7 +127,9 @@ data class AniobUiState(
     /** UX-4: fingerprints the interceptor has hard-blocked, with rule + time. */
     val blockedActions: List<BlockedRecord> = emptyList(),
     /** UX-2: follow-up queued while a task runs (depth 1, honest label). */
-    val queuedPrompt: String? = null
+    val queuedPrompt: String? = null,
+    /** UX-5: names of skills the user has disabled; matcher skips these. */
+    val disabledSkills: Set<String> = emptySet()
 )
 
 class AniobViewModel(
@@ -245,6 +247,13 @@ class AniobViewModel(
     // UX-3: cooperative pause; checked at the loop head and inside settle waits.
     @Volatile private var pauseRequested = false
 
+    /** Convenience accessor so the UI can read safetyLevel without collecting uiState. */
+    val safetyLevel: SafetyLevel get() = _uiState.value.safetyLevel
+
+    /** Exposes the loaded skill list for the Skills screen. */
+    fun getLoadedSkills(): List<com.aniob.core.skills.AniobSkill> =
+        semanticSkillMatcher.getLoadedSkills()
+
     // UX-4: memoized per (taskId, signal) approvals; the dispatch path consults this.
     private val taskApprovals = mutableSetOf<String>()
 
@@ -314,6 +323,8 @@ class AniobViewModel(
         val savedModel = prefs.getString("omniroute_model", "gpt-4o") ?: "gpt-4o"
         val savedMode = prefs.getString("autorouter_mode", "auto") ?: "auto"
         localFailCount = prefs.getInt("local_fail_count", 0)
+        disabledSkills = (prefs.getStringSet("disabled_skills", emptySet()) ?: emptySet()).toMutableSet()
+        executionRouter.setDisabledSkills(disabledSkills)
 
         _uiState.update {
             it.copy(
@@ -325,7 +336,8 @@ class AniobViewModel(
                     prefs.getInt("safety_level", SafetyLevel.STANDARD.ordinal)
                 ) { SafetyLevel.STANDARD },
                 fastPathEnabled = prefs.getBoolean("fastpath_enabled", true),
-                safetyGateEnabled = prefs.getBoolean("safety_gate_enabled", true)
+                safetyGateEnabled = prefs.getBoolean("safety_gate_enabled", true),
+                disabledSkills = disabledSkills.toSet()
             )
         }
 
@@ -770,6 +782,7 @@ class AniobViewModel(
         app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
             .edit().putStringSet("disabled_skills", disabled).apply()
         executionRouter.setDisabledSkills(disabled)
+        _uiState.update { it.copy(disabledSkills = disabled) }
     }
 
     fun deleteSkill(name: String) {
@@ -1262,6 +1275,8 @@ class AniobViewModel(
                         )
 
                         if (!intercept.isAllowed) {
+                            blockedRecords.add(BlockedRecord(fingerprint = currentScreen.treeHash, rule = intercept.reason, at = System.currentTimeMillis()))
+                            _uiState.update { it.copy(blockedActions = blockedRecords.toList()) }
                             recordTrajectory(
                                 stepIndex = currentStep + 1,
                                 observation = "blocked by safety interceptor",
@@ -1524,6 +1539,8 @@ class AniobViewModel(
                         )
 
                         if (!intercept.isAllowed) {
+                            blockedRecords.add(BlockedRecord(fingerprint = currentScreen.treeHash, rule = intercept.reason, at = System.currentTimeMillis()))
+                            _uiState.update { it.copy(blockedActions = blockedRecords.toList()) }
                             recordTrajectory(
                                 stepIndex = currentStep + 1,
                                 observation = "blocked by safety interceptor",
@@ -1548,18 +1565,30 @@ class AniobViewModel(
                             break
                         }
 
-                        if (intercept.requiresConfirmation) {
-                            showConfirmationDialog.value = Pair(intercept.reason) {}
-                            actionsDispatched++
-                            recordTrajectory(
-                                stepIndex = currentStep + 1,
-                                observation = "confirmation gate raised",
-                                action = action,
-                                provider = primaryProvider,
-                                latencyMs = System.currentTimeMillis() - stepStartTime,
-                                screenHash = currentScreen.treeHash,
-                                verified = true
+                        if (intercept.requiresConfirmation || needsApproval(intercept.riskTier, action)) {
+                            val confirmReq = buildConfirmRequest(
+                                what = action.toString().take(80),
+                                why = intercept.reason,
+                                risk = riskFromTier(intercept.riskTier, _uiState.value.safetyLevel),
+                                details = "Action: ${action.toolName} · tier: ${intercept.riskTier}"
                             )
+                            val decision = requestConfirmation(confirmReq)
+                            if (decision == ConfirmDecision.DENY || decision == ConfirmDecision.TIMEOUT_DENY) {
+                                val stepRecord = AniobStepRecord(
+                                    stepIndex = currentStep + 1,
+                                    screenHash = currentScreen.treeHash,
+                                    action = action,
+                                    provider = primaryProvider,
+                                    latencyMs = System.currentTimeMillis() - stepStartTime,
+                                    tokensUsed = 0,
+                                    verifiedSuccess = false,
+                                    failureReason = "You denied this step"
+                                )
+                                addStepRecord(stepRecord)
+                                _uiState.update { it.copy(statusMessage = "You denied this step") }
+                                finalSuccess = false
+                                break
+                            }
                         }
 
                         val step = executeVerifyAndRecover(a11y, action, task.clarifiedGoal, currentScreen)
