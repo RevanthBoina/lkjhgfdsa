@@ -47,6 +47,8 @@ class AniobOverlayPill(
         ).toInt()
     }
 
+    fun dpToPx(dp: Int): Int = dpToPx(dp.toFloat())
+
     fun show(stepIndex: Int, statusText: String) {
         if (!Settings.canDrawOverlays(context)) return
         if (isShowing) {

@@ -9,6 +9,8 @@ on:
 jobs:
   preflight-and-build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout Codebase
         uses: actions/checkout@v4
@@ -23,6 +25,10 @@ jobs:
         run: |
           chmod +x scripts/*.sh
           bash scripts/ci-preflight.sh
+
+      - name: Generate Keystore
+        run: |
+          keytool -genkeypair -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
 
       - name: Build Android Release APK
         run: |
@@ -41,3 +47,12 @@ jobs:
         with:
           name: aniob-release-apk
           path: release_artifacts/*
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release_artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

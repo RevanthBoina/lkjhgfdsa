@@ -19,6 +19,7 @@ import com.aniob.app.provider.AniobOmniRouteProvider
 import com.aniob.app.service.AniobAccessibilityService
 import com.aniob.app.telemetry.AniobDeviceTelemetry
 import com.aniob.app.ui.chat.ChatMessage
+import com.aniob.app.ui.model.AniobExecutionEvents
 import com.aniob.app.ui.model.BlockedRecord
 import com.aniob.app.ui.model.ConfirmDecision
 import com.aniob.app.ui.model.ConfirmRequest
@@ -256,6 +257,7 @@ class AniobViewModel(
 
     // UX-4: memoized per (taskId, signal) approvals; the dispatch path consults this.
     private val taskApprovals = mutableSetOf<String>()
+    internal var disabledSkills: MutableSet<String> = mutableSetOf()
 
     /** Suspends until the user decides; the ONLY gate on a risky dispatch (UX-4). */
     private var pendingConfirmation: CompletableDeferred<ConfirmDecision>? = null
@@ -794,8 +796,6 @@ class AniobViewModel(
         }
     }
 
-    internal var disabledSkills: MutableSet<String> = mutableSetOf()
-
     // =========================================================================================
     // UX-6 survival helpers
     // =========================================================================================
@@ -1128,12 +1128,16 @@ class AniobViewModel(
 
         try {
             while (currentStep < maxSteps && _uiState.value.isRunning) {
+                val wasPaused = pauseRequested
+                awaitIfPaused()
+                if (!_uiState.value.isRunning) break
+
                 _uiState.update { it.copy(currentStep = currentStep + 1) }
 
                 // Check Observation Policy: burst if predictable, else full capture
-                val captured = if (observationPolicy.shouldObserve() || screenBefore == null) {
+                val captured = if (wasPaused || observationPolicy.shouldObserve() || screenBefore == null) {
                     screenReads++; screenCaptureCount++
-                    a11y?.captureCurrentScreenState() ?: AniobScreenState(
+                    val fresh = a11y?.captureCurrentScreenState() ?: AniobScreenState(
                         packageName = "com.aniob.app",
                         treeHash = "mock_hash_${currentStep}",
                         nodes = listOf(
@@ -1141,6 +1145,10 @@ class AniobViewModel(
                             AniobNode(id = 2, className = "Button", text = "Search", isClickable = true, bounds = AniobRect(50, 200, 300, 280))
                         )
                     )
+                    if (wasPaused && screenBefore != null && fresh.treeHash != screenBefore.treeHash) {
+                        onTakeoverCompleted()
+                    }
+                    fresh
                 } else {
                     screenBefore
                 }

@@ -56,9 +56,10 @@ fun AniobTheme(
  */
 object AniobMotion {
     const val NAV_DURATION_MS = 200
-    val NAV_SPEC: AnimationSpec<Int> get() = tween(NAV_DURATION_MS)
+    fun <T> navSpec(): androidx.compose.animation.core.FiniteAnimationSpec<T> = tween(NAV_DURATION_MS)
+    fun <T> instant(): androidx.compose.animation.core.FiniteAnimationSpec<T> = tween(0)
 
-    fun instant(): AnimationSpec<Float> = tween(0)
+    val NAV_SPEC: androidx.compose.animation.core.FiniteAnimationSpec<Int> get() = tween(NAV_DURATION_MS)
 
     /** Reads `Settings.Global.ANIMATOR_DURATION_SCALE`; 0 means animations are disabled. */
     fun isReducedMotionEnabled(context: Context): Boolean = try {

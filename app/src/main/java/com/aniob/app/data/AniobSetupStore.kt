@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -29,14 +30,14 @@ class AniobSetupStore(private val context: Context) {
     private val keyStep = intPreferencesKey("setup_step_reached")
     private val keyCompleted = booleanPreferencesKey("setup_completed")
     private val keySkipped = booleanPreferencesKey("setup_skipped_fresh")
-    private val keyRemind = intPreferencesKey("setup_remind_after")
+    private val keyRemind = longPreferencesKey("setup_remind_after")
 
     val state: Flow<SetupState> = context.setupDataStore.data.map { prefs ->
         SetupState(
             stepReached = prefs[keyStep] ?: 0,
             completed = prefs[keyCompleted] ?: false,
             skippedFresh = prefs[keySkipped] ?: false,
-            remindAfter = (prefs[keyRemind] ?: 0L).toLong()
+            remindAfter = prefs[keyRemind] ?: 0L
         )
     }
 

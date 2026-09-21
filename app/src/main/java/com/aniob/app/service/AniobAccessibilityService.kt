@@ -37,8 +37,27 @@ class AniobAccessibilityService : AccessibilityService() {
          */
         @Volatile
         var onServiceLost: ((wasTaskActive: Boolean) -> Unit)? = null
+
+        @Volatile
+        var isRecordingDemo: Boolean = false
+        private val demoRecordedEvents = mutableListOf<com.aniob.core.skills.RecordedDemoEvent>()
+
+        fun startDemoRecording() {
+            synchronized(demoRecordedEvents) {
+                demoRecordedEvents.clear()
+            }
+            isRecordingDemo = true
+        }
+
+        fun stopDemoRecording(): List<com.aniob.core.skills.RecordedDemoEvent> {
+            isRecordingDemo = false
+            return synchronized(demoRecordedEvents) {
+                demoRecordedEvents.toList()
+            }
+        }
     }
 
+    private val spotlightOverlay by lazy { com.aniob.app.overlay.AniobSpotlightOverlay(this) }
     private var contentChangedSinceLastStep: Boolean = true
     private var lastScreenState: AniobScreenState? = null
 
@@ -70,7 +89,54 @@ class AniobAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (!isTaskActive || event == null) return
+        if (event == null) return
+        if (isRecordingDemo) {
+            when (event.eventType) {
+                AccessibilityEvent.TYPE_VIEW_CLICKED -> {
+                    val source = event.source
+                    val pkg = event.packageName?.toString()
+                    val text = (source?.text ?: event.text.firstOrNull())?.toString()
+                    val desc = (source?.contentDescription ?: event.contentDescription)?.toString()
+                    val resId = source?.viewIdResourceName
+                    synchronized(demoRecordedEvents) {
+                        demoRecordedEvents.add(
+                            com.aniob.core.skills.RecordedDemoEvent(
+                                actionType = "click",
+                                resourceId = resId,
+                                text = text,
+                                contentDescription = desc,
+                                packageName = pkg
+                            )
+                        )
+                    }
+                    source?.recycle()
+                }
+                AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> {
+                    val source = event.source
+                    val pkg = event.packageName?.toString()
+                    val text = event.text.joinToString(" ")
+                    val desc = source?.contentDescription?.toString()
+                    val resId = source?.viewIdResourceName
+                    if (text.isNotBlank()) {
+                        synchronized(demoRecordedEvents) {
+                            demoRecordedEvents.add(
+                                com.aniob.core.skills.RecordedDemoEvent(
+                                    actionType = "type_text",
+                                    resourceId = resId,
+                                    text = source?.text?.toString(),
+                                    contentDescription = desc,
+                                    inputText = text,
+                                    packageName = pkg
+                                )
+                            )
+                        }
+                    }
+                    source?.recycle()
+                }
+            }
+        }
+
+        if (!isTaskActive) return
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
@@ -217,16 +283,26 @@ class AniobAccessibilityService : AccessibilityService() {
         gateOnUiQuiescence(action)
 
         when (val command = AniobActionExecutor.planDispatch(action, liveScreen)) {
-            is DispatchCommand.TapAt -> dispatchTap(command.x.toFloat(), command.y.toFloat(), callback)
+            is DispatchCommand.TapAt -> {
+                spotlightOverlay.flash(command.x.toFloat(), command.y.toFloat())
+                dispatchTap(command.x.toFloat(), command.y.toFloat(), callback)
+            }
 
-            is DispatchCommand.LongPressAt ->
+            is DispatchCommand.LongPressAt -> {
+                spotlightOverlay.flash(command.x.toFloat(), command.y.toFloat())
                 dispatchLongPress(command.x.toFloat(), command.y.toFloat(), command.durationMs, callback)
+            }
 
             is DispatchCommand.SetText -> {
+                val node = liveScreen.findNodeById(command.nodeId)
+                if (node != null) {
+                    spotlightOverlay.flash(Rect(node.bounds.left, node.bounds.top, node.bounds.right, node.bounds.bottom))
+                }
                 setTextOnNode(command, liveScreen, callback)
             }
 
             is DispatchCommand.SwipeGesture -> {
+                spotlightOverlay.flash(command.startX.toFloat(), command.startY.toFloat())
                 dispatchGesturePath(command, callback)
             }
 

@@ -28,6 +28,8 @@ fun AniobHistoryScreen(
     uiState: AniobUiState,
     onBack: () -> Unit,
     onNavigateToStats: () -> Unit,
+    onRunAgain: (String) -> Unit = {},
+    onMakeSkill: (String) -> Unit = {},
     onSelectSession: (SessionScoreEntity) -> Unit = {}
 ) {
     var selectedFilter by remember { mutableStateOf("ALL") }
@@ -201,9 +203,42 @@ fun AniobHistoryScreen(
                         }
                     }
                 }
-                Spacer(modifier = Modifier.height(16.dp))
+                val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            selectedSessionForDetails = null
+                            onRunAgain(s.userPrompt)
+                        },
+                        modifier = Modifier.weight(1f).testTag("history_run_again_btn")
+                    ) {
+                        Text("Run again")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(s.userPrompt))
+                        },
+                        modifier = Modifier.weight(1f).testTag("history_copy_prompt_btn")
+                    ) {
+                        Text("Copy prompt")
+                    }
+                }
+                OutlinedButton(
+                    onClick = {
+                        selectedSessionForDetails = null
+                        onMakeSkill(s.userPrompt)
+                    },
+                    modifier = Modifier.fillMaxWidth().testTag("history_make_skill_btn")
+                ) {
+                    Text("Make it a skill")
+                }
+                Spacer(modifier = Modifier.height(8.dp))
                 Button(
                     onClick = { selectedSessionForDetails = null },
+                    colors = ButtonDefaults.filledTonalButtonColors(),
                     modifier = Modifier.fillMaxWidth().testTag("history_detail_close")
                 ) {
                     Text("Close")

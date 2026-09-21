@@ -1,21 +1,31 @@
 package com.aniob.app.ui.screens
 
+import android.app.Activity
 import android.content.Intent
 import android.provider.Settings
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -23,37 +33,62 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.aniob.app.model.AniobModelDownloader
 import com.aniob.app.service.AniobAccessibilityService
+import com.aniob.app.system.SystemState
 import com.aniob.app.ui.AniobUiState
 import com.aniob.app.ui.chat.ChatMessage
+import com.aniob.app.ui.model.*
+import com.aniob.core.knowledge.AniobAppCatalog
+import com.aniob.core.narration.FailureReasonCopy
 import java.text.SimpleDateFormat
 import java.util.*
 
-/**
- * Expert Chat Screen (AIM Phase 1.2).
- * WhatsApp/Telegram conversational style - normal mobile app, NOT AI-generated looking.
- * - No daily "Accessibility Active" card.
- * - Persistent dismissible banner only when Accessibility is disconnected.
- * - Subtle 32dp live ticker when running with pulsing dot + [Details] link.
- * - Left/Right aligned chat bubbles with timestamps, badges, and [Details] action.
- * - Rounded 24dp input bar with mic and send buttons.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AniobChatScreen(
     uiState: AniobUiState,
+    systemState: SystemState? = null,
     onSubmitTask: (String) -> Unit,
     onStopTask: () -> Unit,
+    onPauseToggle: () -> Unit = {},
     onShowTrackerSheet: (Boolean) -> Unit,
     onFilterChanged: (String) -> Unit,
-    onManageModels: () -> Unit
+    onManageModels: () -> Unit,
+    onOpenSetup: () -> Unit = {},
+    onOpenSkills: () -> Unit = {},
+    onDismissInterrupted: () -> Unit = {},
+    onDismissRecovery: () -> Unit = {},
+    onRunAgain: (String) -> Unit = {},
+    onViewSteps: () -> Unit = {},
+    onMomentDismiss: () -> Unit = {},
+    renderWindow: () -> List<ChatMessage> = { emptyList() }
 ) {
     val context = LocalContext.current
-    var promptInput by remember { mutableStateOf("") }
-    val isConnected = AniobAccessibilityService.isServiceConnected
+    var promptInput by rememberSaveable { mutableStateOf("") }
+    val isConnected = systemState?.a11yConnected ?: AniobAccessibilityService.isServiceConnected
     var bannerDismissed by remember { mutableStateOf(false) }
+
+    val windowMessages = renderWindow()
+    val displayMessages: List<ChatMessage> = if (windowMessages.isNotEmpty()) windowMessages else uiState.chatMessages
+
+    val speechLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val spokenText = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+            if (!spokenText.isNullOrBlank()) {
+                promptInput = spokenText
+            }
+        }
+    }
+    val speechAvailable = remember(context) {
+        SpeechRecognizer.isRecognitionAvailable(context)
+    }
 
     val listState = rememberLazyListState()
 
@@ -161,49 +196,130 @@ fun AniobChatScreen(
             }
         }
 
-        // 2. Subtle Live Execution Ticker (Minimal 32dp height, not huge AI card)
+        // 2. Interrupted recovery banner (UX-6)
+        if (uiState.interruptedSummary != null) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Task was interrupted", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
+                        Text("\"${uiState.interruptedSummary.prompt}\" stopped when Aniob restarted.", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Button(
+                        onClick = {
+                            val p = uiState.interruptedSummary.prompt
+                            onDismissInterrupted()
+                            onSubmitTask(p)
+                        },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text("Resume")
+                    }
+                    IconButton(onClick = onDismissInterrupted) {
+                        Icon(Icons.Default.Close, contentDescription = "Dismiss", modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+        }
+
+        // 3. Setup reminder banner if skipped (PROMPT 4)
+        if (systemState != null && (!systemState.a11yConnected || !systemState.overlayGranted) && isConnected && !bannerDismissed) {
+            Surface(
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).clickable { onOpenSetup() }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Finish setup to unlock all features →", style = MaterialTheme.typography.labelSmall)
+                    TextButton(onClick = onOpenSetup, contentPadding = PaddingValues(0.dp)) {
+                        Text("Finish setup", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // 4. Live Cockpit Narration Ticker (PROMPT 3)
         AnimatedVisibility(visible = uiState.isRunning) {
             Surface(
                 color = MaterialTheme.colorScheme.surfaceVariant,
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(38.dp)
+                    .padding(bottom = 6.dp)
                     .testTag("live_execution_ticker")
             ) {
                 Row(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 12.dp),
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(
+                        modifier = Modifier.weight(1f),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         PulsingDot()
+                        val narration = uiState.lastNarration.ifBlank {
+                            if (uiState.isPaused) "Paused — do this step yourself, then Resume"
+                            else "Step ${uiState.currentStep} · ${FailureReasonCopy.providerLabel(uiState.lastProviderUsed)}"
+                        }
                         Text(
-                            text = "Step ${uiState.currentStep} · ${uiState.lastProviderUsed}",
+                            text = narration,
                             style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                         )
                     }
 
-                    TextButton(
-                        onClick = { onShowTrackerSheet(true) },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                        modifier = Modifier.testTag("open_tracker_sheet_btn")
-                    ) {
-                        Text("Details", style = MaterialTheme.typography.labelSmall)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                            onClick = onPauseToggle,
+                            modifier = Modifier.size(32.dp).testTag("ticker_pause_btn")
+                        ) {
+                            Icon(
+                                if (uiState.isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                contentDescription = if (uiState.isPaused) "Resume" else "Pause",
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        TextButton(
+                            onClick = { onShowTrackerSheet(true) },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                            modifier = Modifier.testTag("open_tracker_sheet_btn")
+                        ) {
+                            Text("Details", style = MaterialTheme.typography.labelSmall)
+                        }
+                        IconButton(
+                            onClick = onStopTask,
+                            modifier = Modifier.size(32.dp).testTag("ticker_stop_btn")
+                        ) {
+                            Icon(
+                                Icons.Default.Stop,
+                                contentDescription = "Stop",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                     }
                 }
             }
         }
 
-        // 3. Conversation History (WhatsApp/Telegram bubble layout)
-        if (uiState.chatMessages.isEmpty()) {
-            // Empty State (Friendly greeting + clean example items)
+        // 5. Conversation History or Empty State
+        if (displayMessages.isEmpty() && uiState.lastSummary == null) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -219,47 +335,28 @@ fun AniobChatScreen(
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
-                    text = "What do you want Aniob to do?",
+                    text = "How can I help you today?",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Type any command or tap an example below to get started.",
+                    text = "Tell Aniob what to do, or tap a starter task below:",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.height(16.dp))
 
-                val examples = listOf(
-                    "Open YouTube and search lo-fi",
-                    "Open Settings",
-                    "Book a cab to airport",
-                    "What is the capital of France?"
-                )
-
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    examples.forEach { ex ->
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    promptInput = ex
-                                    onSubmitTask(ex)
-                                },
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant
-                        ) {
-                            Text(
-                                text = ex,
-                                modifier = Modifier.padding(14.dp),
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                    }
+                ExampleTaskRow(title = "Open Settings", subtitle = "Safe system navigation") {
+                    promptInput = "Open Settings"
+                    onSubmitTask("Open Settings")
+                }
+                ExampleTaskRow(title = "Check battery status", subtitle = "Reads system power info") {
+                    promptInput = "Check battery status"
+                    onSubmitTask("Check battery status")
+                }
+                ExampleTaskRow(title = "Book a cab to airport", subtitle = "Shows Grill-Me clarification") {
+                    promptInput = "Book a cab to airport"
+                    onSubmitTask("Book a cab to airport")
                 }
             }
         } else {
@@ -272,14 +369,18 @@ fun AniobChatScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(
-                    items = uiState.chatMessages,
+                    items = displayMessages,
                     key = { it.id }
                 ) { message ->
                     WhatsAppChatBubble(
                         message = message,
                         onOpenDetails = { onShowTrackerSheet(true) },
                         onManageModels = onManageModels,
-                        onRetry = { onSubmitTask(message.retryPrompt ?: "") }
+                        onRetry = {
+                            if (!message.retryPrompt.isNullOrBlank()) {
+                                onSubmitTask(message.retryPrompt)
+                            }
+                        }
                     )
                 }
 
@@ -288,10 +389,113 @@ fun AniobChatScreen(
                         StreamingChatBubble(uiState.streamingBubbleText)
                     }
                 }
+
+                if (uiState.lastSummary != null) {
+                    item(key = "task_summary_card") {
+                        TaskSummaryCard(
+                            summary = uiState.lastSummary,
+                            onRunAgain = { onRunAgain(uiState.lastSummary.prompt) },
+                            onViewSteps = onViewSteps,
+                            onMakeSkill = { onOpenSkills() },
+                            onRetry = { onSubmitTask(uiState.lastSummary.prompt) }
+                        )
+                    }
+                }
             }
         }
 
-        // 4. Input Bar (WhatsApp rounded 24dp design + mic + send)
+        // 6. Queued task chip (PROMPT 2)
+        if (uiState.isRunning && uiState.queuedPrompt != null) {
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "After this task: \"${uiState.queuedPrompt}\"",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(
+                        onClick = { onSubmitTask("") },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "Cancel queued task", modifier = Modifier.size(16.dp))
+                    }
+                }
+            }
+        }
+
+        // 7. Horizontal Suggestion Rail (PROMPT 2)
+        val catalogApps: List<com.aniob.core.knowledge.AppCatalogEntry> = remember {
+            runCatching {
+                AniobAppCatalog.getInstance().getAll().take(3)
+            }.getOrDefault(emptyList())
+        }
+        val recentPrompts = remember(uiState.sessionScores) {
+            uiState.sessionScores.map { it.userPrompt }.filter { it.isNotBlank() }.distinct().take(5)
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            catalogApps.forEach { app ->
+                val appPrompt = "Open ${app.appName}"
+                SuggestionChip(
+                    onClick = {
+                        if (promptInput == appPrompt) {
+                            onSubmitTask(appPrompt)
+                            promptInput = ""
+                        } else {
+                            promptInput = appPrompt
+                        }
+                    },
+                    label = { Text(appPrompt, style = MaterialTheme.typography.labelSmall) },
+                    modifier = Modifier.testTag("suggestion_app_${app.packageName}")
+                )
+            }
+
+            listOf("Search in YouTube", "Send message to", "Set alarm for").forEach { template ->
+                SuggestionChip(
+                    onClick = {
+                        if (promptInput != "$template ") {
+                            promptInput = "$template "
+                        }
+                    },
+                    label = { Text(template, style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+
+            recentPrompts.forEach { recent ->
+                SuggestionChip(
+                    onClick = {
+                        if (promptInput == recent) {
+                            onSubmitTask(recent)
+                            promptInput = ""
+                        } else {
+                            promptInput = recent
+                        }
+                    },
+                    label = { Text(recent.take(24), style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+        }
+
+        // 8. Input Composer (PROMPT 2)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -305,13 +509,44 @@ fun AniobChatScreen(
                 modifier = Modifier
                     .weight(1f)
                     .testTag("chat_input"),
-                placeholder = { Text("Message or command...") },
+                placeholder = {
+                    Text(if (uiState.isRunning) "Queue next task..." else "Message or command...")
+                },
                 shape = RoundedCornerShape(24.dp),
-                enabled = !uiState.isRunning,
-                singleLine = true
+                enabled = true,
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(
+                    onSend = {
+                        if (promptInput.isNotBlank()) {
+                            val cmd = promptInput.trim()
+                            promptInput = ""
+                            onSubmitTask(cmd)
+                        }
+                    }
+                )
             )
 
-            if (uiState.isRunning) {
+            if (speechAvailable) {
+                IconButton(
+                    onClick = {
+                        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                            putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak your task to Aniob")
+                        }
+                        runCatching { speechLauncher.launch(intent) }
+                    },
+                    modifier = Modifier.testTag("mic_button")
+                ) {
+                    Icon(
+                        Icons.Default.Mic,
+                        contentDescription = "Voice Input",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            if (uiState.isRunning && promptInput.isBlank()) {
                 FilledIconButton(
                     onClick = onStopTask,
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.error),
@@ -336,8 +571,8 @@ fun AniobChatScreen(
                     modifier = Modifier.testTag("submit_button")
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Send,
-                        contentDescription = "Send",
+                        imageVector = if (uiState.isRunning) Icons.Default.Queue else Icons.Default.Send,
+                        contentDescription = if (uiState.isRunning) "Queue" else "Send",
                         tint = MaterialTheme.colorScheme.onPrimary
                     )
                 }
@@ -533,4 +768,140 @@ fun PulsingDot() {
             .clip(CircleShape)
             .background(Color(0xFF00C853).copy(alpha = alpha))
     )
+}
+
+/**
+ * Task completion proof card (PROMPT 5).
+ * Renders checklist of what was verified with real checkmarks (✓/✗), honest stats, and action buttons.
+ */
+@Composable
+fun TaskSummaryCard(
+    summary: TaskSummary,
+    onRunAgain: () -> Unit,
+    onViewSteps: () -> Unit,
+    onMakeSkill: () -> Unit,
+    onRetry: () -> Unit
+) {
+    val isSuccess = summary.outcome == Outcome.SUCCESS
+    val isStopped = summary.outcome == Outcome.STOPPED
+    val containerColor = when {
+        isSuccess -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+        isStopped -> MaterialTheme.colorScheme.surfaceVariant
+        else -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+            .testTag("task_summary_card")
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(
+                    imageVector = when {
+                        isSuccess -> Icons.Default.CheckCircle
+                        isStopped -> Icons.Default.StopCircle
+                        else -> Icons.Default.Error
+                    },
+                    contentDescription = null,
+                    tint = when {
+                        isSuccess -> MaterialTheme.colorScheme.primary
+                        isStopped -> MaterialTheme.colorScheme.outline
+                        else -> MaterialTheme.colorScheme.error
+                    },
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    text = when {
+                        isSuccess -> "Task Completed"
+                        isStopped -> "Stopped by you at step ${summary.steps}"
+                        else -> "Task Failed"
+                    },
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleSmall
+                )
+            }
+
+            if (summary.evidence.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    summary.evidence.forEach { item ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = if (item.met) "✓" else "✗",
+                                fontWeight = FontWeight.Bold,
+                                color = if (item.met) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                text = item.label,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+            }
+
+            val providerLabel = FailureReasonCopy.providerLabel(summary.provider)
+            val durationSec = summary.durationMs / 1000.0
+            Text(
+                text = "${summary.steps} steps · ${String.format(Locale.US, "%.1fs", durationSec)} · $providerLabel",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (!isSuccess && !isStopped && !summary.reason.isNullOrBlank()) {
+                Text(
+                    text = FailureReasonCopy.humanize(summary.reason),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (isSuccess) {
+                    Button(
+                        onClick = onRunAgain,
+                        modifier = Modifier.weight(1f).testTag("summary_run_again")
+                    ) {
+                        Text("Run again", style = MaterialTheme.typography.labelSmall)
+                    }
+                    OutlinedButton(
+                        onClick = onViewSteps,
+                        modifier = Modifier.weight(1f).testTag("summary_view_steps")
+                    ) {
+                        Text("View steps", style = MaterialTheme.typography.labelSmall)
+                    }
+                    OutlinedButton(
+                        onClick = onMakeSkill,
+                        modifier = Modifier.weight(1f).testTag("summary_make_skill")
+                    ) {
+                        Text("Make skill", style = MaterialTheme.typography.labelSmall)
+                    }
+                } else if (!isStopped) {
+                    Button(
+                        onClick = onRetry,
+                        modifier = Modifier.weight(1f).testTag("summary_retry")
+                    ) {
+                        Text("Retry", style = MaterialTheme.typography.labelSmall)
+                    }
+                    OutlinedButton(
+                        onClick = onViewSteps,
+                        modifier = Modifier.weight(1f).testTag("summary_view_steps")
+                    ) {
+                        Text("View steps", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+    }
 }

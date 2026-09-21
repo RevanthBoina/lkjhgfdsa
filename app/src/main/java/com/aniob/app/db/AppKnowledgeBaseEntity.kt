@@ -10,7 +10,10 @@ data class AppKnowledgeBaseEntity(
     val packageName: String,
     val macroStepsJson: String,
     val successCount: Int = 1,
-    val lastUpdated: Long = System.currentTimeMillis()
+    val lastUpdated: Long = System.currentTimeMillis(),
+    val kind: String = "FASTPATH", // FASTPATH, SKILL, APPMAP
+    val artifactJson: String = "",
+    val reviewState: String = "VERIFIED" // VERIFIED, NEEDS_REVIEW
 )
 
 @Entity(tableName = "learned_tips")

@@ -32,6 +32,18 @@ interface AppKnowledgeBaseDao {
     /** Every persisted trajectory, used to rehydrate the FastPath engine at cold start. */
     @Query("SELECT * FROM app_knowledge_base")
     suspend fun getAllKnowledgeOnce(): List<AppKnowledgeBaseEntity>
+
+    @Query("SELECT * FROM app_knowledge_base WHERE kind = :kind")
+    suspend fun getKnowledgeByKind(kind: String): List<AppKnowledgeBaseEntity>
+
+    @Query("SELECT * FROM app_knowledge_base WHERE reviewState = :reviewState ORDER BY lastUpdated DESC")
+    fun getKnowledgeByReviewState(reviewState: String): Flow<List<AppKnowledgeBaseEntity>>
+
+    @Query("UPDATE app_knowledge_base SET reviewState = :reviewState WHERE taskSignature = :signature")
+    suspend fun updateReviewState(signature: String, reviewState: String)
+
+    @Query("DELETE FROM app_knowledge_base WHERE taskSignature = :signature")
+    suspend fun deleteBySignature(signature: String)
 }
 
 @Dao

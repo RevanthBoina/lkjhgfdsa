@@ -26,3 +26,8 @@
 -assumenosideeffects class android.util.Log {
     public static boolean isLoggable(java.lang.String, int);
 }
+
+# OkHttp optional platform providers
+-dontwarn org.bouncycastle.jsse.**
+-dontwarn org.conscrypt.**
+-dontwarn org.openjsse.**

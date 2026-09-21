@@ -24,6 +24,7 @@ import com.aniob.app.system.SystemState
 import com.aniob.app.ui.screens.*
 import com.aniob.app.ui.theme.AniobMotion
 import com.aniob.core.narration.FailureReasonCopy
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -50,8 +51,8 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
         reducedMotion = AniobMotion.isReducedMotionEnabled(context)
     }
 
-    // Back-stack owns history: pop sub-screens, double-back only from chat.
-    BackHandler(enabled = true) {
+    // UX-0: BackHandler only pops the stack; double-back exits only when already at root CHAT.
+    BackHandler {
         if (viewModel.navigateBack()) {
             Unit
         } else {
@@ -71,8 +72,8 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
             if (reducedMotion) {
                 fadeIn(animationSpec = AniobMotion.instant()) togetherWith fadeOut(animationSpec = AniobMotion.instant())
             } else {
-                (fadeIn(AniobMotion.NAV_SPEC) + slideInHorizontally(AniobMotion.NAV_SPEC) { it / 8 }) togetherWith
-                    (fadeOut(AniobMotion.NAV_SPEC) + slideOutHorizontally(AniobMotion.NAV_SPEC) { -it / 8 })
+                (fadeIn(AniobMotion.navSpec()) + slideInHorizontally(AniobMotion.navSpec()) { it / 8 }) togetherWith
+                    (fadeOut(AniobMotion.navSpec()) + slideOutHorizontally(AniobMotion.navSpec()) { -it / 8 })
             }
         },
         modifier = Modifier.fillMaxSize(),
