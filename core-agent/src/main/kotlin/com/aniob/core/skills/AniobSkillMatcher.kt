@@ -16,13 +16,16 @@ class AniobSkillMatcher(
         val reason: String = ""
     )
 
-    fun match(prompt: String): MatchResult {
+    fun match(prompt: String, disabledSkills: Set<String> = emptySet()): MatchResult {
         val cleanPrompt = prompt.trim().lowercase()
         if (cleanPrompt.isBlank()) {
             return MatchResult(matched = false, reason = "Empty prompt")
         }
 
-        val candidates = skillEngine.getLoadedSkills()
+        // Only active catalog skills participate in matching - draft/disabled skills are strictly skipped
+        val candidates = skillEngine.getActiveCatalog().filter {
+            !disabledSkills.contains(it.name) && it.status == SkillStatus.ACTIVE && !it.isDraft
+        }
 
         for (skill in candidates) {
             // Check direct trigger keywords

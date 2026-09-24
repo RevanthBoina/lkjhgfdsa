@@ -92,7 +92,13 @@ class AniobSystemState(private val app: AniobApplication) {
 
     private fun isModelReady(): Boolean {
         val id = downloader.getDefaultModelId() ?: return false
-        return downloader.isModelInstalled(id)
+        if (!downloader.isModelInstalled(id)) return false
+        return try {
+            val engine = com.aniob.core.providers.AniobLocalLlmClient.getEngine()
+            engine.isModelLoaded() && engine.capabilities().canDriveActions
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     private fun registerConnectivityCallback() {

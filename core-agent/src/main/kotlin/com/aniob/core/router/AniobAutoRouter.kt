@@ -11,7 +11,8 @@ enum class RouteTarget {
     SKILL,
     LOCAL_SLM,
     OMNIROUTE_CLOUD,
-    EXTERNAL_AI_QUERY
+    EXTERNAL_AI_QUERY,
+    CANNOT_PROCEED
 }
 
 data class RouteDecision(
@@ -23,9 +24,10 @@ data class RouteDecision(
 
 /**
  * World-Class AutoRouter:
+ * - Honors strict user routing choices: local-only forbids cloud; cloud-only forbids local.
  * - Local-First default for on-device SLMs (e.g. Phi-4 Mini 3.8B, Llama 3.2 3B).
- * - Cloud escalation only when truly necessary (low battery <15%, repeated local failures, or explicit vision needs).
- * - Validates local model file existence.
+ * - Cloud escalation only when truly necessary in auto mode (low battery <15%, repeated local failures, or explicit vision needs).
+ * - Validates local model file existence without mock fallbacks.
  */
 object AniobAutoRouter {
 
@@ -35,6 +37,7 @@ object AniobAutoRouter {
     const val PROVIDER_SKILL = "SKILL"
     const val PROVIDER_INTENT = "INTENT"
     const val PROVIDER_EXTERNAL_AI = "EXTERNAL_AI_QUERY"
+    const val PROVIDER_CANNOT_PROCEED = "CANNOT_PROCEED"
 
     fun decideRoute(
         taskPrompt: String,
@@ -45,7 +48,8 @@ object AniobAutoRouter {
         installedModelId: String? = null,
         lastLocalFailCount: Int = 0,
         modelsDir: File? = null,
-        isModelFileMissing: Boolean = false
+        isModelFileMissing: Boolean = false,
+        userRoutingMode: String = "auto"
     ): RouteDecision {
         // 1. Intent Shortcut (0ms)
         if (isIntentShortcut) {
@@ -65,8 +69,53 @@ object AniobAutoRouter {
             )
         }
 
+        val mode = userRoutingMode.lowercase()
+
+        // Strict user policy: local-only forbids cloud under ALL circumstances
+        if (mode == "local-only") {
+            val modelMissing = isModelFileMissing || (modelsDir != null && installedModelId != null && !File(modelsDir, "$installedModelId.gguf").exists())
+            if (modelMissing) {
+                return RouteDecision(
+                    target = RouteTarget.CANNOT_PROCEED,
+                    reason = "Local-only mode active: local model is missing or not installed",
+                    requiresVision = false,
+                    modelId = installedModelId
+                )
+            }
+            return RouteDecision(
+                target = RouteTarget.LOCAL_SLM,
+                reason = "Local-only policy enforced: cloud offload strictly forbidden",
+                requiresVision = false,
+                modelId = installedModelId
+            )
+        }
+
+        // Strict user policy: cloud-only forbids local SLM
+        if (mode == "cloud-only") {
+            if (!powerState.isNetworkAvailable) {
+                return RouteDecision(
+                    target = RouteTarget.CANNOT_PROCEED,
+                    reason = "Cloud-only mode active: network is offline",
+                    requiresVision = false
+                )
+            }
+            return RouteDecision(
+                target = RouteTarget.OMNIROUTE_CLOUD,
+                reason = "Cloud-only policy enforced: local SLM strictly bypassed",
+                requiresVision = false
+            )
+        }
+
         // 3. Offline constraint -> Must use local SLM
         if (!powerState.isNetworkAvailable) {
+            val modelMissing = isModelFileMissing || (modelsDir != null && installedModelId != null && !File(modelsDir, "$installedModelId.gguf").exists())
+            if (modelMissing) {
+                return RouteDecision(
+                    target = RouteTarget.CANNOT_PROCEED,
+                    reason = "Offline and local model missing: cannot automate without model",
+                    requiresVision = false
+                )
+            }
             return RouteDecision(
                 target = RouteTarget.LOCAL_SLM,
                 reason = "Offline -> local ${installedModelId ?: "SLM"}",
@@ -94,19 +143,11 @@ object AniobAutoRouter {
         // 5. Check installed model actually exists
         val modelMissing = isModelFileMissing || (modelsDir != null && installedModelId != null && !File(modelsDir, "$installedModelId.gguf").exists())
         if (modelMissing) {
-            return if (powerState.isNetworkAvailable) {
-                RouteDecision(
-                    target = RouteTarget.OMNIROUTE_CLOUD,
-                    reason = "Local model file missing or not installed, using Omniroute",
-                    requiresVision = false
-                )
-            } else {
-                RouteDecision(
-                    target = RouteTarget.LOCAL_SLM,
-                    reason = "Offline no model, try local mock",
-                    requiresVision = false
-                )
-            }
+            return RouteDecision(
+                target = RouteTarget.OMNIROUTE_CLOUD,
+                reason = "Local model file missing or not installed, using Omniroute",
+                requiresVision = false
+            )
         }
 
         // FIXED: Less aggressive vision - was (unlabelled>=2 && taskNeedsVision) || (unlabelled>=5 && taskNeedsVision) redundant

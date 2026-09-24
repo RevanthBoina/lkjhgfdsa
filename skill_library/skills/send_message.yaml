@@ -1,5 +1,7 @@
 name: "send_message"
 version: "2.1"
+status: "draft"
+is_draft: true
 description: "Send text message with confirmation safety gate"
 risk_tier: "HIGH"
 confirmation_required: true

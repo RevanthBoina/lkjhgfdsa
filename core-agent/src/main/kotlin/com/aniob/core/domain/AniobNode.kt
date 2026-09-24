@@ -29,7 +29,9 @@ data class AniobNode(
      * Example: [1] android.widget.Button text='Search' contentDesc='' bounds=[100,200,300,250] clickable=true
      */
     fun toOptimizedTokenString(): String {
-        return "[$id] $className text='$text' contentDesc='$contentDescription' bounds=[${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}] clickable=$isClickable"
+        val viewIdPart = if (viewId.isNotBlank()) " viewId='$viewId'" else ""
+        val enabledPart = if (!isEnabled) " enabled=false" else ""
+        return "[$id] $className$viewIdPart text='$text' contentDesc='$contentDescription' bounds=[${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}] clickable=$isClickable$enabledPart"
     }
 }
 

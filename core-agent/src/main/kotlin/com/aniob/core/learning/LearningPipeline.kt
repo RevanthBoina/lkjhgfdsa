@@ -28,11 +28,15 @@ interface LearningPipeline {
     /** A task that ended in verified success. Persists fastpath + may promote a skill draft. */
     fun onTaskSuccess(ctx: TaskContext, trajectory: List<AniobAction>)
 
+    /** Clears task working memory / rehearsal on any terminal outcome. */
+    fun onTaskEnd(taskId: String) {}
+
     companion object {
         /** Default no-op used until the learning track lands. */
         val NoOp: LearningPipeline = object : LearningPipeline {
             override fun onVerifiedStep(ctx: TaskContext, action: AniobAction, screen: AniobScreenState) = Unit
             override fun onTaskSuccess(ctx: TaskContext, trajectory: List<AniobAction>) = Unit
+            override fun onTaskEnd(taskId: String) = Unit
         }
     }
 }

@@ -20,7 +20,8 @@ data class TaskContext(
     val grillAnswers: Map<String, String> = emptyMap(),
     val tokenBudget: TokenBudget = TokenBudget(),
     val consecutiveFailures: Int = 0,
-    val rejectedFinishCount: Int = 0
+    val rejectedFinishCount: Int = 0,
+    val taskId: String = ""
 ) {
     data class TokenBudget(
         val maxTotal: Int = 32_000,
@@ -70,15 +71,39 @@ data class TaskContext(
         if (condensedHistory.isEmpty()) appendLine("- (no steps yet)") else condensedHistory.forEach { appendLine("- $it") }
     }
 
+    fun buildExecutorRequest(
+        screen: AniobScreenState,
+        activeSubgoal: String? = null,
+        lastAction: String? = null,
+        lastResult: String? = null
+    ): ExecutorRequest {
+        val optimizedNodes = com.aniob.core.optimizer.AniobTokenOptimizer.optimize(screen.nodes)
+        val criteriaList = if (!successCriteria.isEmpty) {
+            successCriteria.describeList()
+        } else emptyList()
+
+        return ExecutorRequest(
+            goal = instruction,
+            clarifications = grillAnswers,
+            activeSubgoal = activeSubgoal,
+            requiredCriteria = criteriaList,
+            packageName = screen.packageName,
+            activityName = screen.activityName,
+            windowId = 0,
+            observationId = screen.treeHash,
+            actionableNodes = optimizedNodes,
+            lastAction = lastAction,
+            lastResult = lastResult ?: condensedHistory.lastOrNull(),
+            consecutiveFailures = consecutiveFailures
+        )
+    }
+
     /**
-     * Executor view: goal plus the current actionable screen.
-     * Deliberately EXCLUDES the full history — only the immediate step matters.
+     * Executor view: goal plus the current actionable screen and nodes.
+     * Uses ExecutorRequest to provide full live grounding context.
      */
-    fun executorView(screen: AniobScreenState): String = buildString {
-        appendLine("GOAL: $instruction")
-        if (!successCriteria.isEmpty) appendLine("SUCCESS CRITERIA: $successCriteria")
-        if (condensedHistory.isNotEmpty()) appendLine("LAST STEP: ${condensedHistory.last()}")
-        appendLine("SCREEN: package=${screen.packageName} activity=${screen.activityName}")
+    fun executorView(screen: AniobScreenState): String {
+        return buildExecutorRequest(screen).toPromptString()
     }
 
     /**

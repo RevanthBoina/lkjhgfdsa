@@ -133,4 +133,66 @@ class AniobAutoRouterTest {
         assertEquals(RouteTarget.OMNIROUTE_CLOUD, decision.target)
         assertTrue(decision.reason.contains("failed 2 times", ignoreCase = true))
     }
+
+    @Test
+    fun testUserModeLocalOnlyForbidsCloud() {
+        val screen = AniobScreenState(packageName = "com.test.app")
+        val power = DevicePowerState(batteryPercent = 10, isNetworkAvailable = true)
+
+        // Normally low battery routes to cloud, but local-only must stay local
+        val decision = AniobAutoRouter.decideRoute(
+            taskPrompt = "Open settings",
+            screenState = screen,
+            powerState = power,
+            userRoutingMode = "local-only"
+        )
+        assertEquals(RouteTarget.LOCAL_SLM, decision.target)
+    }
+
+    @Test
+    fun testUserModeLocalOnlyMissingModelReturnsCannotProceed() {
+        val screen = AniobScreenState(packageName = "com.test.app")
+        val power = DevicePowerState(batteryPercent = 80, isNetworkAvailable = true)
+
+        val decision = AniobAutoRouter.decideRoute(
+            taskPrompt = "Open settings",
+            screenState = screen,
+            powerState = power,
+            isModelFileMissing = true,
+            userRoutingMode = "local-only"
+        )
+        assertEquals(RouteTarget.CANNOT_PROCEED, decision.target)
+    }
+
+    @Test
+    fun testUserModeCloudOnlyForbidsLocal() {
+        val textNodes = (1..10).map { id ->
+            AniobNode(id = id, className = "TextView", text = "Item $id", isClickable = true, bounds = AniobRect(0, id * 50, 200, id * 50 + 40))
+        }
+        val screen = AniobScreenState(packageName = "com.test.app", nodes = textNodes)
+        val power = DevicePowerState(batteryPercent = 80, isNetworkAvailable = true)
+
+        // Normally simple navigation routes to local, but cloud-only must route to cloud
+        val decision = AniobAutoRouter.decideRoute(
+            taskPrompt = "Select item 3",
+            screenState = screen,
+            powerState = power,
+            userRoutingMode = "cloud-only"
+        )
+        assertEquals(RouteTarget.OMNIROUTE_CLOUD, decision.target)
+    }
+
+    @Test
+    fun testUserModeCloudOnlyOfflineReturnsCannotProceed() {
+        val screen = AniobScreenState(packageName = "com.test.app")
+        val power = DevicePowerState(batteryPercent = 80, isNetworkAvailable = false)
+
+        val decision = AniobAutoRouter.decideRoute(
+            taskPrompt = "Open settings",
+            screenState = screen,
+            powerState = power,
+            userRoutingMode = "cloud-only"
+        )
+        assertEquals(RouteTarget.CANNOT_PROCEED, decision.target)
+    }
 }

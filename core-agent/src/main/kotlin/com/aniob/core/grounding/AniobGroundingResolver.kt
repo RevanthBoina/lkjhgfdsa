@@ -29,11 +29,22 @@ object AniobGroundingResolver {
      * @return the resolved element and its centre, or `null` when nothing matches.
      */
     fun resolve(target: SemanticTarget, liveScreen: AniobScreenState): Resolved? = when (target) {
-        is SemanticTarget.SomIndex ->
-            liveScreen.findNodeById(target.index)?.toResolved()
+        is SemanticTarget.SomIndex -> {
+            val node = liveScreen.findNodeById(target.index)
+            if (node == null || !node.isVisibleToUser || !node.isEnabled) null
+            else node.toResolved()
+        }
 
-        is SemanticTarget.ResourceId ->
-            liveScreen.nodes.firstOrNull { it.viewId.equals(target.id, ignoreCase = false) }?.toResolved()
+        is SemanticTarget.ResourceId -> {
+            val matches = liveScreen.nodes.filter {
+                it.isVisibleToUser && it.isEnabled && it.viewId.equals(target.id, ignoreCase = false)
+            }
+            if (matches.size == 1) matches.first().toResolved()
+            else if (matches.size > 1) {
+                val clickables = matches.filter { it.isClickable }
+                if (clickables.size == 1) clickables.first().toResolved() else null
+            } else null
+        }
 
         is SemanticTarget.Text -> resolveText(target, liveScreen)
 
@@ -41,19 +52,43 @@ object AniobGroundingResolver {
     }
 
     private fun resolveText(target: SemanticTarget.Text, screen: AniobScreenState): Resolved? {
-        val nodes = screen.nodes
-        val exactHit = nodes.firstOrNull { it.text.equals(target.text, ignoreCase = true) }
-        if (exactHit != null) return exactHit.toResolved()
+        val eligible = screen.nodes.filter { it.isVisibleToUser && it.isEnabled }
+        val exactHits = eligible.filter { it.text.equals(target.text, ignoreCase = true) }
+        if (exactHits.size == 1) return exactHits.first().toResolved()
+        if (exactHits.size > 1) {
+            val clickables = exactHits.filter { it.isClickable }
+            if (clickables.size == 1) return clickables.first().toResolved()
+            return null // Reject ambiguous
+        }
         if (target.exact) return null
-        return nodes.firstOrNull { it.text.contains(target.text, ignoreCase = true) }?.toResolved()
+        val partialHits = eligible.filter { it.text.contains(target.text, ignoreCase = true) }
+        if (partialHits.size == 1) return partialHits.first().toResolved()
+        if (partialHits.size > 1) {
+            val clickables = partialHits.filter { it.isClickable }
+            if (clickables.size == 1) return clickables.first().toResolved()
+            return null // Reject ambiguous
+        }
+        return null
     }
 
     private fun resolveContentDesc(target: SemanticTarget.ContentDesc, screen: AniobScreenState): Resolved? {
-        val nodes = screen.nodes
-        val exactHit = nodes.firstOrNull { it.contentDescription.equals(target.desc, ignoreCase = true) }
-        if (exactHit != null) return exactHit.toResolved()
+        val eligible = screen.nodes.filter { it.isVisibleToUser && it.isEnabled }
+        val exactHits = eligible.filter { it.contentDescription.equals(target.desc, ignoreCase = true) }
+        if (exactHits.size == 1) return exactHits.first().toResolved()
+        if (exactHits.size > 1) {
+            val clickables = exactHits.filter { it.isClickable }
+            if (clickables.size == 1) return clickables.first().toResolved()
+            return null // Reject ambiguous
+        }
         if (target.exact) return null
-        return nodes.firstOrNull { it.contentDescription.contains(target.desc, ignoreCase = true) }?.toResolved()
+        val partialHits = eligible.filter { it.contentDescription.contains(target.desc, ignoreCase = true) }
+        if (partialHits.size == 1) return partialHits.first().toResolved()
+        if (partialHits.size > 1) {
+            val clickables = partialHits.filter { it.isClickable }
+            if (clickables.size == 1) return clickables.first().toResolved()
+            return null // Reject ambiguous
+        }
+        return null
     }
 
     private fun AniobNode.toResolved(): Resolved = Resolved(node = this, x = centerX, y = centerY)

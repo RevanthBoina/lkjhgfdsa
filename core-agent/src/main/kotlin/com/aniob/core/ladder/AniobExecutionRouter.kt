@@ -51,7 +51,12 @@ class AniobExecutionRouter(
         data class DirectIntent(val shortcut: ResolvedIntentShortcut, val reason: String) : ExecutionPlanResult()
         data class FastPathStep(val action: AniobAction, val reason: String) : ExecutionPlanResult()
         data class SkillStepExecution(val action: AniobAction, val skill: AniobSkill, val reason: String) : ExecutionPlanResult()
-        data class ModelDispatch(val decision: RouteDecision, val progressSummary: String? = null) : ExecutionPlanResult()
+        data class ModelDispatch(
+            val decision: RouteDecision,
+            val progressSummary: String? = null,
+            val progress: TaskProgress? = null
+        ) : ExecutionPlanResult()
+        data class CannotProceed(val reason: String) : ExecutionPlanResult()
     }
 
     fun planStep(
@@ -63,7 +68,9 @@ class AniobExecutionRouter(
         installedModelId: String? = null,
         lastLocalFailCount: Int = 0,
         isModelFileMissing: Boolean = false,
-        previousProgress: TaskProgress? = null
+        previousProgress: TaskProgress? = null,
+        userRoutingMode: String = "auto",
+        lastObservedResult: String? = null
     ): ExecutionPlanResult {
         // Step 0: Direct Intent Shortcut (0ms LLM)
         if (stepIndex == 0) {
@@ -107,9 +114,12 @@ class AniobExecutionRouter(
         }
 
         // Step 2: Tier 1.5 YAML or Semantic Skill Match
-        val skillMatch = semanticSkillMatcher?.findBestSkill(taskPrompt) ?: skillMatcher.match(taskPrompt)
-        // UX-5: a disabled skill never participates, so the Enable/Disable switch is real.
-        val skillUsable = skillMatch.skill != null && !disabledSkills.contains(skillMatch.skill.name)
+        val skillMatch = semanticSkillMatcher?.findBestSkill(taskPrompt, disabledSkills) ?: skillMatcher.match(taskPrompt, disabledSkills)
+        // UX-5: a disabled or draft skill never participates, so user routing and quality switches are real.
+        val skillUsable = skillMatch.skill != null &&
+            skillMatch.skill.status == com.aniob.core.skills.SkillStatus.ACTIVE &&
+            !skillMatch.skill.isDraft &&
+            !disabledSkills.contains(skillMatch.skill.name)
         if (skillMatch.matched && skillUsable) {
             val skill = skillMatch.skill!!
             val step = skill.steps.getOrNull(stepIndex)
@@ -151,9 +161,10 @@ class AniobExecutionRouter(
 
         // Planning Progress condensation: prefrontal-cortex summary replaces the full
         // interleaved observation history in the LLM prompt (~80% token reduction).
+        val previousOp = lastObservedResult ?: if (stepIndex > 0) "Step ${stepIndex - 1} executed" else null
         val progress = planningAgent?.updateProgress(
             userInstruction = taskPrompt,
-            previousOperation = if (stepIndex > 0) "Step ${stepIndex - 1} executed" else null,
+            previousOperation = previousOp,
             previousProgress = previousProgress,
             focusContent = retrievedContext
         )
@@ -167,9 +178,18 @@ class AniobExecutionRouter(
             isIntentShortcut = false,
             installedModelId = installedModelId,
             lastLocalFailCount = lastLocalFailCount,
-            isModelFileMissing = isModelFileMissing
+            isModelFileMissing = isModelFileMissing,
+            userRoutingMode = userRoutingMode
         )
 
-        return ExecutionPlanResult.ModelDispatch(decision, progressSummary = progress?.summary)
+        if (decision.target == RouteTarget.CANNOT_PROCEED) {
+            return ExecutionPlanResult.CannotProceed(decision.reason)
+        }
+
+        return ExecutionPlanResult.ModelDispatch(
+            decision = decision,
+            progressSummary = progress?.summary,
+            progress = progress
+        )
     }
 }

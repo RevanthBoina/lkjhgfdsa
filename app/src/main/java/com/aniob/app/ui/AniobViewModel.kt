@@ -14,7 +14,6 @@ import com.aniob.app.background.AniobBackgroundController
 import com.aniob.app.background.AniobForegroundService
 import com.aniob.app.db.SessionScoreEntity
 import com.aniob.app.model.AniobModelDownloader
-import com.aniob.app.provider.AniobMockProvider
 import com.aniob.app.provider.AniobOmniRouteProvider
 import com.aniob.app.service.AniobAccessibilityService
 import com.aniob.app.telemetry.AniobDeviceTelemetry
@@ -219,7 +218,6 @@ class AniobViewModel(
         database = (application as AniobApplication).database,
         replayEngine = executionRouter.fastPathEngine
     )
-    private val mockProvider = AniobMockProvider()
     private var localLlmClient: AniobLocalLlmEngine = AniobLocalLlmClient.getEngine()
     private val watchdog = AniobWatchdog(loopThreshold = 3)
     private val observationPolicy = AniobObservationPolicy(maxBurstSteps = 3)
@@ -959,7 +957,7 @@ class AniobViewModel(
                     powerState = powerState,
                     autoMode = autoMode,
                     onDelta = { delta ->
-                        _uiState.update { it.copy(streamingBubbleText = delta, isStreaming = true) }
+                        _uiState.update { it.copy(streamingBubbleText = it.streamingBubbleText + delta, isStreaming = true) }
                     }
                 )
                 val assistantMessage = ChatMessage(
@@ -1143,7 +1141,8 @@ class AniobViewModel(
         var taskContext = com.aniob.core.domain.TaskContext(
             instruction = task.clarifiedGoal,
             successCriteria = resolvedCriteria,
-            grillAnswers = task.grillAnswers
+            grillAnswers = task.grillAnswers,
+            taskId = task.id
         )
 
         AniobAccessibilityService.isTaskActive = true
@@ -1341,6 +1340,11 @@ class AniobViewModel(
                 val effectiveModelId = resolvedModelId.takeIf { resolvedFileExists }
                 val isModelFileMissing = !resolvedFileExists
 
+                if (currentStep == 0 && _uiState.value.fastPathEnabled) {
+                    learningPipeline.awaitHydration()
+                }
+
+                val userRouting = _uiState.value.autoRouterMode.lowercase()
                 val ladderResult = executionRouter.planStep(
                     taskPrompt = task.clarifiedGoal,
                     screenState = currentScreen,
@@ -1350,15 +1354,12 @@ class AniobViewModel(
                     installedModelId = effectiveModelId,
                     lastLocalFailCount = localFailCount,
                     isModelFileMissing = isModelFileMissing,
-                    previousProgress = taskProgress
+                    previousProgress = taskProgress,
+                    userRoutingMode = userRouting,
+                    lastObservedResult = if (currentStep > 0) "Step ${currentStep - 1} observed" else null
                 )
                 if (ladderResult is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch) {
-                    taskProgress = planningAgent.updateProgress(
-                        userInstruction = task.clarifiedGoal,
-                        previousOperation = if (currentStep > 0) "Step ${currentStep - 1} executed" else null,
-                        previousProgress = taskProgress,
-                        focusContent = null
-                    )
+                    taskProgress = ladderResult.progress ?: taskProgress
                 }
 
                 val proposal: StepPipeline.Proposal
@@ -1391,12 +1392,27 @@ class AniobViewModel(
                             com.aniob.core.execution.AniobActionExecutor.resolveTarget(ladderResult.action, currentScreen)?.node
                         }
                     }
+                    is AniobExecutionRouter.ExecutionPlanResult.CannotProceed -> {
+                        primaryProvider = "NONE"
+                        decisionReason = ladderResult.reason
+                        _uiState.update {
+                            it.copy(
+                                statusMessage = "Cannot proceed: ${ladderResult.reason}",
+                                lastRoutingReason = ladderResult.reason,
+                                lastProviderUsed = primaryProvider
+                            )
+                        }
+                        proposal = StepPipeline.Proposal.Model(
+                            AniobAction.Fail(ladderResult.reason),
+                            primaryProvider
+                        )
+                    }
                     is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch -> {
                         val decision = ladderResult.decision
                         primaryProvider = when (decision.target) {
                             RouteTarget.OMNIROUTE_CLOUD -> "OMNIROUTE_CLOUD"
                             RouteTarget.LOCAL_SLM -> "LOCAL_SLM"
-                            else -> "MOCK"
+                            else -> "NONE"
                         }
                         decisionReason = decision.reason
                         _uiState.update {
@@ -1406,7 +1422,6 @@ class AniobViewModel(
                                 lastProviderUsed = primaryProvider
                             )
                         }
-                        val planningSummary = ladderResult.progressSummary ?: task.clarifiedGoal
                         if (decision.target == RouteTarget.OMNIROUTE_CLOUD) escalations++
 
                         val localCaps = if (decision.target == RouteTarget.LOCAL_SLM) localLlmClient.capabilities() else null
@@ -1414,17 +1429,30 @@ class AniobViewModel(
                             localLlmClient.isModelLoaded() && (localCaps?.canDriveActions == true)
                         if (decision.target == RouteTarget.LOCAL_SLM && !localCanDrive) {
                             app.eventLogger.warn("AniobViewModel", "Local engine quarantined: ${localCaps?.reason ?: "model not loaded"}")
-                            primaryProvider = "MOCK"
                             decisionReason = "local_quarantined: ${localCaps?.reason ?: "model not loaded"}"
                             _uiState.update {
                                 it.copy(lastProviderUsed = primaryProvider, lastRoutingReason = decisionReason)
                             }
                         }
 
+                        val executorRequest = taskContext.buildExecutorRequest(
+                            screen = currentScreen,
+                            activeSubgoal = taskProgress?.summary,
+                            lastAction = taskContext.trajectory.lastOrNull()?.describeAction(),
+                            lastResult = taskContext.condensedHistory.lastOrNull()
+                        )
+                        val executorPrompt = executorRequest.toPromptString()
+                        val baseSystemPrompt = configLoader.prompt("system_prompt.txt") ?: "System: Android Agent. Reply with a single JSON tool call."
+                        val systemPrompt = if (baseSystemPrompt.contains("ACTION_JSON_SCHEMA")) {
+                            baseSystemPrompt
+                        } else {
+                            "$baseSystemPrompt\n\nSchema:\n${com.aniob.core.domain.AniobActionSchema.ACTION_JSON_SCHEMA}"
+                        }
+
                         val plannedAction = if (localCanDrive) {
                             val gen = localLlmClient.generateStepResult(
-                                configLoader.prompt("system_prompt.txt") ?: "System: Android Agent. Reply with a single JSON tool call.",
-                                planningSummary
+                                systemPrompt,
+                                executorPrompt
                             )
                             totalTokens += 80
                             val structured = AniobLocalActionResolver.resolveStructured(gen, currentScreen)
@@ -1433,14 +1461,13 @@ class AniobViewModel(
                             }
                             structured.action
                         } else if (decision.target == RouteTarget.LOCAL_SLM) {
-                            mockProvider.planNextStep(planningSummary, currentStep, currentScreen)
+                            AniobAction.Fail("Local model is not capable or ready: ${localCaps?.reason ?: "model not loaded"}")
                         } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD && _uiState.value.omnirouteApiKey.isNotBlank()) {
                             val omniroute = AniobOmniRouteProvider(
                                 apiKey = _uiState.value.omnirouteApiKey,
                                 model = _uiState.value.omnirouteModel
                             )
-                            val systemPrompt = configLoader.prompt("system_prompt.txt") ?: "You are Aniob agent."
-                            val raw = omniroute.getNextActionRaw(systemPrompt, planningSummary)
+                            val raw = omniroute.getNextActionRaw(systemPrompt, executorPrompt)
                             totalTokens += 150
                             raw.fold(
                                 onSuccess = { text ->
@@ -1450,10 +1477,11 @@ class AniobViewModel(
                                         decode = AniobDecodeConfig.forRole(AniobDecodeConfig.Role.PLANNER)
                                     )
                                     if (structured.usedFallback) {
+                                        val repairMsg = "${AniobStructuredOutput.repairPrompt(text)}\n\nOriginal Request:\n$executorPrompt"
                                         val repaired = runCatching {
                                             omniroute.getNextActionRaw(
                                                 systemPrompt,
-                                                AniobStructuredOutput.repairPrompt(text)
+                                                repairMsg
                                             ).getOrNull()
                                         }.getOrNull()
                                         if (repaired != null) {
@@ -1469,24 +1497,31 @@ class AniobViewModel(
                                     }
                                     structured.action
                                 },
-                                onFailure = {
-                                    primaryProvider = "MOCK"
-                                    _uiState.update { st -> st.copy(lastProviderUsed = primaryProvider) }
-                                    mockProvider.planNextStep(planningSummary, currentStep, currentScreen)
+                                onFailure = { error ->
+                                    AniobAction.Fail("Cloud action generation failed: ${error.message ?: "network error"}")
                                 }
                             )
+                        } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD) {
+                            AniobAction.Fail("OmniRoute cloud API key is missing")
                         } else {
-                            mockProvider.planNextStep(planningSummary, currentStep, currentScreen)
+                            AniobAction.Fail("No capable provider available: ${decision.reason}")
                         }
 
                         // Watchdog check
                         watchdog.record(currentScreen.treeHash, plannedAction)
                         val loopDetected = watchdog.isLoopDetected()
-                        val effectiveAction = if (loopDetected) {
+                        val loopAction = if (loopDetected) {
                             watchdog.reset()
                             AniobAction.PressKey(com.aniob.core.domain.KeyType.BACK)
                         } else {
                             plannedAction
+                        }
+
+                        val targetSom = loopAction.semanticTarget() as? SemanticTarget.SomIndex
+                        val effectiveAction = if (targetSom != null && currentScreen.nodes.none { it.id == targetSom.index }) {
+                            AniobAction.Fail("Node id ${targetSom.index} not present on current screen")
+                        } else {
+                            loopAction
                         }
 
                         proposal = StepPipeline.Proposal.Model(effectiveAction, primaryProvider)
@@ -1579,6 +1614,7 @@ class AniobViewModel(
             }
         } finally {
             AniobAccessibilityService.isTaskActive = false
+            learningPipeline.onTaskEnd(task.id)
         }
 
         if (taskGeneration != activeGeneration) {
@@ -1729,7 +1765,11 @@ class AniobViewModel(
             if (isSuccess) {
                 val trajectory = verifiedActions.toList()
                 learningPipeline.onTaskSuccess(
-                    TaskContext(instruction = task.rawPrompt, successCriteria = resolvedCriteria),
+                    TaskContext(
+                        instruction = task.rawPrompt,
+                        successCriteria = resolvedCriteria,
+                        taskId = task.id
+                    ),
                     trajectory
                 )
             }

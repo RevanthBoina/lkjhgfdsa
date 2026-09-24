@@ -274,15 +274,19 @@ class AniobAccessibilityService : AccessibilityService() {
      *    to a guessed coordinate.
      */
     fun executeAction(action: AniobAction, callback: (Boolean) -> Unit) {
+        gateOnUiQuiescence(action)
+
         val liveScreen = try {
             captureCurrentScreenState()
         } catch (_: Exception) {
             lastScreenState
         } ?: AniobScreenState(packageName = currentForegroundPackage().orEmpty())
 
-        gateOnUiQuiescence(action)
+        val displayMetrics = resources.displayMetrics
+        val width = displayMetrics.widthPixels
+        val height = displayMetrics.heightPixels
 
-        when (val command = AniobActionExecutor.planDispatch(action, liveScreen)) {
+        when (val command = AniobActionExecutor.planDispatch(action, liveScreen, width, height)) {
             is DispatchCommand.TapAt -> {
                 spotlightOverlay.flash(command.x.toFloat(), command.y.toFloat())
                 dispatchTap(command.x.toFloat(), command.y.toFloat(), callback)

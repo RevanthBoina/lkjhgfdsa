@@ -103,4 +103,13 @@ data class SuccessCriteria(
             .filter { it.state == CriterionState.FAILED || it.state == CriterionState.INCONCLUSIVE }
             .map { it.detail.ifBlank { it.description } }
     }
+
+    fun describeList(): List<String> {
+        val list = mutableListOf<String>()
+        mustContainText.forEach { list.add("Must contain text: $it") }
+        mustShowPackage.forEach { list.add("Must show package: $it") }
+        mustShowActivity.forEach { list.add("Must show activity: $it") }
+        if (minSteps > 0) list.add("At least $minSteps steps")
+        return list
+    }
 }

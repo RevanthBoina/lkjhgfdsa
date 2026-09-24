@@ -29,9 +29,18 @@ class AniobReplayEngine {
         return fastPathRegistry[taskSignature]
     }
 
+    fun removeTrajectory(taskSignature: String): ReplayTrajectory? {
+        return fastPathRegistry.remove(taskSignature)
+    }
+
+    fun clear() {
+        fastPathRegistry.clear()
+    }
+
     /**
      * Attempts to resolve the next action from cache.
      * Verifies screen fingerprint to ensure UI has not diverged.
+     * Never bypasses fingerprint verification even on step 0, and validates package name match.
      */
     fun nextAction(
         trajectory: ReplayTrajectory,
@@ -39,11 +48,16 @@ class AniobReplayEngine {
         currentScreen: AniobScreenState
     ): AniobAction? {
         if (stepIndex >= trajectory.steps.size) return null
+        if (trajectory.packageName.isNotBlank() && currentScreen.packageName.isNotBlank() &&
+            currentScreen.packageName != trajectory.packageName
+        ) {
+            return null
+        }
         val step = trajectory.steps[stepIndex]
         val currentFingerprint = AniobFingerprint.computeScreenFingerprint(currentScreen)
 
-        // If fingerprint matches or is first step, accept cached action
-        return if (stepIndex == 0 || step.expectedFingerprint == currentFingerprint) {
+        // Validate expected fingerprint matches on all steps (including step 0)
+        return if (step.expectedFingerprint.isNotBlank() && step.expectedFingerprint == currentFingerprint) {
             step.action
         } else {
             // Divergence detected - fallback to router

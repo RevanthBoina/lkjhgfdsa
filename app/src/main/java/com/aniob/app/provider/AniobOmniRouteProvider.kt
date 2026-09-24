@@ -116,6 +116,7 @@ class AniobOmniRouteProvider(
             onDelta(msg)
             return@withContext msg
         }
+        var call: okhttp3.Call? = null
         try {
             val messages = buildMessages(systemPrompt, prompt, screenshotBase64)
             val payload = JSONObject().apply {
@@ -134,7 +135,8 @@ class AniobOmniRouteProvider(
                 .post(payload.toString().toRequestBody("application/json".toMediaType()))
                 .build()
 
-            client.newCall(request).execute().use { response: Response ->
+            call = client.newCall(request)
+            call.execute().use { response: Response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     val msg = "Error from Omniroute Cloud (${response.code}): $body"
@@ -143,10 +145,12 @@ class AniobOmniRouteProvider(
                 }
                 val rootJson = JSONObject(body)
                 val full = rootJson.getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content")
-                emitThrottled(full, onDelta)
+                // Immediate emission: zero simulated streaming delay
+                onDelta(full)
                 full
             }
         } catch (e: Exception) {
+            call?.cancel()
             val msg = "Request failed: ${e.message}"
             onDelta(msg)
             msg
@@ -166,26 +170,6 @@ class AniobOmniRouteProvider(
         }
         messages.put(JSONObject().apply { put("role", "user"); put("content", userContent) })
         return messages
-    }
-
-    private suspend fun emitThrottled(text: String, onDelta: (String) -> Unit) {
-        val minIntervalMs = 60L
-        var lastEmitMs = 0L
-        text.forEachIndexed { index, ch ->
-            val now = System.currentTimeMillis()
-            if (now - lastEmitMs >= minIntervalMs) {
-                onDelta(ch.toString())
-                lastEmitMs = now
-            } else {
-                delay(minIntervalMs - (now - lastEmitMs))
-                onDelta(ch.toString())
-                lastEmitMs = System.currentTimeMillis()
-            }
-            if (index % 8 == 0) {
-                // Keep the stream responsive without tight-looping CPU
-                delay(1)
-            }
-        }
     }
 
     suspend fun getNextAction(
@@ -251,7 +235,13 @@ class AniobOmniRouteProvider(
                 .post(payload.toString().toRequestBody("application/json".toMediaType()))
                 .build()
 
-            val response = client.newCall(request).execute()
+            val call = client.newCall(request)
+            val response = try {
+                call.execute()
+            } catch (e: Exception) {
+                call.cancel()
+                return@withContext Result.failure(e)
+            }
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 return@withContext Result.failure(Exception("Omniroute Cloud API error (${response.code}): $body"))
@@ -266,4 +256,7 @@ class AniobOmniRouteProvider(
         }
     }
 
+    companion object {
+        const val DEFAULT_THROTTLE_MS = 60L
+    }
 }

@@ -5,6 +5,12 @@ import com.aniob.core.domain.KeyType
 import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.SwipeDirection
 
+enum class SkillStatus {
+    ACTIVE,
+    DRAFT,
+    DISABLED
+}
+
 data class SkillStep(
     val stepIndex: Int,
     val actionType: String,
@@ -17,34 +23,54 @@ data class SkillStep(
     val packageName: String? = null,
     val key: String? = null,
     val direction: String? = null,
-    val description: String = ""
+    val description: String = "",
+    val clearFirst: Boolean = false,
+    val waitDuration: Long = 0L,
+    val pressDuration: Long = 0L,
+    val swipeContainer: String? = null
 ) {
     fun toAniobAction(): AniobAction {
         return when (actionType.lowercase()) {
-            "open_app" -> AniobAction.OpenApp(packageName = packageName ?: "com.android.settings")
-            "tap", "click" -> AniobAction.Tap(target = resolveTarget(), thought = description)
-            "input_text" -> AniobAction.InputText(target = resolveTarget(), text = text ?: "")
-            "long_press" -> AniobAction.LongPress(target = resolveTarget(), thought = description)
+            "open_app" -> {
+                val pkg = packageName ?: throw IllegalArgumentException("open_app step $stepIndex requires package name")
+                AniobAction.OpenApp(packageName = pkg)
+            }
+            "tap", "click" -> {
+                val resolved = resolveTarget() ?: throw IllegalArgumentException("tap step $stepIndex requires a valid target")
+                AniobAction.Tap(target = resolved, thought = description)
+            }
+            "input_text" -> {
+                val resolved = resolveTarget() ?: throw IllegalArgumentException("input_text step $stepIndex requires a valid target")
+                AniobAction.InputText(target = resolved, text = text ?: "", clearFirst = clearFirst)
+            }
+            "long_press" -> {
+                val resolved = resolveTarget() ?: throw IllegalArgumentException("long_press step $stepIndex requires a valid target")
+                AniobAction.LongPress(target = resolved, durationMs = if (pressDuration > 0) pressDuration else 1000L, thought = description)
+            }
             "swipe" -> {
                 val dir = when (direction?.uppercase()) {
                     "UP" -> SwipeDirection.UP
                     "DOWN" -> SwipeDirection.DOWN
                     "LEFT" -> SwipeDirection.LEFT
-                    else -> SwipeDirection.RIGHT
+                    "RIGHT" -> SwipeDirection.RIGHT
+                    else -> throw IllegalArgumentException("swipe step $stepIndex requires a valid direction (UP, DOWN, LEFT, RIGHT)")
                 }
-                AniobAction.Swipe(direction = dir)
+                val cont = swipeContainer?.let { SemanticTarget.ResourceId(it) }
+                AniobAction.Swipe(direction = dir, container = cont)
             }
             "system_key" -> {
                 val k = when (key?.uppercase()) {
                     "BACK" -> KeyType.BACK
                     "HOME" -> KeyType.HOME
-                    else -> KeyType.ENTER
+                    "ENTER" -> KeyType.ENTER
+                    else -> throw IllegalArgumentException("system_key step $stepIndex requires a valid key (BACK, HOME, ENTER)")
                 }
                 AniobAction.SystemKey(key = k)
             }
-            "wait" -> AniobAction.Wait()
+            "wait" -> AniobAction.Wait(durationMs = if (waitDuration > 0) waitDuration else AniobAction.Wait.DEFAULT_WAIT_MS)
             "confirm_with_user" -> AniobAction.ConfirmWithUser(message = description)
-            else -> AniobAction.Finish(summary = description)
+            "finish" -> AniobAction.Finish(summary = description)
+            else -> throw IllegalArgumentException("Unknown skill action '$actionType' at step $stepIndex")
         }
     }
 
@@ -52,7 +78,7 @@ data class SkillStep(
      * Resolves the semantic target, falling back to the legacy node id. Legacy skills keep
      * working; the deprecation is logged by the loader so authors migrate to `target:`.
      */
-    private fun resolveTarget(): SemanticTarget = target
+    private fun resolveTarget(): SemanticTarget? = target
         ?: targetNodeId?.let {
             System.err.println(
                 "[AniobSkill] DEPRECATED: step $stepIndex uses legacy 'target_id'. " +
@@ -60,7 +86,6 @@ data class SkillStep(
             )
             SemanticTarget.SomIndex(it)
         }
-        ?: SemanticTarget.SomIndex(1)
 }
 
 data class AniobSkill(
@@ -74,5 +99,6 @@ data class AniobSkill(
     val targetPackage: String? = null,
     val slots: Map<String, String> = emptyMap(),
     val steps: List<SkillStep> = emptyList(),
-    val isDraft: Boolean = false
+    val status: SkillStatus = SkillStatus.ACTIVE,
+    val isDraft: Boolean = status == SkillStatus.DRAFT
 )

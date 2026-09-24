@@ -1,5 +1,7 @@
 name: "book_cab"
 version: "2.1"
+status: "draft"
+is_draft: true
 description: "Assisted ride booking flow with grill-me clarification"
 risk_tier: "MEDIUM"
 confirmation_required: true

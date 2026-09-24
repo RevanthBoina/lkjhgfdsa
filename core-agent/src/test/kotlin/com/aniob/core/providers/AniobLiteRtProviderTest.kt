@@ -177,6 +177,20 @@ class AniobLiteRtProviderTest {
     }
 
     @Test
+    fun `fixture returning long answer incurs no length-proportional artificial delay`() {
+        val longText = "a".repeat(2000)
+        val engine = FakeEngine(ready = true, output = longText)
+        val provider = AniobLiteRtProvider(engineFactory = { engine })
+        val deltas = StringBuilder()
+        val start = System.currentTimeMillis()
+        val result = provider.chatStreamingResult("prompt") { deltas.append(it) }
+        val duration = System.currentTimeMillis() - start
+        assertTrue(result is AniobGenerationResult.Ready)
+        assertEquals(longText, deltas.toString())
+        assertTrue("Expected generation without artificial delay (<500ms), took ${duration}ms", duration < 500)
+    }
+
+    @Test
     fun `null generation triggers one gpu retry then fails`() {
         val engine = FakeEngine(ready = true, output = null)
         val provider = AniobLiteRtProvider(engineFactory = { engine })

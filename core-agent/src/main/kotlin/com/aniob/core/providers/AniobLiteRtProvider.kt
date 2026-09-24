@@ -54,6 +54,24 @@ class AniobLiteRtProvider(
         return isEngineLoaded.get() && engine.isReady()
     }
 
+    fun readiness(): ProviderReadiness {
+        if (!java.io.File(modelPath).exists()) {
+            return ProviderReadiness.FILE_MISSING
+        }
+        val engine = nativeEngine ?: return ProviderReadiness.MODEL_FILE_PRESENT
+        if (!engine.isReady()) {
+            return ProviderReadiness.MODEL_FILE_PRESENT
+        }
+        if (!isEngineLoaded.get()) {
+            return ProviderReadiness.ENGINE_LOADABLE
+        }
+        return if (capabilities().canDriveActions) {
+            ProviderReadiness.ACTION_CAPABLE
+        } else {
+            ProviderReadiness.ENGINE_LOADED
+        }
+    }
+
     /**
      * A loaded native engine is a real action driver only when it is actually available; a
      * provider constructed around a missing library reports [AniobEngineCapabilities.canDriveActions]
@@ -122,12 +140,9 @@ class AniobLiteRtProvider(
         val workerThread = Thread {
             try {
                 val generated = engine.generate(prompt) ?: return@Thread
-                for (token in tokenizeOutput(generated)) {
-                    if (!isEngineLoaded.get()) return@Thread
-                    fullResponse.append(token)
-                    onDelta(token)
-                    Thread.sleep(DELTA_THROTTLE_MS)
-                }
+                if (!isEngineLoaded.get()) return@Thread
+                fullResponse.append(generated)
+                onDelta(generated)
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
             } finally {
@@ -144,8 +159,6 @@ class AniobLiteRtProvider(
         if (timedOut || fullResponse.isEmpty()) return null
         return fullResponse.toString()
     }
-
-    private fun tokenizeOutput(text: String): List<String> = text.chunked(DELTA_CHUNK_CHARS)
 
     /**
      * Called under memory pressure (e.g., onTrimMemory) to release native buffers.
