@@ -37,7 +37,11 @@ import com.aniob.core.embedding.AniobEmbeddingStore
 import com.aniob.core.exec.ExecOutcome
 import com.aniob.core.exec.ExecReport
 import com.aniob.core.execution.AniobAppSessionManager
+import com.aniob.core.execution.DispatchCommand
 import com.aniob.core.execution.StepPipeline
+import com.aniob.core.execution.StepResult
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import com.aniob.core.external.AniobExternalAiTrigger
 import com.aniob.core.grillme.AniobGrillMeEngine
 import com.aniob.core.grillme.AniobGrillMeResult
@@ -245,6 +249,10 @@ class AniobViewModel(
     private val persistentKnowledgeStore = com.aniob.app.data.DataStoreKnowledgeStore(app)
     private val sharedKnowledgeStore: AniobSharedKnowledgeStore = persistentKnowledgeStore
 
+    // Task ownership & generation guards
+    private var activeTaskJob: kotlinx.coroutines.Job? = null
+    @Volatile private var activeGeneration: Long = 0L
+
     // UX-3: cooperative pause; checked at the loop head and inside settle waits.
     @Volatile private var pauseRequested = false
 
@@ -255,8 +263,9 @@ class AniobViewModel(
     fun getLoadedSkills(): List<com.aniob.core.skills.AniobSkill> =
         semanticSkillMatcher.getLoadedSkills()
 
-    // UX-4: memoized per (taskId, signal) approvals; the dispatch path consults this.
+    // UX-4: memoized approvals; the dispatch path consults this.
     private val taskApprovals = mutableSetOf<String>()
+    private val taskBlockedFingerprints = mutableSetOf<String>()
     internal var disabledSkills: MutableSet<String> = mutableSetOf()
 
     /** Suspends until the user decides; the ONLY gate on a risky dispatch (UX-4). */
@@ -403,6 +412,21 @@ class AniobViewModel(
                 }
             }
         }
+
+        AniobForegroundService.onStopRequestedFromNotification = {
+            stopCurrentTask()
+        }
+        AniobForegroundService.onPauseToggleFromNotification = {
+            togglePause()
+        }
+        AniobForegroundService.onConfirmDecisionWithIds = { decision, taskId, reqId ->
+            val pending = _uiState.value.confirmRequest
+            if (pending != null && (taskId == null || taskId == pending.taskId) && (reqId == null || reqId == pending.id)) {
+                resolveConfirmation(decision)
+            } else {
+                app.eventLogger.warn("AniobViewModel", "Ignored stale confirmation: taskId=$taskId reqId=$reqId")
+            }
+        }
     }
 
     fun clearChat() {
@@ -458,8 +482,9 @@ class AniobViewModel(
         val next = when (outcome) {
             Outcome.SUCCESS -> listOf(NextAction.RUN_AGAIN, NextAction.VIEW_STEPS, NextAction.MAKE_SKILL)
             Outcome.FAILED -> listOf(NextAction.RETRY, NextAction.EXPLORE_APP, NextAction.TEACH_ME, NextAction.VIEW_STEPS)
-            Outcome.STOPPED, Outcome.INTERRUPTED ->
-                listOf(NextAction.RUN_AGAIN, NextAction.VIEW_STEPS)
+            Outcome.UNVERIFIED -> listOf(NextAction.RETRY, NextAction.TEACH_ME, NextAction.VIEW_STEPS)
+            Outcome.STOPPED -> listOf(NextAction.VIEW_STEPS)
+            Outcome.INTERRUPTED -> listOf(NextAction.VIEW_STEPS)
         }
         return TaskSummary(
             prompt = prompt,
@@ -473,33 +498,59 @@ class AniobViewModel(
         )
     }
 
-    /** UX-6: survives process death so the next open shows an honest Interrupted card. */
-    private fun persistRunningMarker(task: AniobTask, stepIndex: Int) {
-        savedStateHandle[KEY_RUNNING_MARKER] = "${task.id}|${task.rawPrompt}|$stepIndex"
+    /** Persists active task marker in Room so process death can be honestly reviewed on next open. */
+    private fun persistRunningMarker(task: AniobTask, stepIndex: Int, lastKnownEffect: String = "") {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                app.database.activeTaskDao().setActiveTask(
+                    com.aniob.app.db.ActiveTaskEntity(
+                        taskId = task.id,
+                        rawPrompt = task.rawPrompt,
+                        currentStep = stepIndex,
+                        lastKnownEffect = lastKnownEffect,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
+            } catch (_: Exception) {}
+        }
     }
 
     private fun clearRunningMarker() {
-        savedStateHandle[KEY_RUNNING_MARKER] = null
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                app.database.activeTaskDao().clearActiveTasks()
+            } catch (_: Exception) {}
+        }
     }
 
     /** Reads the persisted marker on cold start and surfaces it as an Interrupted card. */
     private fun restoreInterruptedSummary() {
-        val marker = savedStateHandle.get<String>(KEY_RUNNING_MARKER) ?: return
-        val parts = marker.split("|")
-        if (parts.size < 3) return
-        val prompt = parts[1]
-        val step = parts[2].toIntOrNull() ?: 0
-        val summary = buildSummary(
-            prompt = prompt,
-            outcome = Outcome.INTERRUPTED,
-            steps = step,
-            durationMs = 0L,
-            provider = "NONE",
-            evidence = emptyList(),
-            reason = "Aniob was killed by the system at step $step"
-        )
-        clearRunningMarker()
-        _uiState.update { it.copy(interruptedSummary = summary, isRunning = false) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val marker = try {
+                app.database.activeTaskDao().getActiveTask()
+            } catch (_: Exception) { null } ?: return@launch
+
+            val prompt = marker.rawPrompt
+            val step = marker.currentStep
+            val lastEffect = marker.lastKnownEffect
+            val summary = buildSummary(
+                prompt = prompt,
+                outcome = Outcome.INTERRUPTED,
+                steps = step,
+                durationMs = 0L,
+                provider = "NONE",
+                evidence = emptyList(),
+                reason = if (lastEffect.isNotBlank()) {
+                    "Interrupted at step $step. Last known effect: $lastEffect. Review external effects before retrying."
+                } else {
+                    "Interrupted at step $step. Review external effects before retrying."
+                }
+            )
+            clearRunningMarker()
+            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                _uiState.update { it.copy(interruptedSummary = summary, isRunning = false) }
+            }
+        }
     }
 
     // =========================================================================================
@@ -663,7 +714,8 @@ class AniobViewModel(
     fun blockedActions(): List<BlockedRecord> = blockedRecords.toList()
 
     fun clearBlockedFingerprint(fingerprint: String) {
-        com.aniob.core.safety.AniobSafetyInterceptor.clearBlockedFingerprints()
+        com.aniob.core.safety.AniobSafetyInterceptor.unblockFingerprint(fingerprint)
+        taskBlockedFingerprints.remove(fingerprint)
         blockedRecords.removeAll { it.fingerprint == fingerprint }
         _uiState.update { it.copy(blockedActions = blockedRecords.toList()) }
     }
@@ -684,14 +736,12 @@ class AniobViewModel(
 
     /**
      * The ONE gate on a risky dispatch (UX-4 §1). Replaces the old fire-and-forget
-     * `Pair(reason){}` dialog: this suspends the caller until a real decision exists, so a risky
+     * dialog: this suspends the caller until a real decision exists, so a risky
      * action can never execute while the approval is still on screen.
-     *
-     * `// SHIM(UX-4): swap for the suspend `confirm(request)` seam when the cutover lands.`
      */
     internal suspend fun requestConfirmation(request: ConfirmRequest): ConfirmDecision {
-        // "Approve for this task" memoizes per (taskId, signal).
-        val memoKey = "${_uiState.value.activeTask?.id}|${request.what}"
+        val currentTask = _uiState.value.activeTask
+        val memoKey = "${currentTask?.id}|${request.id}|${request.what}|${request.payload}|${request.target}"
         if (taskApprovals.contains(memoKey)) return ConfirmDecision.APPROVE_FOR_TASK
 
         val deferred = CompletableDeferred<ConfirmDecision>()
@@ -704,7 +754,20 @@ class AniobViewModel(
         val decision = withTimeoutOrNull(request.timeoutSec * 1000L) { deferred.await() }
             ?: ConfirmDecision.TIMEOUT_DENY
 
-        if (decision == ConfirmDecision.APPROVE_FOR_TASK) taskApprovals.add(memoKey)
+        // Revalidate after approval: if task changed or cancelled, reject!
+        if (_uiState.value.activeTask?.id != request.taskId && request.taskId.isNotBlank()) {
+            _uiState.update { it.copy(confirmRequest = null) }
+            pendingConfirmation = null
+            AniobForegroundService.clearConfirmation(app)
+            return ConfirmDecision.TIMEOUT_DENY
+        }
+
+        // Consequential commits should prefer APPROVE_ONCE and not memoize for whole task!
+        val isConsequential = request.risk == ConfirmRequest.Risk.HIGH ||
+            request.what.contains(Regex("(?i)pay|transfer|send|delete|purchase"))
+        if (decision == ConfirmDecision.APPROVE_FOR_TASK && !isConsequential) {
+            taskApprovals.add(memoKey)
+        }
         recordConfirmation(request, decision)
         AniobForegroundService.clearConfirmation(app)
         _uiState.update { it.copy(confirmRequest = null) }
@@ -725,14 +788,20 @@ class AniobViewModel(
         what: String,
         why: String,
         risk: ConfirmRequest.Risk,
-        details: String
+        details: String,
+        taskId: String = _uiState.value.activeTask?.id ?: "",
+        payload: String = "",
+        target: String = ""
     ) = ConfirmRequest(
         id = "confirm_${System.currentTimeMillis()}",
         title = "Aniob needs your approval",
         what = what,
         why = why,
         risk = risk,
-        details = details
+        details = details,
+        taskId = taskId,
+        payload = payload,
+        target = target
     )
 
     private fun riskFromTier(tier: String, safetyLevel: SafetyLevel): ConfirmRequest.Risk = when {
@@ -743,12 +812,17 @@ class AniobViewModel(
 
     /**
      * True when this action needs an approval at the current safety level.
-     * Standard asks only for HIGH; Strict also asks for MEDIUM and cross-app navigation.
+     * Hard required / HIGH tier safeguards cannot be disabled even if safetyLevel is OFF.
      */
-    private fun needsApproval(tier: String, action: AniobAction): Boolean = when (_uiState.value.safetyLevel) {
-        SafetyLevel.OFF -> false
-        SafetyLevel.STRICT -> !tier.equals("LOW", true) || action is AniobAction.OpenApp
-        SafetyLevel.STANDARD -> tier.equals("HIGH", true)
+    private fun needsApproval(tier: String, action: AniobAction, hardRequired: Boolean = false): Boolean {
+        if (hardRequired || tier.equals("HIGH", true)) {
+            return true
+        }
+        return when (_uiState.value.safetyLevel) {
+            SafetyLevel.OFF -> false
+            SafetyLevel.STRICT -> !tier.equals("LOW", true) || action is AniobAction.OpenApp
+            SafetyLevel.STANDARD -> tier.equals("HIGH", true)
+        }
     }
 
     // =========================================================================================
@@ -824,8 +898,23 @@ class AniobViewModel(
         val trimmed = prompt.trim()
         if (trimmed.isBlank()) return
 
+        // Reject if another task is active to prevent double submission
+        if (_uiState.value.isRunning && activeTaskJob?.isActive == true) {
+            app.eventLogger.warn("AniobViewModel", "Cannot start new task while a task is running")
+            return
+        }
+
+        val generation = ++activeGeneration
         val taskId = "task_${System.currentTimeMillis()}"
         val task = AniobTask(id = taskId, rawPrompt = trimmed)
+
+        // Clear task-local state
+        taskApprovals.clear()
+        taskBlockedFingerprints.forEach { com.aniob.core.safety.AniobSafetyInterceptor.unblockFingerprint(it) }
+        taskBlockedFingerprints.clear()
+        pauseRequested = false
+        localFailCount = 0
+        verifiedActions.clear()
 
         val userMessage = ChatMessage(
             id = "msg_user_${System.currentTimeMillis()}",
@@ -840,11 +929,12 @@ class AniobViewModel(
                 currentStep = 0,
                 statusMessage = "Analyzing task...",
                 chatMessages = it.chatMessages + userMessage,
-                steps = emptyList()
+                steps = emptyList(),
+                confirmRequest = null
             )
         }
 
-        viewModelScope.launch(Dispatchers.Default) {
+        activeTaskJob = viewModelScope.launch(Dispatchers.Default) {
             // Step 0: Intent Gate (AIM Phase 2.6 / P0-3)
             val intent = AniobTaskIntentClassifier.classify(trimmed)
             if (intent != AniobIntent.DEVICE_AUTOMATION) {
@@ -979,7 +1069,7 @@ class AniobViewModel(
             }
 
             // Task is self-contained -> Proceed directly
-            executeTaskPipeline(task)
+            executeTaskPipeline(task, generation)
         }
     }
 
@@ -1007,8 +1097,9 @@ class AniobViewModel(
             )
         }
 
-        viewModelScope.launch(Dispatchers.Default) {
-            executeTaskPipeline(updatedTask)
+        val gen = activeGeneration
+        activeTaskJob = viewModelScope.launch(Dispatchers.Default) {
+            executeTaskPipeline(updatedTask, gen)
         }
     }
 
@@ -1023,7 +1114,10 @@ class AniobViewModel(
      * Executes the task through the ExecutionRouter ladder:
      * INTENT -> FASTPATH -> SKILL -> LOCAL_SLM -> OMNIROUTE_CLOUD
      */
-    private suspend fun executeTaskPipeline(task: AniobTask) {
+    private suspend fun executeTaskPipeline(task: AniobTask, taskGeneration: Long = activeGeneration) {
+        if (taskGeneration != activeGeneration) return
+        persistRunningMarker(task, 0, "Task started")
+
         watchdog.reset()
         observationPolicy.reset()
         executionTracker.clear()
@@ -1046,7 +1140,7 @@ class AniobViewModel(
             grillAnswers = task.grillAnswers,
             appCatalog = appCatalog
         )
-        val taskContext = com.aniob.core.domain.TaskContext(
+        var taskContext = com.aniob.core.domain.TaskContext(
             instruction = task.clarifiedGoal,
             successCriteria = resolvedCriteria,
             grillAnswers = task.grillAnswers
@@ -1056,7 +1150,6 @@ class AniobViewModel(
         val startTime = System.currentTimeMillis()
         var currentStep = 0
         var totalTokens = 0
-        var finalSuccess = true
         var primaryProvider = "INTENT"
         var decisionReason = "Direct intent shortcut"
         var screenReads = 0
@@ -1124,13 +1217,71 @@ class AniobViewModel(
             )
         }
 
+        val stepPipe = StepPipeline(
+            limits = agentLimits,
+            learning = learningPipeline,
+            reflectionAgent = reflectionAgent,
+            recordStep = { stepRecord ->
+                val node = stepRecord.resolvedNode
+                val obs = if (node != null) {
+                    "node ${node.id} (${node.text.take(15)})"
+                } else {
+                    "screen ${screenBefore?.treeHash?.take(6) ?: "none"} after ${stepRecord.action.toolName}"
+                }
+                recordTrajectory(
+                    stepIndex = stepRecord.stepIndex,
+                    observation = obs,
+                    action = stepRecord.action,
+                    provider = stepRecord.provider,
+                    latencyMs = stepRecord.latencyMs,
+                    screenHash = screenBefore?.treeHash ?: "",
+                    verified = stepRecord.verified
+                )
+                publishStep(
+                    stepIndex = stepRecord.stepIndex,
+                    action = stepRecord.action,
+                    provider = stepRecord.provider,
+                    latencyMs = stepRecord.latencyMs,
+                    verified = stepRecord.verified,
+                    failureReason = stepRecord.failureReason,
+                    node = stepRecord.resolvedNode
+                )
+                val uiStep = AniobStepRecord(
+                    stepIndex = stepRecord.stepIndex,
+                    screenHash = screenBefore?.treeHash ?: "",
+                    action = stepRecord.action,
+                    provider = stepRecord.provider,
+                    latencyMs = stepRecord.latencyMs,
+                    tokensUsed = stepRecord.tokensUsed,
+                    verifiedSuccess = stepRecord.verified,
+                    failureReason = stepRecord.failureReason
+                )
+                addStepRecord(uiStep)
+            },
+            settle = { _, capture ->
+                AniobWaitForIdle.waitForIdle(1000)
+                delay(400)
+                capture()
+            }
+        )
+
         val maxSteps = agentLimits.maxStepsPerTask
+        var finalOutcome: Outcome? = null
+        var terminalReason: String = ""
+        var stepResult: StepResult? = null
 
         try {
             while (currentStep < maxSteps && _uiState.value.isRunning) {
+                if (taskGeneration != activeGeneration || !currentCoroutineContext().isActive) {
+                    finalOutcome = Outcome.STOPPED
+                    break
+                }
                 val wasPaused = pauseRequested
                 awaitIfPaused()
-                if (!_uiState.value.isRunning) break
+                if (!_uiState.value.isRunning || taskGeneration != activeGeneration || !currentCoroutineContext().isActive) {
+                    finalOutcome = Outcome.STOPPED
+                    break
+                }
 
                 _uiState.update { it.copy(currentStep = currentStep + 1) }
 
@@ -1153,9 +1304,7 @@ class AniobViewModel(
                     screenBefore
                 }
 
-                // Session validation: do not trust a cached app session blindly. An OEM may have
-                // killed the app in the background within the 5-min TTL, in which case reusing the
-                // stale tree would dispatch taps into the wrong window or against dead node ids.
+                // Session validation: do not trust a cached app session blindly.
                 val foregroundBefore = a11y?.currentForegroundPackage()
                 val reuseCheck = appSessionManager.ensureReusableOrInvalidate(
                     packageName = captured.packageName,
@@ -1166,17 +1315,15 @@ class AniobViewModel(
                 val liveService = a11y
                 if (!reuseCheck.valid && liveService != null) {
                     if (foregroundBefore != null && foregroundBefore != captured.packageName) {
-                        // Cached app died and a different app is foreground - cold-start the target.
                         app.eventLogger.info(
                             "AniobViewModel",
-                            "Session invalid (${reuseCheck.reason}) - cold starting ${foregroundBefore}"
+                            "Session invalid (${reuseCheck.reason}) - cold starting $foregroundBefore"
                         )
                         executeActionSync(liveService, AniobAction.OpenApp(packageName = foregroundBefore))
                         delay(800)
                         currentScreen = liveService.captureCurrentScreenState()
                         screenReads++; screenCaptureCount++
                     } else {
-                        // Same app but cached tree is stale - force a fresh capture before acting.
                         app.eventLogger.info(
                             "AniobViewModel",
                             "Session tree stale (${reuseCheck.reason}) - refreshing capture"
@@ -1189,8 +1336,6 @@ class AniobViewModel(
 
                 // Evaluate Execution Ladder with real power state and on-device model status
                 val powerState = AniobDeviceTelemetry.getRealState(app)
-                // Resolves to the saved default, else any installed model, else the recommended id - so a
-                // missing file here means "we know which model is wanted, but it is not downloaded".
                 val resolvedModelId = modelDownloader.getDefaultModelId()
                 val resolvedFileExists = File(modelDownloader.getModelsDir(), "$resolvedModelId.gguf").exists()
                 val effectiveModelId = resolvedModelId.takeIf { resolvedFileExists }
@@ -1208,7 +1353,6 @@ class AniobViewModel(
                     previousProgress = taskProgress
                 )
                 if (ladderResult is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch) {
-                    // TaskProgress accumulates across steps (prefrontal condensation).
                     taskProgress = planningAgent.updateProgress(
                         userInstruction = task.clarifiedGoal,
                         previousOperation = if (currentStep > 0) "Step ${currentStep - 1} executed" else null,
@@ -1217,207 +1361,36 @@ class AniobViewModel(
                     )
                 }
 
-                val stepStartTime = System.currentTimeMillis()
-
+                val proposal: StepPipeline.Proposal
+                var targetNode: AniobNode? = null
                 when (ladderResult) {
                     is AniobExecutionRouter.ExecutionPlanResult.DirectIntent -> {
                         primaryProvider = "INTENT"
                         decisionReason = ladderResult.reason
                         _uiState.update { it.copy(statusMessage = "Executing direct system intent...") }
-
-                        dispatchSystemIntent(ladderResult.shortcut)
-                        delay(800)
-
-                        screenReads++; screenCaptureCount++
-                        val screenAfter = a11y?.captureCurrentScreenState() ?: currentScreen
-                        appSessionManager.onSessionScreenUpdated(ladderResult.shortcut.targetPackage ?: screenAfter.packageName, screenAfter)
-                        actionsDispatched++
-                        recordTrajectory(
-                            stepIndex = currentStep + 1,
-                            observation = "screen ${screenAfter.treeHash.take(6)} after intent",
+                        proposal = StepPipeline.Proposal.DirectIntent(
                             action = AniobAction.Finish(summary = "Intent dispatched: ${ladderResult.shortcut.targetPackage}"),
-                            provider = "INTENT",
-                            latencyMs = System.currentTimeMillis() - stepStartTime,
-                            screenHash = screenAfter.treeHash,
-                            verified = true
+                            label = "INTENT"
                         )
-                        val stepRecord = AniobStepRecord(
-                            stepIndex = currentStep + 1,
-                            screenHash = currentScreen.treeHash,
-                            action = AniobAction.Finish(summary = "Intent dispatched: ${ladderResult.shortcut.targetPackage}"),
-                            provider = "INTENT",
-                            latencyMs = System.currentTimeMillis() - stepStartTime,
-                            tokensUsed = 0,
-                            verifiedSuccess = true
-                        )
-                        addStepRecord(stepRecord)
-                        // A system-intent shortcut is a provisional success too: verify the resulting
-                        // screen against criteria before declaring victory (no fake SUCCESS).
-                        val intentVerdict = DeterministicVerifier.verifyFinish(resolvedCriteria, screenAfter, currentStep + 1)
-                        if (intentVerdict.isExpected) {
-                            finalSuccess = true
-                        } else {
-                            // No evidence either way (e.g. no criteria) still counts as dispatched,
-                            // but a *disproved* criterion means the shortcut did not achieve the goal.
-                            finalSuccess = !resolvedCriteria.hasObservableCheck
-                            if (!finalSuccess) {
-                                _uiState.update { it.copy(statusMessage = "Intent dispatched but goal not verified: ${intentVerdict.reason}") }
-                            }
-                        }
-                        break
                     }
-
                     is AniobExecutionRouter.ExecutionPlanResult.FastPathStep -> {
                         primaryProvider = "FASTPATH"
                         decisionReason = ladderResult.reason
                         _uiState.update { it.copy(statusMessage = "FastPath replay step ${currentStep + 1}...") }
-
-                        val action = ladderResult.action
-
-                        // Safety Interceptor check
-                        val intercept = AniobSafetyInterceptor.evaluateAction(
-                            action = action,
-                            targetNode = null,
-                            screenState = currentScreen,
-                            screenFingerprint = currentScreen.treeHash
-                        )
-
-                        if (!intercept.isAllowed) {
-                            blockedRecords.add(BlockedRecord(fingerprint = currentScreen.treeHash, rule = intercept.reason, at = System.currentTimeMillis()))
-                            _uiState.update { it.copy(blockedActions = blockedRecords.toList()) }
-                            recordTrajectory(
-                                stepIndex = currentStep + 1,
-                                observation = "blocked by safety interceptor",
-                                action = action,
-                                provider = "FASTPATH",
-                                latencyMs = System.currentTimeMillis() - stepStartTime,
-                                screenHash = currentScreen.treeHash,
-                                verified = false
-                            )
-                            val stepRecord = AniobStepRecord(
-                                stepIndex = currentStep + 1,
-                                screenHash = currentScreen.treeHash,
-                                action = action,
-                                provider = "FASTPATH",
-                                latencyMs = System.currentTimeMillis() - stepStartTime,
-                                tokensUsed = 0,
-                                verifiedSuccess = false,
-                                failureReason = intercept.reason
-                            )
-                            addStepRecord(stepRecord)
-                            finalSuccess = false
-                            break
+                        proposal = StepPipeline.Proposal.FastPath(ladderResult.action)
+                        targetNode = ladderResult.action.semanticTarget()?.let {
+                            com.aniob.core.execution.AniobActionExecutor.resolveTarget(ladderResult.action, currentScreen)?.node
                         }
-
-                        val step = executeVerifyAndRecover(a11y, action, task.clarifiedGoal, currentScreen)
-                        val executed = step.executedAction
-                        val verification = step.verification
-                        screenReads++; screenCaptureCount++
-                        actionsDispatched++
-                        recordTrajectory(
-                            stepIndex = currentStep + 1,
-                            observation = "screen ${step.screenAfter.treeHash.take(6)} after ${executed.toolName}",
-                            action = executed,
-                            provider = "FASTPATH",
-                            latencyMs = System.currentTimeMillis() - stepStartTime,
-                            screenHash = step.screenAfter.treeHash,
-                            verified = verification.isExpected
-                        )
-
-                        observationPolicy.recordActionOutcome(executed, currentScreen.packageName, verification.isSuccessful)
-
-                        addStepRecord(
-                            AniobStepRecord(
-                                stepIndex = currentStep + 1,
-                                screenHash = currentScreen.treeHash,
-                                action = executed,
-                                provider = "FASTPATH",
-                                latencyMs = System.currentTimeMillis() - stepStartTime,
-                                tokensUsed = 0,
-                                verifiedSuccess = verification.isSuccessful,
-                                failureReason = if (!verification.isSuccessful) verification.reason else null
-                            )
-                        )
-
-                        if (executed is AniobAction.Finish || executed is AniobAction.Fail) {
-                            if (executed is AniobAction.Finish) {
-                                val verdict = verifyProvisionalFinish(executed, step.screenAfter, currentStep + 1, resolvedCriteria)
-                                if (!verdict.isExpected) {
-                                    finishRejections++
-                                    if (finishRejections < StepPipeline.MAX_REJECTED_FINISHES) {
-                                        _uiState.update { it.copy(statusMessage = "Finish rejected (${finishRejections}/${StepPipeline.MAX_REJECTED_FINISHES}): ${verdict.reason}") }
-                                        screenBefore = step.screenAfter
-                                        currentStep++
-                                        continue
-                                    }
-                                    finalSuccess = false
-                                    break
-                                }
-                            }
-                            finalSuccess = executed is AniobAction.Finish
-                            break
-                        }
-                        screenBefore = step.screenAfter
-                        currentStep++
                     }
-
                     is AniobExecutionRouter.ExecutionPlanResult.SkillStepExecution -> {
                         primaryProvider = "SKILL"
                         decisionReason = ladderResult.reason
                         _uiState.update { it.copy(statusMessage = "Executing Skill '${ladderResult.skill.name}' step ${currentStep + 1}...") }
-
-                        val action = ladderResult.action
-                        val step = executeVerifyAndRecover(a11y, action, task.clarifiedGoal, currentScreen)
-                        val executed = step.executedAction
-                        val verification = step.verification
-                        screenReads++; screenCaptureCount++
-                        actionsDispatched++
-                        recordTrajectory(
-                            stepIndex = currentStep + 1,
-                            observation = "screen ${step.screenAfter.treeHash.take(6)} after skill ${executed.toolName}",
-                            action = executed,
-                            provider = "SKILL",
-                            latencyMs = System.currentTimeMillis() - stepStartTime,
-                            screenHash = step.screenAfter.treeHash,
-                            verified = verification.isExpected
-                        )
-                        observationPolicy.recordActionOutcome(executed, currentScreen.packageName, verification.isSuccessful)
-
-                        addStepRecord(
-                            AniobStepRecord(
-                                stepIndex = currentStep + 1,
-                                screenHash = currentScreen.treeHash,
-                                action = executed,
-                                provider = "SKILL",
-                                latencyMs = System.currentTimeMillis() - stepStartTime,
-                                tokensUsed = 0,
-                                verifiedSuccess = verification.isSuccessful,
-                                failureReason = if (!verification.isSuccessful) verification.reason else null
-                            )
-                        )
-
-                        if (executed is AniobAction.Finish || executed is AniobAction.Fail) {
-                            if (executed is AniobAction.Finish) {
-                                val verdict = verifyProvisionalFinish(executed, step.screenAfter, currentStep + 1, resolvedCriteria)
-                                if (!verdict.isExpected) {
-                                    finishRejections++
-                                    if (finishRejections < StepPipeline.MAX_REJECTED_FINISHES) {
-                                        _uiState.update { it.copy(statusMessage = "Finish rejected (${finishRejections}/${StepPipeline.MAX_REJECTED_FINISHES}): ${verdict.reason}") }
-                                        screenBefore = step.screenAfter
-                                        currentStep++
-                                        continue
-                                    }
-                                    finalSuccess = false
-                                    break
-                                }
-                            }
-                            finalSuccess = executed is AniobAction.Finish
-                            break
+                        proposal = StepPipeline.Proposal.Skill(ladderResult.action, skillName = ladderResult.skill.name)
+                        targetNode = ladderResult.action.semanticTarget()?.let {
+                            com.aniob.core.execution.AniobActionExecutor.resolveTarget(ladderResult.action, currentScreen)?.node
                         }
-                        screenBefore = step.screenAfter
-                        currentStep++
                     }
-
                     is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch -> {
                         val decision = ladderResult.decision
                         primaryProvider = when (decision.target) {
@@ -1426,7 +1399,6 @@ class AniobViewModel(
                             else -> "MOCK"
                         }
                         decisionReason = decision.reason
-
                         _uiState.update {
                             it.copy(
                                 statusMessage = "Routed to $primaryProvider: ${decision.reason}",
@@ -1434,51 +1406,33 @@ class AniobViewModel(
                                 lastProviderUsed = primaryProvider
                             )
                         }
-
-                        // Invoke provider (Local LiteRT/llama.cpp, Omniroute Cloud, or Mock fallback).
-                        // The planning agent's condensed TaskProgress summary stands in for the
-                        // full interleaved observation history (prefrontal-cortex condensation).
                         val planningSummary = ladderResult.progressSummary ?: task.clarifiedGoal
                         if (decision.target == RouteTarget.OMNIROUTE_CLOUD) escalations++
-                        // Truthful provider label: only claim LOCAL_SLM when the engine is actually
-                        // loaded AND can drive actions. An engine that only answers must not move
-                        // the UI, so it is quarantined to the mock rung with the real reason logged.
+
                         val localCaps = if (decision.target == RouteTarget.LOCAL_SLM) localLlmClient.capabilities() else null
                         val localCanDrive = decision.target == RouteTarget.LOCAL_SLM &&
                             localLlmClient.isModelLoaded() && (localCaps?.canDriveActions == true)
                         if (decision.target == RouteTarget.LOCAL_SLM && !localCanDrive) {
-                            app.eventLogger.warn(
-                                "AniobViewModel",
-                                "Local engine quarantined: ${localCaps?.reason ?: "model not loaded"}"
-                            )
+                            app.eventLogger.warn("AniobViewModel", "Local engine quarantined: ${localCaps?.reason ?: "model not loaded"}")
                             primaryProvider = "MOCK"
                             decisionReason = "local_quarantined: ${localCaps?.reason ?: "model not loaded"}"
                             _uiState.update {
-                                it.copy(
-                                    lastProviderUsed = primaryProvider,
-                                    lastRoutingReason = decisionReason
-                                )
+                                it.copy(lastProviderUsed = primaryProvider, lastRoutingReason = decisionReason)
                             }
                         }
-                        val action = if (localCanDrive) {
-                            // Real on-device generation. A missing/broken engine resolves to an
-                            // explicit Fail carrying a user-actionable reason - never a fake tap.
-                            val generation = localLlmClient.generateStepResult(
-                                configLoader.prompt("system_prompt.txt")
-                                    ?: "System: Android Agent. Reply with a single JSON tool call.",
+
+                        val plannedAction = if (localCanDrive) {
+                            val gen = localLlmClient.generateStepResult(
+                                configLoader.prompt("system_prompt.txt") ?: "System: Android Agent. Reply with a single JSON tool call.",
                                 planningSummary
                             )
                             totalTokens += 80
-                            val structured = AniobLocalActionResolver.resolveStructured(generation, currentScreen)
+                            val structured = AniobLocalActionResolver.resolveStructured(gen, currentScreen)
                             if (structured.usedFallback) {
-                                app.eventLogger.warn(
-                                    "AniobViewModel",
-                                    "Local SLM produced no schema-valid action: ${structured.reason}"
-                                )
+                                app.eventLogger.warn("AniobViewModel", "Local SLM produced no schema-valid action: ${structured.reason}")
                             }
                             structured.action
                         } else if (decision.target == RouteTarget.LOCAL_SLM) {
-                            // Ladder chose local but the engine is unusable - mock rung acts, labelled MOCK.
                             mockProvider.planNextStep(planningSummary, currentStep, currentScreen)
                         } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD && _uiState.value.omnirouteApiKey.isNotBlank()) {
                             val omniroute = AniobOmniRouteProvider(
@@ -1490,14 +1444,12 @@ class AniobViewModel(
                             totalTokens += 150
                             raw.fold(
                                 onSuccess = { text ->
-                                    // Cloud text and local text share ONE parse-or-repair boundary.
                                     var structured = AniobStructuredOutput.parseOrRepair(
                                         raw = text,
                                         screenState = currentScreen,
                                         decode = AniobDecodeConfig.forRole(AniobDecodeConfig.Role.PLANNER)
                                     )
                                     if (structured.usedFallback) {
-                                        // One suspend repair retry, then the deterministic fallback stands.
                                         val repaired = runCatching {
                                             omniroute.getNextActionRaw(
                                                 systemPrompt,
@@ -1518,7 +1470,6 @@ class AniobViewModel(
                                     structured.action
                                 },
                                 onFailure = {
-                                    // Cloud unreachable - fall back to mock, but never claim CLOUD.
                                     primaryProvider = "MOCK"
                                     _uiState.update { st -> st.copy(lastProviderUsed = primaryProvider) }
                                     mockProvider.planNextStep(planningSummary, currentStep, currentScreen)
@@ -1529,153 +1480,155 @@ class AniobViewModel(
                         }
 
                         // Watchdog check
-                        watchdog.record(currentScreen.treeHash, action)
+                        watchdog.record(currentScreen.treeHash, plannedAction)
                         val loopDetected = watchdog.isLoopDetected()
-                        if (loopDetected) {
-                            // Reflection reflex: loop gives a negative reward; force remedial BACK.
+                        val effectiveAction = if (loopDetected) {
                             watchdog.reset()
-                            executeActionSync(a11y, AniobAction.PressKey(com.aniob.core.domain.KeyType.BACK))
-                            delay(400)
+                            AniobAction.PressKey(com.aniob.core.domain.KeyType.BACK)
+                        } else {
+                            plannedAction
                         }
 
-                        // Safety Interceptor check
-                        val intercept = AniobSafetyInterceptor.evaluateAction(
-                            action = action,
-                            targetNode = null,
-                            screenState = currentScreen,
-                            screenFingerprint = currentScreen.treeHash
-                        )
-
-                        if (!intercept.isAllowed) {
-                            blockedRecords.add(BlockedRecord(fingerprint = currentScreen.treeHash, rule = intercept.reason, at = System.currentTimeMillis()))
-                            _uiState.update { it.copy(blockedActions = blockedRecords.toList()) }
-                            recordTrajectory(
-                                stepIndex = currentStep + 1,
-                                observation = "blocked by safety interceptor",
-                                action = action,
-                                provider = primaryProvider,
-                                latencyMs = System.currentTimeMillis() - stepStartTime,
-                                screenHash = currentScreen.treeHash,
-                                verified = false
-                            )
-                            val stepRecord = AniobStepRecord(
-                                stepIndex = currentStep + 1,
-                                screenHash = currentScreen.treeHash,
-                                action = action,
-                                provider = primaryProvider,
-                                latencyMs = System.currentTimeMillis() - stepStartTime,
-                                tokensUsed = if (primaryProvider == "OMNIROUTE_CLOUD") 150 else 0,
-                                verifiedSuccess = false,
-                                failureReason = intercept.reason
-                            )
-                            addStepRecord(stepRecord)
-                            finalSuccess = false
-                            break
+                        proposal = StepPipeline.Proposal.Model(effectiveAction, primaryProvider)
+                        targetNode = effectiveAction.semanticTarget()?.let {
+                            com.aniob.core.execution.AniobActionExecutor.resolveTarget(effectiveAction, currentScreen)?.node
                         }
-
-                        if (intercept.requiresConfirmation || needsApproval(intercept.riskTier, action)) {
-                            val confirmReq = buildConfirmRequest(
-                                what = action.toString().take(80),
-                                why = intercept.reason,
-                                risk = riskFromTier(intercept.riskTier, _uiState.value.safetyLevel),
-                                details = "Action: ${action.toolName} · tier: ${intercept.riskTier}"
-                            )
-                            val decision = requestConfirmation(confirmReq)
-                            if (decision == ConfirmDecision.DENY || decision == ConfirmDecision.TIMEOUT_DENY) {
-                                val stepRecord = AniobStepRecord(
-                                    stepIndex = currentStep + 1,
-                                    screenHash = currentScreen.treeHash,
-                                    action = action,
-                                    provider = primaryProvider,
-                                    latencyMs = System.currentTimeMillis() - stepStartTime,
-                                    tokensUsed = 0,
-                                    verifiedSuccess = false,
-                                    failureReason = "You denied this step"
-                                )
-                                addStepRecord(stepRecord)
-                                _uiState.update { it.copy(statusMessage = "You denied this step") }
-                                finalSuccess = false
-                                break
-                            }
-                        }
-
-                        val step = executeVerifyAndRecover(a11y, action, task.clarifiedGoal, currentScreen)
-                        val executed = step.executedAction
-                        val screenAfter = step.screenAfter
-                        val verification = step.verification
-                        screenReads++; screenCaptureCount++
-                        actionsDispatched++
-                        val reflection = reflectionAgent.reflect(currentScreen, screenAfter, executed, verification.isExpected)
-                        val remedial = reflection.remedialAction
-                        if (!reflection.isExpected && remedial != null) {
-                            executeActionSync(a11y, remedial)
-                        }
-                        observationPolicy.recordActionOutcome(executed, currentScreen.packageName, verification.isSuccessful)
-                        recordTrajectory(
-                            stepIndex = currentStep + 1,
-                            observation = "screen ${screenAfter.treeHash.take(6)} after ${executed.toolName}",
-                            action = executed,
-                            provider = primaryProvider,
-                            latencyMs = System.currentTimeMillis() - stepStartTime,
-                            screenHash = screenAfter.treeHash,
-                            verified = verification.isExpected
-                        )
-
-                        val stepSuccess = verification.isSuccessful && !loopDetected
-                        if (primaryProvider == "LOCAL_SLM") {
-                            if (stepSuccess) localFailCount = 0 else localFailCount++
-                            app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
-                                .edit()
-                                .putInt("local_fail_count", localFailCount)
-                                .apply()
-                        }
-
-                        val stepRecord = AniobStepRecord(
-                            stepIndex = currentStep + 1,
-                            screenHash = currentScreen.treeHash,
-                            action = executed,
-                            provider = primaryProvider,
-                            latencyMs = System.currentTimeMillis() - stepStartTime,
-                            tokensUsed = if (primaryProvider == "OMNIROUTE_CLOUD") 150 else 0,
-                            verifiedSuccess = stepSuccess,
-                            failureReason = if (loopDetected) "Watchdog loop detected (N=3 repeated action)" else if (!verification.isSuccessful) verification.reason else null,
-                            reflectorInvoked = loopDetected
-                        )
-                        addStepRecord(stepRecord)
-
-                        if (executed is AniobAction.Finish || executed is AniobAction.Fail) {
-                            if (executed is AniobAction.Finish) {
-                                val verdict = verifyProvisionalFinish(executed, screenAfter, currentStep + 1, resolvedCriteria)
-                                if (!verdict.isExpected) {
-                                    finishRejections++
-                                    if (finishRejections < StepPipeline.MAX_REJECTED_FINISHES) {
-                                        _uiState.update { it.copy(statusMessage = "Finish rejected (${finishRejections}/${StepPipeline.MAX_REJECTED_FINISHES}): ${verdict.reason}") }
-                                        screenBefore = screenAfter
-                                        currentStep++
-                                        continue
-                                    }
-                                    finalSuccess = false
-                                    break
-                                }
-                            }
-                            finalSuccess = executed is AniobAction.Finish
-                            break
-                        }
-
-                        screenBefore = screenAfter
-                        currentStep++
                     }
                 }
+
+                persistRunningMarker(task, currentStep + 1, proposal.action.describeAction())
+
+                val captureLambda: suspend () -> AniobScreenState = {
+                    screenReads++; screenCaptureCount++
+                    a11y?.captureCurrentScreenState() ?: currentScreen
+                }
+
+                val dispatchLambda: suspend (AniobAction) -> StepPipeline.DispatchOutcome = { act ->
+                    when (act) {
+                        is AniobAction.Finish -> {
+                            StepPipeline.DispatchOutcome(dispatched = true, reason = act.summary)
+                        }
+                        is AniobAction.Fail -> {
+                            StepPipeline.DispatchOutcome(dispatched = false, reason = act.reason)
+                        }
+                        else -> {
+                            if (proposal is StepPipeline.Proposal.DirectIntent && ladderResult is AniobExecutionRouter.ExecutionPlanResult.DirectIntent) {
+                                dispatchSystemIntent(ladderResult.shortcut)
+                                AniobWaitForIdle.waitForIdle(800)
+                                val screenAfter = a11y?.captureCurrentScreenState()
+                                actionsDispatched++
+                                StepPipeline.DispatchOutcome(dispatched = true, screenAfter = screenAfter)
+                            } else {
+                                val ok = if (a11y != null) executeActionSync(a11y, act) else true
+                                actionsDispatched++
+                                AniobWaitForIdle.waitForIdle(600)
+                                val screenAfter = a11y?.captureCurrentScreenState()
+                                StepPipeline.DispatchOutcome(dispatched = ok, screenAfter = screenAfter)
+                            }
+                        }
+                    }
+                }
+
+                val confirmLambda: suspend (String) -> Boolean = { actionDesc ->
+                    val confirmReq = buildConfirmRequest(
+                        what = proposal.action.toString().take(80),
+                        why = "Action requires user confirmation",
+                        risk = ConfirmRequest.Risk.HIGH,
+                        details = actionDesc,
+                        taskId = task.id,
+                        payload = proposal.action.toString(),
+                        target = targetNode?.text?.take(40) ?: ""
+                    )
+                    val decision = requestConfirmation(confirmReq)
+                    decision == ConfirmDecision.APPROVE_ONCE || decision == ConfirmDecision.APPROVE_FOR_TASK
+                }
+
+                val res = stepPipe.executeStep(
+                    ctx = taskContext,
+                    planningScreen = currentScreen,
+                    proposal = proposal,
+                    capture = captureLambda,
+                    dispatch = dispatchLambda,
+                    confirm = confirmLambda,
+                    targetNode = targetNode
+                )
+                stepResult = res
+                taskContext = res.nextCtx
+                observationPolicy.recordActionOutcome(proposal.action, currentScreen.packageName, res.verification?.isSuccessful == true)
+
+                if (primaryProvider == "LOCAL_SLM") {
+                    if (res.verification?.isSuccessful == true) localFailCount = 0 else localFailCount++
+                    app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
+                        .edit()
+                        .putInt("local_fail_count", localFailCount)
+                        .apply()
+                }
+
+                if (res.terminalState == StepResult.TerminalState.SUCCESS) {
+                    finalOutcome = Outcome.SUCCESS
+                    terminalReason = res.verification?.reason ?: "Verified successfully"
+                    break
+                } else if (res.terminalState == StepResult.TerminalState.FAIL) {
+                    finalOutcome = Outcome.FAILED
+                    terminalReason = res.verification?.reason ?: "Step failed or rejected"
+                    break
+                }
+
+                screenBefore = res.nextCtx.trajectory.lastOrNull()?.let { currentScreen }
+                currentStep++
             }
         } finally {
             AniobAccessibilityService.isTaskActive = false
         }
 
-        val totalDuration = System.currentTimeMillis() - startTime
-        val resultSummary = if (finalSuccess) "Task completed in ${totalDuration}ms (${currentStep + 1} steps)" else "Task terminated"
+        if (taskGeneration != activeGeneration) {
+            return
+        }
 
-        // Hippocampus: sleep-time consolidation on success, natural-selection prune on failure.
-        val consolidatedSkill = if (finalSuccess) {
+        val finalScreen = a11y?.captureCurrentScreenState() ?: screenBefore ?: AniobScreenState(packageName = "com.aniob.app")
+        val criteriaEvaluations = resolvedCriteria?.evaluateCriteria(finalScreen, currentStep) ?: emptyList()
+        val evidenceItems = criteriaEvaluations.map { ev ->
+            EvidenceItem(
+                label = ev.description,
+                met = ev.state == com.aniob.core.domain.CriterionState.PASSED,
+                detail = ev.detail,
+                state = ev.state
+            )
+        }
+
+        if (finalOutcome == null) {
+            finalOutcome = when {
+                !_uiState.value.isRunning -> Outcome.STOPPED
+                currentStep >= maxSteps -> {
+                    terminalReason = "Maximum steps ($maxSteps) reached"
+                    Outcome.FAILED
+                }
+                stepResult?.terminalState == StepResult.TerminalState.SUCCESS -> {
+                    if (resolvedCriteria.hasObservableCheck) {
+                        val anyFailed = criteriaEvaluations.any { it.state == com.aniob.core.domain.CriterionState.FAILED }
+                        if (anyFailed) Outcome.FAILED else Outcome.SUCCESS
+                    } else {
+                        Outcome.UNVERIFIED
+                    }
+                }
+                stepResult?.terminalState == StepResult.TerminalState.FAIL -> Outcome.FAILED
+                else -> Outcome.FAILED
+            }
+        } else if (finalOutcome == Outcome.SUCCESS && !resolvedCriteria.hasObservableCheck) {
+            finalOutcome = Outcome.UNVERIFIED
+        }
+
+        val totalDuration = System.currentTimeMillis() - startTime
+        val isSuccess = (finalOutcome == Outcome.SUCCESS)
+        val resultSummary = when (finalOutcome) {
+            Outcome.SUCCESS -> "Task completed in ${totalDuration}ms (${currentStep + 1} steps)"
+            Outcome.UNVERIFIED -> "Task finished (${currentStep + 1} steps), but outcome could not be verified"
+            Outcome.STOPPED -> "Task stopped"
+            Outcome.INTERRUPTED -> "Task interrupted"
+            Outcome.FAILED -> "Task terminated: ${terminalReason.ifBlank { "Unmet criteria" }}"
+        }
+
+        val consolidatedSkill = if (isSuccess) {
             hippocampusTracker.consolidateOnSuccess(
                 taskId = task.id,
                 prompt = task.clarifiedGoal,
@@ -1700,9 +1653,16 @@ class AniobViewModel(
             providerDecisionReason = decisionReason,
             lastRoutingReason = _uiState.value.lastRoutingReason
         )
-        // Push the pinned terminal snapshot into the BrowserUse metrics stream.
+
+        val execOutcome = when (finalOutcome) {
+            Outcome.SUCCESS -> ExecOutcome.SUCCESS
+            Outcome.STOPPED -> ExecOutcome.STOPPED
+            Outcome.INTERRUPTED -> ExecOutcome.INTERRUPTED
+            Outcome.UNVERIFIED -> ExecOutcome.UNVERIFIED
+            Outcome.FAILED -> ExecOutcome.FAILED_VERIFICATION
+        }
         ExecReport(
-            outcome = if (finalSuccess) ExecOutcome.SUCCESS else ExecOutcome.FAILED_VERIFICATION,
+            outcome = execOutcome,
             reason = resultSummary,
             screenReads = screenReads,
             actions = actionsDispatched,
@@ -1720,31 +1680,53 @@ class AniobViewModel(
             )
         }
 
-        // Auto-return to chatroom and stop foreground service
-        AniobBackgroundController.onTaskFinished(app, resultSummary)
+        val summaryCard = buildSummary(
+            prompt = task.rawPrompt,
+            outcome = finalOutcome,
+            steps = currentStep + 1,
+            durationMs = totalDuration,
+            provider = primaryProvider,
+            evidence = evidenceItems,
+            reason = terminalReason.ifBlank { null }
+        )
+        postSummaryCard(summaryCard)
+        clearRunningMarker()
 
-        // Add assistant completion message to chat
+        AniobBackgroundController.onTaskFinished(app, resultSummary, isSuccess = isSuccess)
+
+        val chatBadge = when (finalOutcome) {
+            Outcome.SUCCESS -> "Success"
+            Outcome.UNVERIFIED -> "Unverified"
+            Outcome.STOPPED -> "Stopped"
+            Outcome.INTERRUPTED -> "Interrupted"
+            Outcome.FAILED -> "Failed"
+        }
         val assistantMessage = ChatMessage(
             id = "msg_asst_${System.currentTimeMillis()}",
             role = "assistant",
-            content = "Completed '${task.rawPrompt}' via $primaryProvider. $resultSummary",
+            content = when (finalOutcome) {
+                Outcome.SUCCESS -> "Completed '${task.rawPrompt}' via $primaryProvider. $resultSummary"
+                Outcome.UNVERIFIED -> "Executed '${task.rawPrompt}' via $primaryProvider, but completion could not be verified: ${terminalReason.ifBlank { "No observable criteria" }}"
+                Outcome.STOPPED -> "Stopped '${task.rawPrompt}'. Earlier changes were not undone."
+                Outcome.INTERRUPTED -> "Interrupted '${task.rawPrompt}'."
+                Outcome.FAILED -> "Failed '${task.rawPrompt}': ${terminalReason.ifBlank { "Unmet criteria" }}"
+            },
+            badge = chatBadge,
             stepIndex = currentStep + 1
         )
 
-        // Persist session metrics to Room database
         viewModelScope.launch {
             app.metricsCollector.recordSession(
                 taskId = task.id,
                 prompt = task.rawPrompt,
-                isSuccess = finalSuccess,
+                isSuccess = isSuccess,
                 steps = currentStep + 1,
                 durationMs = totalDuration,
                 tokensUsed = totalTokens,
                 providerUsed = primaryProvider,
                 decisionReason = decisionReason
             )
-            // Learning (finding #5/#8): only verified success becomes FastPath knowledge.
-            if (finalSuccess) {
+            if (isSuccess) {
                 val trajectory = verifiedActions.toList()
                 learningPipeline.onTaskSuccess(
                     TaskContext(instruction = task.rawPrompt, successCriteria = resolvedCriteria),
@@ -1786,10 +1768,15 @@ class AniobViewModel(
     ): DeterministicVerifier.VerificationResult =
         DeterministicVerifier.verifyFinish(criteria, finalScreen, steps)
 
-    private suspend fun executeActionSync(a11y: AniobAccessibilityService?, action: AniobAction) {
+    private suspend fun executeActionSync(a11y: AniobAccessibilityService?, action: AniobAction): Boolean {
         // Block until the UI is quiescent so we never dispatch into a running animation.
         AniobWaitForIdle.waitForIdle(1000)
-        a11y?.executeAction(action) { /* callback */ }
+        if (a11y == null) return false
+        val deferred = CompletableDeferred<Boolean>()
+        a11y.executeAction(action) { success ->
+            deferred.complete(success)
+        }
+        return withTimeoutOrNull(SWIPE_CALLBACK_TIMEOUT_SECONDS * 1000L) { deferred.await() } ?: false
     }
 
     private data class VerifiedStep(
@@ -1952,10 +1939,35 @@ class AniobViewModel(
     }
 
     fun stopCurrentTask() {
+        val stoppingGen = ++activeGeneration
+        activeTaskJob?.cancel()
+        activeTaskJob = null
+
+        pendingConfirmation?.complete(ConfirmDecision.DENY)
+        pendingConfirmation = null
+
+        taskBlockedFingerprints.forEach { com.aniob.core.safety.AniobSafetyInterceptor.unblockFingerprint(it) }
+        taskBlockedFingerprints.clear()
+
         AniobAccessibilityService.isTaskActive = false
-        hippocampusTracker.onFailure() // prune interrupted episode
-        AniobBackgroundController.onTaskFinished(app, "Stopped by user")
-        _uiState.update { it.copy(isRunning = false, statusMessage = "Stopped by user") }
+        AniobForegroundService.clearConfirmation(app)
+        hippocampusTracker.onFailure()
+
+        val currentTask = _uiState.value.activeTask
+        val stoppedSummary = buildSummary(
+            prompt = currentTask?.rawPrompt ?: "Task",
+            outcome = Outcome.STOPPED,
+            steps = _uiState.value.currentStep,
+            durationMs = 0L,
+            provider = _uiState.value.lastProviderUsed.ifBlank { "NONE" },
+            evidence = emptyList(),
+            reason = "Stopped. Earlier changes were not undone."
+        )
+        postSummaryCard(stoppedSummary)
+        clearRunningMarker()
+
+        AniobBackgroundController.onTaskFinished(app, "Stopped by user", isSuccess = false)
+        _uiState.update { it.copy(isRunning = false, statusMessage = "Stopped. Earlier changes were not undone.") }
     }
 
     companion object {

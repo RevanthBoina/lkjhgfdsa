@@ -1,5 +1,6 @@
 package com.aniob.core.execution
 
+import com.aniob.core.config.AgentLimits
 import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.AniobNode
 import com.aniob.core.domain.AniobRect
@@ -8,6 +9,7 @@ import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.SuccessCriteria
 import com.aniob.core.domain.TaskContext
 import com.aniob.core.learning.LearningPipeline
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -44,12 +46,13 @@ class StepPipelineTest {
     )
 
     private fun pipeline(
+        limits: AgentLimits = AgentLimits.DEFAULT,
         learning: LearningPipeline = LearningPipeline.NoOp,
         records: MutableList<StepPipeline.StepRecord> = mutableListOf()
-    ) = StepPipeline(learning = learning, recordStep = { records += it })
+    ) = StepPipeline(limits = limits, learning = learning, recordStep = { records += it })
 
     @Test
-    fun `happy path dispatch and verify reports continue`() {
+    fun `happy path dispatch and verify reports continue`() = runBlocking {
         val before = screen("com.a", "Settings")
         val after = screen("com.a", "Display")
         val result = pipeline().executeStep(
@@ -66,7 +69,7 @@ class StepPipelineTest {
     }
 
     @Test
-    fun `finish without evidence keeps working instead of succeeding`() {
+    fun `finish without evidence keeps working instead of succeeding`() = runBlocking {
         val screenNow = screen("com.a", "Settings")
         // Criteria demand "Display", the screen shows only "Settings" -> deterministic reject.
         val result = pipeline().executeStep(
@@ -82,7 +85,7 @@ class StepPipelineTest {
     }
 
     @Test
-    fun `finish with evidence succeeds`() {
+    fun `finish with evidence succeeds`() = runBlocking {
         val screenNow = screen("com.a", "Display", "Brightness")
         val result = pipeline().executeStep(
             ctx = ctx,
@@ -96,7 +99,7 @@ class StepPipelineTest {
     }
 
     @Test
-    fun `three rejected finishes fail the task`() {
+    fun `three rejected finishes fail the task`() = runBlocking {
         val screenNow = screen("com.a", "Settings")
         val pipe = pipeline()
         var c = ctx
@@ -118,10 +121,11 @@ class StepPipelineTest {
     }
 
     @Test
-    fun `blocked action fails fast and never dispatches`() {
+    fun `blocked action fails fast and never dispatches`() = runBlocking {
         var dispatched = false
         val paymentScreen = screen("com.a", "Checkout")
-        val result = pipeline().executeStep(
+        val records = mutableListOf<StepPipeline.StepRecord>()
+        val result = pipeline(records = records).executeStep(
             ctx = ctx,
             planningScreen = paymentScreen,
             proposal = StepPipeline.Proposal.Model(tap("Checkout"), "CLOUD"),
@@ -130,10 +134,32 @@ class StepPipelineTest {
         )
         assertFalse("blocked actions must not reach the device", dispatched)
         assertEquals(StepResult.TerminalState.FAIL, result.terminalState)
+        assertFalse("Record must show dispatched = false", records.first().dispatched)
     }
 
     @Test
-    fun `declined confirmation fails without dispatch`() {
+    fun `default confirmation rejects and never dispatches`() = runBlocking {
+        var dispatched = false
+        val sendScreen = screen("com.a", "Send")
+        val records = mutableListOf<StepPipeline.StepRecord>()
+        val result = pipeline(records = records).executeStep(
+            ctx = ctx,
+            planningScreen = sendScreen,
+            proposal = StepPipeline.Proposal.Model(
+                AniobAction.ConfirmWithUser(message = "Send message to unknown contact?"),
+                "CLOUD"
+            ),
+            capture = { sendScreen },
+            dispatch = { dispatched = true; StepPipeline.DispatchOutcome(true) }
+            // Note: confirm parameter omitted -> MUST default to false!
+        )
+        assertFalse("Default confirmation must not approve", dispatched)
+        assertEquals(StepResult.TerminalState.FAIL, result.terminalState)
+        assertFalse(records.first().dispatched)
+    }
+
+    @Test
+    fun `declined confirmation fails without dispatch`() = runBlocking {
         var dispatched = false
         val sendScreen = screen("com.a", "Send")
         val result = pipeline().executeStep(
@@ -152,9 +178,61 @@ class StepPipelineTest {
     }
 
     @Test
-    fun `safety sees the resolved node not just the action string`() {
-        // The sensitive-data rule only fires when the *resolved* node is an editable field.
-        // Without node-awareness this input would slip through with isEditable=null.
+    fun `capture failure never uses stale planning screen and fails fast`() = runBlocking {
+        var dispatched = false
+        val stalePlanning = screen("com.a", "StaleScreen")
+        val records = mutableListOf<StepPipeline.StepRecord>()
+        val result = pipeline(records = records).executeStep(
+            ctx = ctx,
+            planningScreen = stalePlanning,
+            proposal = StepPipeline.Proposal.Model(tap("Settings"), "LOCAL"),
+            capture = { throw RuntimeException("Accessibility window vanished") },
+            dispatch = { dispatched = true; StepPipeline.DispatchOutcome(true) }
+        )
+        assertFalse("Dispatch must not occur on failed capture", dispatched)
+        assertEquals(StepResult.TerminalState.FAIL, result.terminalState)
+        assertFalse(records.first().dispatched)
+    }
+
+    @Test
+    fun `dispatch outcome false prevents verified action`() = runBlocking {
+        val before = screen("com.a", "Settings")
+        val records = mutableListOf<StepPipeline.StepRecord>()
+        val result = pipeline(records = records).executeStep(
+            ctx = ctx,
+            planningScreen = before,
+            proposal = StepPipeline.Proposal.Model(tap("Settings"), "LOCAL"),
+            capture = { before },
+            dispatch = { StepPipeline.DispatchOutcome(dispatched = false, reason = "service disconnected") }
+        )
+        assertEquals(StepResult.TerminalState.FAIL, result.terminalState)
+        assertFalse(records.first().dispatched)
+        assertFalse(records.first().verified)
+    }
+
+    @Test
+    fun `repeated failure does not call withSuccess to reset counter`() = runBlocking {
+        val before = screen("com.a", "Settings")
+        val after = screen("com.a", "Settings") // no-effect -> failure
+        val pipe = pipeline(limits = AgentLimits(watchdogLoopThreshold = 2))
+
+        var currentCtx = ctx
+        repeat(3) {
+            val res = pipe.executeStep(
+                ctx = currentCtx,
+                planningScreen = before,
+                proposal = StepPipeline.Proposal.Model(tap("Settings"), "LOCAL"),
+                capture = { before },
+                dispatch = { StepPipeline.DispatchOutcome(true, screenAfter = after) }
+            )
+            currentCtx = res.nextCtx
+        }
+
+        assertTrue("Failure counter must not be reset by withSuccess on loop threshold", currentCtx.consecutiveFailures >= 2)
+    }
+
+    @Test
+    fun `safety sees the resolved node not just the action string`() = runBlocking {
         val editableNode = AniobNode(
             id = 1,
             className = "android.widget.EditText",
@@ -183,7 +261,33 @@ class StepPipelineTest {
     }
 
     @Test
-    fun `verified steps reach learning and successes persist trajectory`() {
+    fun `all four ladder routes enforce policy boundary on blocked payment`() = runBlocking {
+        val paymentScreen = screen("com.a", "Checkout")
+        val proposals = listOf(
+            StepPipeline.Proposal.DirectIntent(tap("Checkout")),
+            StepPipeline.Proposal.FastPath(tap("Checkout")),
+            StepPipeline.Proposal.Skill(tap("Checkout")),
+            StepPipeline.Proposal.Model(tap("Checkout"), "LOCAL")
+        )
+
+        for (proposal in proposals) {
+            var dispatched = false
+            val records = mutableListOf<StepPipeline.StepRecord>()
+            val result = pipeline(records = records).executeStep(
+                ctx = ctx,
+                planningScreen = paymentScreen,
+                proposal = proposal,
+                capture = { paymentScreen },
+                dispatch = { dispatched = true; StepPipeline.DispatchOutcome(true) }
+            )
+            assertFalse("${proposal.providerLabel} must block payment dispatch", dispatched)
+            assertEquals(StepResult.TerminalState.FAIL, result.terminalState)
+            assertFalse(records.first().dispatched)
+        }
+    }
+
+    @Test
+    fun `verified steps reach learning and successes persist trajectory`() = runBlocking {
         val learned = RecordingLearning()
         val screenNow = screen("com.a", "Display")
         pipeline(learning = learned).executeStep(
@@ -199,7 +303,7 @@ class StepPipelineTest {
     }
 
     @Test
-    fun `failed steps never reach the learning pipeline`() {
+    fun `failed steps never reach the learning pipeline`() = runBlocking {
         val learned = RecordingLearning()
         val before = screen("com.a", "Settings")
         val after = screen("com.a", "Settings") // unchanged -> no-effect
@@ -215,7 +319,7 @@ class StepPipelineTest {
     }
 
     @Test
-    fun `every step is recorded exactly once`() {
+    fun `every step is recorded exactly once`() = runBlocking {
         val records = mutableListOf<StepPipeline.StepRecord>()
         val before = screen("com.a", "Settings")
         val after = screen("com.a", "Display")

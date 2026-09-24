@@ -40,6 +40,8 @@ class AniobForegroundService : Service() {
         const val ACTION_CONFIRM_APPROVE = "com.aniob.app.action.CONFIRM_APPROVE"
         const val ACTION_CONFIRM_DENY = "com.aniob.app.action.CONFIRM_DENY"
         const val EXTRA_TASK_PROMPT = "extra_task_prompt"
+        const val EXTRA_TASK_ID = "extra_task_id"
+        const val EXTRA_REQUEST_ID = "extra_request_id"
 
         private const val CONFIRM_NOTIFICATION_ID = 8768
 
@@ -51,6 +53,9 @@ class AniobForegroundService : Service() {
 
         /** UX-4: carries the user's approval decision back into the suspending confirm gate. */
         @Volatile var onConfirmDecision: ((com.aniob.app.ui.model.ConfirmDecision) -> Unit)? = null
+
+        /** Carries the user's approval decision back with task and request IDs to prevent stale approvals. */
+        @Volatile var onConfirmDecisionWithIds: ((com.aniob.app.ui.model.ConfirmDecision, String?, String?) -> Unit)? = null
 
         @Volatile private var currentPrompt: String = ""
         @Volatile private var currentStep: Int = 0
@@ -118,8 +123,16 @@ class AniobForegroundService : Service() {
         }
 
         /** Quiet Return completion: Done-channel notification with a deep link (UX-6). */
-        fun finishWithNotification(context: Context, summary: String) {
+        fun finishWithNotification(context: Context, summary: String, isSuccess: Boolean = true) {
             stopService(context)
+            if (isSuccess) {
+                notifyFinished(context, summary)
+            } else {
+                notifyFailure(context, summary)
+            }
+        }
+
+        private fun notifyFinished(context: Context, summary: String) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
             val intent = Intent(context, MainActivity::class.java).apply {
                 action = Intent.ACTION_VIEW
@@ -187,12 +200,20 @@ class AniobForegroundService : Service() {
 
             val approvePi = PendingIntent.getService(
                 context, 8,
-                Intent(context, AniobForegroundService::class.java).apply { action = ACTION_CONFIRM_APPROVE },
+                Intent(context, AniobForegroundService::class.java).apply {
+                    action = ACTION_CONFIRM_APPROVE
+                    putExtra(EXTRA_TASK_ID, request.taskId)
+                    putExtra(EXTRA_REQUEST_ID, request.id)
+                },
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             val denyPi = PendingIntent.getService(
                 context, 9,
-                Intent(context, AniobForegroundService::class.java).apply { action = ACTION_CONFIRM_DENY },
+                Intent(context, AniobForegroundService::class.java).apply {
+                    action = ACTION_CONFIRM_DENY
+                    putExtra(EXTRA_TASK_ID, request.taskId)
+                    putExtra(EXTRA_REQUEST_ID, request.id)
+                },
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
@@ -300,13 +321,19 @@ class AniobForegroundService : Service() {
                 return START_STICKY
             }
             ACTION_CONFIRM_APPROVE -> {
+                val taskId = intent?.getStringExtra(EXTRA_TASK_ID)
+                val reqId = intent?.getStringExtra(EXTRA_REQUEST_ID)
                 clearConfirmation(this)
-                onConfirmDecision?.invoke(com.aniob.app.ui.model.ConfirmDecision.APPROVE_ONCE)
+                onConfirmDecisionWithIds?.invoke(com.aniob.app.ui.model.ConfirmDecision.APPROVE_ONCE, taskId, reqId)
+                    ?: onConfirmDecision?.invoke(com.aniob.app.ui.model.ConfirmDecision.APPROVE_ONCE)
                 return START_STICKY
             }
             ACTION_CONFIRM_DENY -> {
+                val taskId = intent?.getStringExtra(EXTRA_TASK_ID)
+                val reqId = intent?.getStringExtra(EXTRA_REQUEST_ID)
                 clearConfirmation(this)
-                onConfirmDecision?.invoke(com.aniob.app.ui.model.ConfirmDecision.DENY)
+                onConfirmDecisionWithIds?.invoke(com.aniob.app.ui.model.ConfirmDecision.DENY, taskId, reqId)
+                    ?: onConfirmDecision?.invoke(com.aniob.app.ui.model.ConfirmDecision.DENY)
                 return START_STICKY
             }
             else -> {

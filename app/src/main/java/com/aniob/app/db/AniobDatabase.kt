@@ -10,9 +10,10 @@ import androidx.room.RoomDatabase
         SessionScoreEntity::class,
         AppKnowledgeBaseEntity::class,
         TipEntity::class,
-        LogEventEntity::class
+        LogEventEntity::class,
+        ActiveTaskEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AniobDatabase : RoomDatabase() {
@@ -20,6 +21,7 @@ abstract class AniobDatabase : RoomDatabase() {
     abstract fun appKnowledgeBaseDao(): AppKnowledgeBaseDao
     abstract fun tipDao(): TipDao
     abstract fun logEventDao(): LogEventDao
+    abstract fun activeTaskDao(): ActiveTaskDao
 
     companion object {
         @Volatile

@@ -102,4 +102,85 @@ class AniobSafetyInterceptorTest {
         assertEquals("LOW", result.riskTier)
         assertFalse(result.requiresConfirmation)
     }
+
+    @Test
+    fun testReadingPaymentHistoryNotBlocked() {
+        val historyNode = AniobNode(
+            id = 5,
+            className = "TextView",
+            text = "Payment History",
+            bounds = AniobRect(0, 0, 100, 50),
+            isClickable = true
+        )
+        val result = AniobSafetyInterceptor.evaluateAction(
+            action = AniobAction.Tap(SemanticTarget.SomIndex(5), thought = "view past payments"),
+            targetNode = historyNode,
+            screenState = screen(),
+            screenFingerprint = "fp_history"
+        )
+        assertTrue("Reading payment history must be allowed as a read-only navigation", result.isAllowed)
+        assertEquals("LOW", result.riskTier)
+    }
+
+    @Test
+    fun testVisiblePaymentControlBlockedDespiteInnocuousThought() {
+        // Model explanation is innocent ("view next screen"), but target node is a payment button ("Pay $50.00")
+        val payNode = AniobNode(
+            id = 10,
+            className = "Button",
+            text = "Pay $50.00",
+            bounds = AniobRect(0, 0, 100, 50),
+            isClickable = true
+        )
+        val result = AniobSafetyInterceptor.evaluateAction(
+            action = AniobAction.Tap(SemanticTarget.SomIndex(10), thought = "proceed to the next screen"),
+            targetNode = payNode,
+            screenState = screen(),
+            screenFingerprint = "fp_pay_control"
+        )
+        assertFalse("Visible payment control cannot evade policy through innocuous thought", result.isAllowed)
+        assertEquals("HIGH", result.riskTier)
+    }
+
+    @Test
+    fun testUnblockFingerprintOnlyRemovesTargetFingerprint() {
+        AniobSafetyInterceptor.clearBlockedFingerprints()
+        // Trigger two blocks
+        AniobSafetyInterceptor.evaluateAction(
+            action = AniobAction.Tap(SemanticTarget.SomIndex(1), thought = "pay now"),
+            targetNode = null,
+            screenState = screen(),
+            screenFingerprint = "fp_1"
+        )
+        AniobSafetyInterceptor.evaluateAction(
+            action = AniobAction.Tap(SemanticTarget.SomIndex(1), thought = "checkout order"),
+            targetNode = null,
+            screenState = screen(),
+            screenFingerprint = "fp_2"
+        )
+
+        assertTrue(AniobSafetyInterceptor.isFingerprintBlocked("fp_1"))
+        assertTrue(AniobSafetyInterceptor.isFingerprintBlocked("fp_2"))
+
+        // Unblock fp_1 only
+        AniobSafetyInterceptor.unblockFingerprint("fp_1")
+        assertFalse("fp_1 should be unblocked", AniobSafetyInterceptor.isFingerprintBlocked("fp_1"))
+        assertTrue("fp_2 should still be blocked", AniobSafetyInterceptor.isFingerprintBlocked("fp_2"))
+
+        AniobSafetyInterceptor.clearBlockedFingerprints()
+    }
+
+    @Test
+    fun testSkillRiskHighRequiresConfirmation() {
+        val result = AniobSafetyInterceptor.evaluateAction(
+            action = AniobAction.Tap(SemanticTarget.Text("Export Data")),
+            targetNode = null,
+            screenState = screen(),
+            screenFingerprint = "fp_skill",
+            skillRisk = "HIGH"
+        )
+        assertTrue(result.isAllowed)
+        assertTrue("High-risk skill must require confirmation", result.requiresConfirmation)
+        assertEquals("HIGH", result.riskTier)
+    }
 }

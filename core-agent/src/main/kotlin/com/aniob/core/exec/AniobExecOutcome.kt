@@ -8,7 +8,10 @@ enum class ExecOutcome {
     FAILED_ACTION,
     FAILED_VERIFICATION,
     TIMEOUT,
-    BUDGET_EXCEEDED
+    BUDGET_EXCEEDED,
+    STOPPED,
+    INTERRUPTED,
+    UNVERIFIED
 }
 
 data class ExecReport(

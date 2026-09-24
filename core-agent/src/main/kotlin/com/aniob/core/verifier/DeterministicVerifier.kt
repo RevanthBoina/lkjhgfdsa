@@ -39,21 +39,23 @@ object DeterministicVerifier {
             return VerificationResult(false, System.currentTimeMillis() - start, action.reason)
         }
 
-        if (screenBefore == null) {
+        if (screenBefore == null && action !is AniobAction.OpenApp && action !is AniobAction.InputText) {
             return VerificationResult(true, System.currentTimeMillis() - start, "Initial step verified.")
         }
 
         val result = when (action) {
             is AniobAction.Tap -> {
-                if (screenBefore.treeHash != screenAfter.treeHash || screenBefore.packageName != screenAfter.packageName) {
+                if (screenBefore != null && (screenBefore.treeHash != screenAfter.treeHash || screenBefore.packageName != screenAfter.packageName)) {
                     true to "Tap confirmed: screen transitioned."
+                } else if (screenBefore == null) {
+                    true to "Tap acknowledged on initial screen."
                 } else {
                     false to "No-effect: treeHash unchanged after Tap on ${action.describeTarget()}."
                 }
             }
 
             is AniobAction.LongPress -> {
-                if (screenBefore.treeHash != screenAfter.treeHash) {
+                if (screenBefore != null && screenBefore.treeHash != screenAfter.treeHash) {
                     true to "LongPress confirmed: UI state transitioned."
                 } else {
                     false to "No-effect: treeHash unchanged after LongPress for ${action.durationMs}ms."
@@ -61,10 +63,10 @@ object DeterministicVerifier {
             }
 
             is AniobAction.OpenApp -> {
-                if (screenAfter.packageName.contains(action.packageName, ignoreCase = true) || screenBefore.packageName != screenAfter.packageName) {
+                if (screenAfter.packageName.equals(action.packageName, ignoreCase = true)) {
                     true to "OpenApp confirmed: target package foregrounded."
                 } else {
-                    false to "OpenApp failed to bring target package to foreground."
+                    false to "OpenApp failed: expected package '${action.packageName}', but foreground was '${screenAfter.packageName}'."
                 }
             }
 
@@ -72,15 +74,13 @@ object DeterministicVerifier {
                 val targetAfter = screenAfter.nodes.firstOrNull { action.target.matches(it) }
                 if (targetAfter != null && targetAfter.text.contains(action.text, ignoreCase = true)) {
                     true to "InputText confirmed: text present in target node."
-                } else if (screenBefore.treeHash != screenAfter.treeHash) {
-                    true to "InputText confirmed: screen updated after input."
                 } else {
-                    false to "InputText failed: text not found in target."
+                    false to "InputText failed: text '${action.text}' not found in target."
                 }
             }
 
             is AniobAction.Swipe -> {
-                if (screenBefore.treeHash != screenAfter.treeHash) {
+                if (screenBefore != null && screenBefore.treeHash != screenAfter.treeHash) {
                     true to "Swipe confirmed: view content shifted."
                 } else {
                     false to "Swipe had no effect (reached list boundary or gesture unrecognized)."
@@ -88,7 +88,7 @@ object DeterministicVerifier {
             }
 
             is AniobAction.SystemKey -> {
-                if (screenBefore.treeHash != screenAfter.treeHash || screenBefore.packageName != screenAfter.packageName) {
+                if (screenBefore != null && (screenBefore.treeHash != screenAfter.treeHash || screenBefore.packageName != screenAfter.packageName)) {
                     true to "System key press confirmed: screen or package changed."
                 } else {
                     false to "System key press had no effect."
@@ -96,7 +96,7 @@ object DeterministicVerifier {
             }
 
             is AniobAction.PressKey -> {
-                if (screenBefore.treeHash != screenAfter.treeHash || screenBefore.packageName != screenAfter.packageName) {
+                if (screenBefore != null && (screenBefore.treeHash != screenAfter.treeHash || screenBefore.packageName != screenAfter.packageName)) {
                     true to "Key press confirmed: screen or package changed."
                 } else {
                     false to "Key press had no effect."
@@ -104,7 +104,7 @@ object DeterministicVerifier {
             }
 
             is AniobAction.Wait -> {
-                if (screenBefore.treeHash != screenAfter.treeHash) {
+                if (screenBefore != null && screenBefore.treeHash != screenAfter.treeHash) {
                     true to "Wait confirmed: UI settled to a new state."
                 } else {
                     false to "No-effect: treeHash unchanged after Wait for ${action.durationMs}ms."
@@ -128,9 +128,8 @@ object DeterministicVerifier {
      * Decides whether a provisional [AniobAction.Finish] may become SUCCESS.
      *
      * This is the evidence gate: the task's [SuccessCriteria] must be satisfied against the final
-     * screen before the loop is allowed to declare victory. An empty criteria set carries no
-     * evidence, so it is reported as unverified rather than silently accepted — the reflector
-     * then decides whether to accept it.
+     * screen before the loop is allowed to declare victory. An empty criteria set or minSteps-only
+     * carries no evidence, so it is reported as unverified.
      */
     fun verifyFinish(
         criteria: SuccessCriteria?,
@@ -138,19 +137,20 @@ object DeterministicVerifier {
         steps: Int
     ): VerificationResult {
         val start = System.currentTimeMillis()
-        if (criteria == null || criteria.isEmpty) {
+        if (criteria == null || criteria.isEmpty || !criteria.hasObservableCheck) {
             return VerificationResult(
                 false,
                 System.currentTimeMillis() - start,
-                "No success criteria to verify against"
+                "No observable success criteria to verify against (minSteps alone is not evidence)"
             )
         }
-        val unmet = criteria.unmet(finalScreen, steps)
+        val evaluations = criteria.evaluateCriteria(finalScreen, steps)
+        val failures = evaluations.filter { it.state == com.aniob.core.domain.CriterionState.FAILED }
         val duration = System.currentTimeMillis() - start
-        return if (unmet.isEmpty()) {
+        return if (failures.isEmpty()) {
             VerificationResult(true, duration, "Finish evidence satisfied: all criteria met")
         } else {
-            VerificationResult(false, duration, "Unmet criteria: ${unmet.joinToString("; ")}")
+            VerificationResult(false, duration, "Unmet criteria: ${failures.joinToString("; ") { "${it.description}: ${it.detail}" }}")
         }
     }
 }

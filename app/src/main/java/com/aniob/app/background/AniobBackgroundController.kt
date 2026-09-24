@@ -57,11 +57,11 @@ object AniobBackgroundController {
         pill?.setPaused(paused)
     }
 
-    fun onTaskFinished(context: Context, summary: String) {
+    fun onTaskFinished(context: Context, summary: String, isSuccess: Boolean = true) {
         pill?.showDoneAndDismiss()
         pill = null
         // Quiet Return: notification-only completion. No background activity start (UX-6).
-        AniobForegroundService.finishWithNotification(context, summary)
+        AniobForegroundService.finishWithNotification(context, summary, isSuccess)
     }
 
     /** A11y was revoked mid-run: drop the pill and post the recovery door (UX-6). */

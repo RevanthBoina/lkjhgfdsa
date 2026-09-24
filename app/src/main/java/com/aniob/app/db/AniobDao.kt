@@ -63,3 +63,18 @@ interface LogEventDao {
     @Insert
     suspend fun insertLog(log: LogEventEntity): Long
 }
+
+@Dao
+interface ActiveTaskDao {
+    @Query("SELECT * FROM active_tasks ORDER BY updatedAt DESC LIMIT 1")
+    suspend fun getActiveTask(): ActiveTaskEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun setActiveTask(task: ActiveTaskEntity)
+
+    @Query("DELETE FROM active_tasks")
+    suspend fun clearActiveTasks()
+
+    @Query("DELETE FROM active_tasks WHERE taskId = :taskId")
+    suspend fun clearTask(taskId: String)
+}

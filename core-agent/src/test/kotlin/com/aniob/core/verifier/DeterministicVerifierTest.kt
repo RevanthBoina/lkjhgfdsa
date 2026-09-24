@@ -66,7 +66,7 @@ class DeterministicVerifierTest {
     @Test
     fun `open app transitions to target package is expected even with same hash`() {
         val before = screen(nodeCount = 1, treeHash = "x", pkg = "com.launcher")
-        val afterSameHash = screen(nodeCount = 1, treeHash = "x", pkg = "com.settings")
+        val afterSameHash = screen(nodeCount = 1, treeHash = "x", pkg = "com.android.settings")
 
         val result = DeterministicVerifier.verify(
             AniobAction.OpenApp(packageName = "com.android.settings"),
@@ -75,5 +75,59 @@ class DeterministicVerifierTest {
         )
 
         assertTrue("Package change counts as an expected transition", result.isExpected)
+    }
+
+    @Test
+    fun `wrong app open is not expected`() {
+        val before = screen(nodeCount = 1, treeHash = "x", pkg = "com.launcher")
+        val wrongAfter = screen(nodeCount = 1, treeHash = "y", pkg = "com.wrong.app")
+
+        val result = DeterministicVerifier.verify(
+            AniobAction.OpenApp(packageName = "com.android.settings"),
+            before,
+            wrongAfter
+        )
+
+        assertFalse("Wrong package open must fail verification", result.isExpected)
+    }
+
+    @Test
+    fun `unrelated text field update is not expected`() {
+        val targetNode = AniobNode(id = 1, className = "EditText", text = "Old Text", isEditable = true)
+        val otherNode = AniobNode(id = 2, className = "EditText", text = "Hello", isEditable = true)
+        val before = AniobScreenState(packageName = "com.app", treeHash = "h1", nodes = listOf(targetNode, otherNode))
+        val after = AniobScreenState(packageName = "com.app", treeHash = "h2", nodes = listOf(targetNode, otherNode.copy(text = "Hello World")))
+
+        val result = DeterministicVerifier.verify(
+            AniobAction.InputText(target = SemanticTarget.SomIndex(1), text = "Target Input"),
+            before,
+            after
+        )
+
+        assertFalse("Input text not appearing in target node must fail", result.isExpected)
+    }
+
+    @Test
+    fun `min-step-only finish is not expected without observable evidence`() {
+        val criteria = com.aniob.core.domain.SuccessCriteria(minSteps = 2)
+        val screen = screen(nodeCount = 2, treeHash = "abc")
+
+        val result = DeterministicVerifier.verifyFinish(criteria, screen, steps = 3)
+
+        assertFalse("minSteps alone must never count as sufficient observable evidence", result.isExpected)
+    }
+
+    @Test
+    fun `finish with observable criteria satisfied is expected`() {
+        val criteria = com.aniob.core.domain.SuccessCriteria(
+            mustContainText = listOf("Item 0"),
+            mustShowPackage = listOf("com.example"),
+            minSteps = 1
+        )
+        val screen = screen(nodeCount = 2, treeHash = "abc", pkg = "com.example")
+
+        val result = DeterministicVerifier.verifyFinish(criteria, screen, steps = 2)
+
+        assertTrue("Observable evidence satisfied must verify", result.isExpected)
     }
 }

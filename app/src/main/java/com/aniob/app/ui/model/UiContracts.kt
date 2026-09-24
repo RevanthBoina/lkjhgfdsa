@@ -26,7 +26,11 @@ data class ConfirmRequest(
     val why: String,
     val risk: Risk,
     val details: String,
-    val timeoutSec: Int = 60
+    val timeoutSec: Int = 60,
+    val taskId: String = "",
+    val payload: String = "",
+    val target: String = "",
+    val createdAt: Long = System.currentTimeMillis()
 ) {
     enum class Risk { LOW, MEDIUM, HIGH }
 }
@@ -34,10 +38,11 @@ data class ConfirmRequest(
 data class EvidenceItem(
     val label: String,
     val met: Boolean,
-    val detail: String = ""
+    val detail: String = "",
+    val state: com.aniob.core.domain.CriterionState = if (met) com.aniob.core.domain.CriterionState.PASSED else com.aniob.core.domain.CriterionState.FAILED
 )
 
-enum class Outcome { SUCCESS, FAILED, STOPPED, INTERRUPTED }
+enum class Outcome { SUCCESS, FAILED, STOPPED, INTERRUPTED, UNVERIFIED }
 
 enum class NextAction { RUN_AGAIN, VIEW_STEPS, RETRY, EXPLORE_APP, TEACH_ME, COPY_PROMPT, MAKE_SKILL }
 

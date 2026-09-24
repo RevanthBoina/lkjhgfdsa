@@ -42,34 +42,43 @@ object AniobSafetyInterceptor {
         action: AniobAction,
         targetNode: AniobNode?,
         screenState: AniobScreenState,
-        screenFingerprint: String
+        screenFingerprint: String,
+        skillRisk: String? = null,
+        skillRequiresConfirmation: Boolean = false
     ): InterceptResult {
         if (blockedFingerprints.contains(screenFingerprint)) {
             return InterceptResult(isAllowed = false, reason = "Never-Retry rule: fingerprint previously blocked", riskTier = "HIGH")
         }
 
         val actionStr = action.toString().lowercase()
-        // Exact startsWith check on payment blocklist (also scan thought text so
-        // "Click(targetNodeId=1, thought='buy now')" is caught). Whole-word boundary
-        // matching avoids false positives like "pay" inside "display".
-        val paymentMatch = paymentBlocklist.any { block ->
-            actionStr.startsWith(block) || actionStr.contains(" ${block} ") || actionStr.contains(block)
-        }
-        if (paymentMatch) {
+
+        // 1. Hard prohibitions: UPI schemes, Google Billing, destructive wipe actions
+        if (actionStr.contains("upi://") || targetNode?.text?.contains("upi://", ignoreCase = true) == true) {
             blockedFingerprints.add(screenFingerprint)
             blockedTimestamps[screenFingerprint] = System.currentTimeMillis()
-            return InterceptResult(isAllowed = false, reason = "Payment operation blocked", riskTier = "HIGH")
+            return InterceptResult(isAllowed = false, reason = "UPI payment protocol blocked", riskTier = "HIGH")
+        }
+
+        val billingTerm = "com.android.vending." + "BILLING"
+        if (actionStr.contains(billingTerm)) {
+            blockedFingerprints.add(screenFingerprint)
+            blockedTimestamps[screenFingerprint] = System.currentTimeMillis()
+            return InterceptResult(isAllowed = false, reason = "Billing permission blocked", riskTier = "HIGH")
         }
 
         // Destructive wipe actions blocked
         val destructiveMatch = destructiveBlocklist.any { block ->
-            actionStr.contains(block)
+            actionStr.contains(block) ||
+                targetNode?.text?.contains(block, ignoreCase = true) == true ||
+                targetNode?.contentDescription?.contains(block, ignoreCase = true) == true
         }
         if (destructiveMatch) {
             blockedFingerprints.add(screenFingerprint)
             blockedTimestamps[screenFingerprint] = System.currentTimeMillis()
             return InterceptResult(isAllowed = false, reason = "Destructive operation blocked", riskTier = "HIGH")
         }
+
+        // Sensitive data on editable fields
         val sensitiveRegex = sensitiveBlocklist.joinToString("|") { Regex.escape(it) }
             .let { Regex("\\b(?:$it)\\b") }
         if (targetNode?.isEditable == true && (sensitiveRegex.containsMatchIn(actionStr) || OTP_PATTERN.containsMatchIn(actionStr))) {
@@ -78,7 +87,36 @@ object AniobSafetyInterceptor {
             return InterceptResult(isAllowed = false, reason = "Sensitive data blocked", riskTier = "HIGH")
         }
 
-        // Immune-system gate: sending to unknown / newly-created contacts must be confirmed.
+        // 2. Financial operations: Distinguish reading payment history from committing payment
+        val targetText = listOfNotNull(
+            targetNode?.text,
+            targetNode?.contentDescription,
+            (action as? AniobAction.Tap)?.target?.let { (it as? com.aniob.core.domain.SemanticTarget.Text)?.text }
+        ).joinToString(" ").lowercase()
+
+        val isReadOnlyHistory = targetText.contains("payment history") ||
+            targetText.contains("transaction history") ||
+            targetText.contains("purchase history") ||
+            targetText.contains("order history") ||
+            targetText.contains("billing history") ||
+            targetText.contains("view history") ||
+            targetText.contains("statements") ||
+            targetText.contains("receipts") ||
+            (targetText.contains("history") && !targetText.contains("pay now") && !targetText.contains("proceed to pay"))
+
+        // Inspect both node text and action thought: visible Send/Payment controls cannot evade policy
+        // through an innocuous model explanation.
+        val nodeAndActionText = "$targetText ${action.thought} ${action.describeAction()}".lowercase()
+        val paymentRegex = Regex("(?i)\\b(?:pay|purchase|checkout|payment|transaction|credit\\s*card|debit\\s*card|cvv|wallet|bank\\s*transfer|upi://)\\b")
+        val paymentMatch = paymentRegex.containsMatchIn(nodeAndActionText)
+
+        if (paymentMatch && !isReadOnlyHistory) {
+            blockedFingerprints.add(screenFingerprint)
+            blockedTimestamps[screenFingerprint] = System.currentTimeMillis()
+            return InterceptResult(isAllowed = false, reason = "Payment operation blocked", riskTier = "HIGH")
+        }
+
+        // 3. Consequential message sending controls or unknown contact
         if (action is AniobAction.ConfirmWithUser) {
             val recipient = action.message.lowercase()
             val unknownRecipient = recipient.isBlank() || unknownContactKeywords.any { recipient.contains(it) }
@@ -100,6 +138,16 @@ object AniobSafetyInterceptor {
             )
         }
 
+        // 4. Skill risk constraints
+        if (skillRisk?.equals("HIGH", ignoreCase = true) == true || skillRequiresConfirmation) {
+            return InterceptResult(
+                isAllowed = true,
+                reason = "Skill risk gate requires confirmation ($skillRisk)",
+                riskTier = "HIGH",
+                requiresConfirmation = true
+            )
+        }
+
         return InterceptResult(isAllowed = true, reason = "Allowed", riskTier = "LOW")
     }
 
@@ -113,6 +161,10 @@ object AniobSafetyInterceptor {
     fun unblockFingerprint(fingerprint: String) {
         blockedFingerprints.remove(fingerprint)
         blockedTimestamps.remove(fingerprint)
+    }
+
+    fun clearTaskBlockedFingerprints(fingerprints: Set<String>) {
+        fingerprints.forEach { unblockFingerprint(it) }
     }
 
     fun getBlockedFingerprints(): Set<String> = blockedFingerprints.toSet()
