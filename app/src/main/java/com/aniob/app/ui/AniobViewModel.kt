@@ -133,7 +133,9 @@ data class AniobUiState(
     /** UX-2: follow-up queued while a task runs (depth 1, honest label). */
     val queuedPrompt: String? = null,
     /** UX-5: names of skills the user has disabled; matcher skips these. */
-    val disabledSkills: Set<String> = emptySet()
+    val disabledSkills: Set<String> = emptySet(),
+    /** Staged draft from share or incoming intent that requires user confirmation/submission */
+    val pendingInputPrefill: String? = null
 )
 
 class AniobViewModel(
@@ -807,13 +809,7 @@ class AniobViewModel(
 
     /** Called by the ConfirmSheet / notification action with the user's real choice. */
     fun resolveConfirmation(decision: ConfirmDecision, taskId: String? = null, reqId: String? = null) {
-        val handled = app.approvalController.resolveConfirmation(decision, taskId, reqId)
-        if (!handled) {
-            val pending = _uiState.value.confirmRequest
-            if (pending != null) {
-                app.approvalController.resolveConfirmation(decision, pending.taskId, pending.id)
-            }
-        }
+        app.approvalController.resolveConfirmation(decision, taskId, reqId)
     }
 
     /**
@@ -930,13 +926,50 @@ class AniobViewModel(
     fun handleIncomingShare(shared: com.aniob.app.workflow.ParsedIncomingContent) {
         val text = shared.text
         if (!text.isNullOrBlank()) {
-            val userMsg = ChatMessage(
-                id = "msg_share_${System.currentTimeMillis()}",
-                role = "user",
-                content = "Shared text received: \"${text.take(100)}\""
+            _uiState.update { it.copy(pendingInputPrefill = text.take(2000)) }
+        }
+    }
+
+    fun onDestinationChosen(destination: com.aniob.core.workflow.Destination, brief: String?) {
+        viewModelScope.launch(Dispatchers.Default) {
+            val taskId = "task_chooser_${System.currentTimeMillis()}"
+            val leaseGen = app.taskOwner.acquireLease(taskId)
+            val action = com.aniob.core.workflow.WorkflowAction.OpenWebsite(
+                actionId = "action_${System.currentTimeMillis()}",
+                destination = destination,
+                briefText = brief
             )
-            _uiState.update { it.copy(chatMessages = it.chatMessages + userMsg) }
-            submitTask(text)
+            app.workflowCoordinator.executeAction(action, taskId, leaseGen)
+        }
+    }
+
+    fun onCustomUrlChosen(url: String, brief: String?) {
+        val validated = com.aniob.core.workflow.WorkflowRouter.validateAndSanitizeUrl(url)
+        if (validated == null) {
+            _uiState.update { it.copy(statusMessage = "Invalid URL entered.") }
+            return
+        }
+        val host = com.aniob.core.workflow.WorkflowRouter.extractUrl(validated)?.let {
+            validated.substringAfter("://").substringBefore('/')
+        } ?: validated
+        val dest = com.aniob.core.workflow.Destination(
+            handler = host,
+            url = validated,
+            category = com.aniob.core.workflow.DestinationCategory.WEBSITE,
+            provenance = com.aniob.core.workflow.DestinationProvenance.USER_INPUT
+        )
+        onDestinationChosen(dest, brief)
+    }
+
+    fun onWorkflowMarkComplete(taskId: String, userNotes: String = "") {
+        viewModelScope.launch(Dispatchers.IO) {
+            app.workflowCoordinator.completeWaitingTask(taskId, userNotes)
+        }
+    }
+
+    fun onWorkflowCancel(taskId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            app.workflowCoordinator.cancelWorkflow(taskId)
         }
     }
 
@@ -980,7 +1013,8 @@ class AniobViewModel(
                 statusMessage = "Analyzing task...",
                 chatMessages = it.chatMessages + userMessage,
                 steps = emptyList(),
-                confirmRequest = null
+                confirmRequest = null,
+                pendingInputPrefill = null
             )
         }
 
@@ -1134,13 +1168,15 @@ class AniobViewModel(
                 }
 
                 // Record Session Telemetry for analytics and audit
+                val tokenEstimate = if (result.provider == "VAULT" || result.provider == "NO_PROVIDER") 0
+                    else (result.answer.length / 4).coerceAtLeast(1)
                 app.metricsCollector.recordSession(
                     taskId = taskId,
                     prompt = trimmed,
-                    isSuccess = true,
+                    isSuccess = result.provider != "NO_PROVIDER",
                     steps = 0,
                     durationMs = result.latencyMs,
-                    tokensUsed = 120,
+                    tokensUsed = tokenEstimate,
                     providerUsed = result.provider,
                     decisionReason = "Direct intent answer for ${intent.name}"
                 )
@@ -2193,7 +2229,6 @@ class AniobViewModel(
         AniobForegroundService.clearConfirmation(app)
         hippocampusTracker.onFailure()
 
-        val currentTask = _uiState.value.activeTask
         val stoppedSummary = buildSummary(
             prompt = currentTask?.rawPrompt ?: "Task",
             outcome = Outcome.STOPPED,

@@ -190,6 +190,8 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                         onQueueFollowUp = { viewModel.queueFollowUp(it) },
                         onCancelQueuedTask = { viewModel.cancelQueuedFollowUp() },
                         onStartQueuedTask = { viewModel.startQueuedTask() },
+                        onWorkflowMarkComplete = { taskId, notes -> viewModel.onWorkflowMarkComplete(taskId, notes) },
+                        onWorkflowCancel = { taskId -> viewModel.onWorkflowCancel(taskId) },
                         renderWindow = { viewModel.renderWindow() }
                     )
                 }
@@ -291,9 +293,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
         )
     }
 
-    val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as com.aniob.app.AniobApplication
     val workflowState by app.workflowCoordinator.workflowState.collectAsState()
-    val coroutineScope = rememberCoroutineScope()
 
     when (val state = workflowState) {
         is com.aniob.core.workflow.WorkflowState.NeedsChoice -> {
@@ -303,29 +303,10 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                 com.aniob.app.ui.workflow.DestinationChooserCard(
                     candidates = state.candidates,
                     onSelectDestination = { dest ->
-                        coroutineScope.launch {
-                            val action = com.aniob.core.workflow.WorkflowAction.OpenWebsite(
-                                actionId = "action_${System.currentTimeMillis()}",
-                                destination = dest,
-                                briefText = state.prompt
-                            )
-                            app.workflowCoordinator.executeAction(action, "task_${System.currentTimeMillis()}", app.taskOwner.currentGeneration())
-                        }
+                        viewModel.onDestinationChosen(dest, state.prompt)
                     },
                     onCustomUrlEntered = { url ->
-                        coroutineScope.launch {
-                            val dest = com.aniob.core.workflow.Destination(
-                                handler = url,
-                                url = url,
-                                category = com.aniob.core.workflow.DestinationCategory.WEBSITE
-                            )
-                            val action = com.aniob.core.workflow.WorkflowAction.OpenWebsite(
-                                actionId = "action_${System.currentTimeMillis()}",
-                                destination = dest,
-                                briefText = state.prompt
-                            )
-                            app.workflowCoordinator.executeAction(action, "task_${System.currentTimeMillis()}", app.taskOwner.currentGeneration())
-                        }
+                        viewModel.onCustomUrlChosen(url, state.prompt)
                     },
                     onCancel = {
                         app.workflowCoordinator.updateState(com.aniob.core.workflow.WorkflowState.Cancelled(null, "User cancelled chooser"))

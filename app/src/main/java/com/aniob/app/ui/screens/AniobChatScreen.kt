@@ -41,10 +41,11 @@ import com.aniob.app.system.SystemState
 import com.aniob.app.ui.AniobUiState
 import com.aniob.app.ui.chat.ChatMessage
 import com.aniob.app.ui.model.*
-import com.aniob.core.knowledge.AniobAppCatalog
 import com.aniob.core.narration.FailureReasonCopy
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -67,12 +68,24 @@ fun AniobChatScreen(
     onQueueFollowUp: (String) -> Unit = {},
     onCancelQueuedTask: () -> Unit = {},
     onStartQueuedTask: () -> Unit = {},
+    onWorkflowMarkComplete: (String, String) -> Unit = { _, _ -> },
+    onWorkflowCancel: (String) -> Unit = {},
     renderWindow: () -> List<ChatMessage> = { emptyList() }
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val app = context.applicationContext as? com.aniob.app.AniobApplication
+    val workflowState by (app?.workflowCoordinator?.workflowState?.collectAsState() ?: remember { mutableStateOf(null) })
     var promptInput by rememberSaveable { mutableStateOf("") }
     val isConnected = systemState?.a11yConnected ?: AniobAccessibilityService.isServiceConnected
     var bannerDismissed by remember { mutableStateOf(false) }
+
+    LaunchedEffect(uiState.pendingInputPrefill) {
+        val prefill = uiState.pendingInputPrefill
+        if (!prefill.isNullOrBlank()) {
+            promptInput = prefill
+        }
+    }
 
     val windowMessages = renderWindow()
     val displayMessages: List<ChatMessage> = if (windowMessages.isNotEmpty()) windowMessages else uiState.chatMessages
@@ -249,6 +262,36 @@ fun AniobChatScreen(
                     }
                 }
             }
+        }
+
+        // 3b. Waiting workflow card (Return to website / Continue workflow)
+        val ws = workflowState
+        if (ws is com.aniob.core.workflow.WorkflowState.WaitingForUser) {
+            com.aniob.app.ui.workflow.ContinueWorkflowCard(
+                waitingState = ws,
+                onContinueInWebsite = {
+                    val url = ws.destination.url ?: "https://${ws.destination.handler}"
+                    app?.platformTools?.let { pt ->
+                        coroutineScope.launch {
+                            val browser = app.destinationPreferences.getPreferredBrowserPackage().firstOrNull()
+                            val customTab = pt.buildCustomTabsIntent(url, browser)
+                            context.startActivity(customTab)
+                        }
+                    }
+                },
+                onCopyBrief = {
+                    val brief = ws.brief
+                    if (!brief.isNullOrBlank()) {
+                        app?.platformTools?.copyToClipboard("Aniob Brief", brief)
+                    }
+                },
+                onMarkDone = { notes ->
+                    onWorkflowMarkComplete(ws.identity.taskId, notes)
+                },
+                onCancel = {
+                    onWorkflowCancel(ws.identity.taskId)
+                }
+            )
         }
 
         // 4. Live Cockpit Narration Ticker (PROMPT 3)

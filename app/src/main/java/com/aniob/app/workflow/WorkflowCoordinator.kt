@@ -71,14 +71,25 @@ class WorkflowCoordinator(
         }
 
         // 2. Approval check if required
-        if (destination.isApproved.not() && payload?.isSensitive == true) {
+        val needsApproval = destination.isApproved.not() && (
+            payload?.isSensitive == true ||
+            (action is WorkflowAction.OpenWebsite && !action.briefText.isNullOrBlank())
+        )
+        if (needsApproval) {
+            val details = if (payload != null) {
+                "Data hash: ${payload.contentHash.take(8)}"
+            } else if (action is WorkflowAction.OpenWebsite && !action.briefText.isNullOrBlank()) {
+                "Brief: \"${action.briefText.take(60)}\""
+            } else {
+                "Target: ${destination.destinationKey}"
+            }
             val request = ConfirmRequest(
                 id = "confirm_${action.actionId}",
                 title = "Approve sharing with ${destination.destinationKey}",
                 what = "Share data with ${destination.destinationKey}",
                 why = "The destination will receive external data.",
                 risk = ConfirmRequest.Risk.MEDIUM,
-                details = "Data hash: ${payload.contentHash.take(8)}",
+                details = details,
                 taskId = taskId,
                 target = destination.destinationKey
             )
@@ -95,11 +106,6 @@ class WorkflowCoordinator(
         // Invariant: If process dies after this write, startup restores EffectUnknown!
         repository.persistDispatching(identity, payload?.contentHash)
         _workflowState.value = WorkflowState.Dispatching(identity, action, payload?.contentHash)
-
-        // If action has a brief text, copy to clipboard as the universal fallback
-        if (action is WorkflowAction.OpenWebsite && !action.briefText.isNullOrBlank()) {
-            platformTools.copyToClipboard("Aniob Brief", action.briefText)
-        }
 
         // 4. Build launch spec
         val spec = when (action) {
