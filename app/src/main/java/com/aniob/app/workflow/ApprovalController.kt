@@ -34,7 +34,7 @@ class ApprovalController {
     private val taskApprovals = mutableSetOf<String>()
 
     private fun approvalMemoKey(identity: OperationIdentity, what: String): String {
-        return "${identity.taskId}|${identity.actionId}|${identity.destinationKey}|${identity.approvedPayloadHash ?: ""}|$what"
+        return "${identity.taskId}|${identity.generation}|${identity.actionId}|${identity.destinationKey}|${identity.approvedPayloadHash ?: ""}|$what"
     }
 
     /**
@@ -57,45 +57,43 @@ class ApprovalController {
             _confirmRequest.value = request
         }
 
-        val timeoutMs = (if (request.timeoutSec > 0) request.timeoutSec else 60) * 1000L
-        val decision = withTimeoutOrNull(timeoutMs) {
-            deferred.await()
-        } ?: ConfirmDecision.TIMEOUT_DENY
+        var decision = ConfirmDecision.TIMEOUT_DENY
+        try {
+            val timeoutMs = (if (request.timeoutSec > 0) request.timeoutSec else 60) * 1000L
+            decision = withTimeoutOrNull(timeoutMs) {
+                deferred.await()
+            } ?: ConfirmDecision.TIMEOUT_DENY
+        } finally {
+            synchronized(this) {
+                if (pendingDeferred === deferred) {
+                    val current = boundIdentity
+                    if (current != null &&
+                        current.taskId == identity.taskId &&
+                        current.generation == identity.generation &&
+                        current.actionId == identity.actionId
+                    ) {
+                        if (decision == ConfirmDecision.APPROVE_FOR_TASK) {
+                            val isHighRisk = request.risk == ConfirmRequest.Risk.HIGH ||
+                                request.what.contains(Regex("(?i)pay|transfer|send|delete|purchase"))
+                            if (!isHighRisk) {
+                                taskApprovals.add(memoKey)
+                            }
+                        }
 
-        synchronized(this) {
-            // Re-verify that identity hasn't changed or been invalidated
-            val current = boundIdentity
-            if (current == null ||
-                current.taskId != identity.taskId ||
-                current.generation != identity.generation ||
-                current.actionId != identity.actionId
-            ) {
-                _confirmRequest.value = null
-                pendingDeferred = null
-                boundIdentity = null
-                return ConfirmDecision.TIMEOUT_DENY
-            }
+                        val record = ConfirmationRecord(
+                            what = request.what,
+                            risk = request.risk,
+                            decision = decision,
+                            at = System.currentTimeMillis()
+                        )
+                        _confirmationHistory.value = (listOf(record) + _confirmationHistory.value).take(20)
+                    }
 
-            if (decision == ConfirmDecision.APPROVE_FOR_TASK) {
-                // High risk actions like payments or deletions should not be remembered
-                val isHighRisk = request.risk == ConfirmRequest.Risk.HIGH ||
-                    request.what.contains(Regex("(?i)pay|transfer|send|delete|purchase"))
-                if (!isHighRisk) {
-                    taskApprovals.add(memoKey)
+                    _confirmRequest.value = null
+                    pendingDeferred = null
+                    boundIdentity = null
                 }
             }
-
-            val record = ConfirmationRecord(
-                what = request.what,
-                risk = request.risk,
-                decision = decision,
-                at = System.currentTimeMillis()
-            )
-            _confirmationHistory.value = (listOf(record) + _confirmationHistory.value).take(20)
-
-            _confirmRequest.value = null
-            pendingDeferred = null
-            boundIdentity = null
         }
 
         return decision
@@ -103,7 +101,7 @@ class ApprovalController {
 
     /**
      * Resolves pending confirmation.
-     * Enforces that taskId and requestId match if supplied; rejects stale callbacks.
+     * Rejects callbacks with missing, blank, or mismatched IDs.
      */
     fun resolveConfirmation(
         decision: ConfirmDecision,
@@ -114,10 +112,10 @@ class ApprovalController {
             val req = _confirmRequest.value ?: return false
             val ident = boundIdentity ?: return false
 
-            if (taskId != null && taskId != ident.taskId) {
+            if (taskId.isNullOrBlank() || requestId.isNullOrBlank()) {
                 return false
             }
-            if (requestId != null && requestId != req.id) {
+            if (taskId != ident.taskId || requestId != req.id) {
                 return false
             }
 

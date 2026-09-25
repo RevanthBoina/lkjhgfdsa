@@ -45,10 +45,15 @@ class WorkflowCoordinator(
         }
 
         val payload = when (action) {
-            is WorkflowAction.OpenApp -> action.payload
+            is WorkflowAction.OpenApp -> action.payload ?: action.draftText?.let { payloadStore.saveDraft(taskId, it) }
             is WorkflowAction.OpenWebsite -> action.payload
             is WorkflowAction.SharePayload -> action.payload
             else -> null
+        }
+
+        val websiteBrief = (action as? WorkflowAction.OpenWebsite)?.briefText
+        val payloadHash = payload?.contentHash ?: websiteBrief?.let {
+            WorkflowPayloadStore.sha256(it.toByteArray(Charsets.UTF_8))
         }
 
         val identity = OperationIdentity(
@@ -56,7 +61,7 @@ class WorkflowCoordinator(
             actionId = action.actionId,
             generation = generation,
             destinationKey = destination.destinationKey,
-            approvedPayloadHash = payload?.contentHash
+            approvedPayloadHash = payloadHash
         )
 
         // 1. Capability check
@@ -73,13 +78,13 @@ class WorkflowCoordinator(
         // 2. Approval check if required
         val needsApproval = destination.isApproved.not() && (
             payload?.isSensitive == true ||
-            (action is WorkflowAction.OpenWebsite && !action.briefText.isNullOrBlank())
+            !websiteBrief.isNullOrBlank()
         )
         if (needsApproval) {
             val details = if (payload != null) {
                 "Data hash: ${payload.contentHash.take(8)}"
-            } else if (action is WorkflowAction.OpenWebsite && !action.briefText.isNullOrBlank()) {
-                "Brief: \"${action.briefText.take(60)}\""
+            } else if (!websiteBrief.isNullOrBlank()) {
+                "Brief: \"${websiteBrief.take(60)}\""
             } else {
                 "Target: ${destination.destinationKey}"
             }

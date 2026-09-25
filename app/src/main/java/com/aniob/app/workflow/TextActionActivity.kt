@@ -29,7 +29,7 @@ class TextActionActivity : ComponentActivity() {
 
         val rawText = intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString() ?: ""
         val isReadOnly = intent.getBooleanExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, true)
-        val boundedText = rawText.take(WorkflowLimits.TEXT_BRIEF_MAX_BYTES)
+        val boundedText = WorkflowPayloadStore.boundUtf8Bytes(rawText, WorkflowLimits.TEXT_BRIEF_MAX_BYTES)
 
         setContent {
             MaterialTheme {
@@ -84,7 +84,7 @@ class TextActionActivity : ComponentActivity() {
                                                 browserPackage = browserPkg
                                             )
                                             startActivity(browserIntent)
-                                            setResult(Activity.RESULT_OK)
+                                            setResult(Activity.RESULT_CANCELED)
                                             finish()
                                         }
                                     ) {

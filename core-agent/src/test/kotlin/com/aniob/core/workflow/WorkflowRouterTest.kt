@@ -60,8 +60,7 @@ class WorkflowRouterTest {
         assertTrue(decision is WorkflowDecision.DirectAction)
         val action = (decision as WorkflowDecision.DirectAction).action as WorkflowAction.OpenApp
         assertEquals("com.google.android.keep", action.destination.handler)
-        assertNotNull(action.payload)
-        assertEquals("buy groceries", action.payload?.content)
+        assertEquals("buy groceries", action.draftText)
     }
 
     @Test
@@ -90,5 +89,29 @@ class WorkflowRouterTest {
     fun testFtpUrlRejected() {
         val sanitized = WorkflowRouter.validateAndSanitizeUrl("ftp://example.com/file.txt")
         org.junit.Assert.assertNull(sanitized)
+    }
+
+    @Test
+    fun testPureUrlDoesNotCreateBrief() {
+        val decision = WorkflowRouter.route("Open https://example.com/report")
+        assertTrue(decision is WorkflowDecision.DirectAction)
+        val action = (decision as WorkflowDecision.DirectAction).action as WorkflowAction.OpenWebsite
+        assertEquals("https://example.com/report", action.destination.url)
+        org.junit.Assert.assertNull(action.briefText)
+    }
+
+    @Test
+    fun testInformationalChatGptQuestionDoesNotTriggerExternalAppOpen() {
+        val decision = WorkflowRouter.route("Is ChatGPT free?")
+        assertTrue(decision is WorkflowDecision.DelegateToExisting)
+    }
+
+    @Test
+    fun testUrlWithWhitespaceOrCredentialsRejected() {
+        val credUrl = WorkflowRouter.validateAndSanitizeUrl("https://user:pass@example.com/doc")
+        org.junit.Assert.assertNull(credUrl)
+
+        val spaceUrl = WorkflowRouter.validateAndSanitizeUrl("https://exa mple.com/doc")
+        org.junit.Assert.assertNull(spaceUrl)
     }
 }

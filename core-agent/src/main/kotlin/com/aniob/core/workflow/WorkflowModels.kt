@@ -86,7 +86,8 @@ sealed class WorkflowAction {
     data class OpenApp(
         override val actionId: String,
         val destination: Destination,
-        val payload: PayloadReference? = null
+        val payload: PayloadReference? = null,
+        val draftText: String? = null
     ) : WorkflowAction()
 
     data class OpenWebsite(

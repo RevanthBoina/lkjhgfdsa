@@ -192,6 +192,8 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                         onStartQueuedTask = { viewModel.startQueuedTask() },
                         onWorkflowMarkComplete = { taskId, notes -> viewModel.onWorkflowMarkComplete(taskId, notes) },
                         onWorkflowCancel = { taskId -> viewModel.onWorkflowCancel(taskId) },
+                        onContinueInWebsite = { taskId -> viewModel.onContinueInWebsite(taskId) },
+                        onConsumePendingPrefill = { viewModel.consumePendingInputPrefill() },
                         renderWindow = { viewModel.renderWindow() }
                     )
                 }

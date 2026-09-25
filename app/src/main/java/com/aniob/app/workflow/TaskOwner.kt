@@ -62,6 +62,7 @@ class TaskOwner {
         job?.cancel()
         currentTaskId = null
         currentActionId = null
+        generationCounter.incrementAndGet()
         return wasActive
     }
 
@@ -74,6 +75,7 @@ class TaskOwner {
             activeJob = null
             currentTaskId = null
             currentActionId = null
+            generationCounter.incrementAndGet()
         }
     }
 

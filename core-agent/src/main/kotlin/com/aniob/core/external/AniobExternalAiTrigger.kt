@@ -14,13 +14,36 @@ interface AniobCloudLlmProvider {
     suspend fun generateStreaming(prompt: String, systemPrompt: String, onDelta: (String) -> Unit): String
 }
 
-data class ExternalAiResult(
-    val answer: String,
-    val provider: String,
-    val intent: AniobIntent,
-    val latencyMs: Long,
-    val fromVault: Boolean = false
-)
+sealed interface ExternalAiResult {
+    val answer: String
+    val provider: String
+    val intent: AniobIntent
+    val latencyMs: Long
+
+    data class Success(
+        override val answer: String,
+        override val provider: String,
+        override val intent: AniobIntent,
+        override val latencyMs: Long,
+        val fromVault: Boolean = false
+    ) : ExternalAiResult
+
+    data class Unavailable(
+        override val answer: String,
+        override val provider: String = "NO_PROVIDER",
+        override val intent: AniobIntent,
+        override val latencyMs: Long,
+        val reason: String
+    ) : ExternalAiResult
+
+    data class Error(
+        override val answer: String,
+        override val provider: String = "ERROR",
+        override val intent: AniobIntent,
+        override val latencyMs: Long,
+        val cause: String
+    ) : ExternalAiResult
+}
 
 /**
  * Trigger external AI queries for queries where Aniob should not perform UI automation.
@@ -53,7 +76,7 @@ class AniobExternalAiTrigger(
             }
             if (vaultResult != null) {
                 onDelta(vaultResult)
-                return ExternalAiResult(
+                return ExternalAiResult.Success(
                     answer = vaultResult,
                     provider = "VAULT",
                     intent = intent,
@@ -81,9 +104,6 @@ class AniobExternalAiTrigger(
             else -> "You are Aniob."
         }
 
-        var fullAnswer = ""
-        val chosenProviderName: String
-
         val isLocalReady = localProvider != null && localProvider.isAvailable()
         val isCloudReady = powerState.isNetworkAvailable && cloudProvider != null
 
@@ -107,47 +127,68 @@ class AniobExternalAiTrigger(
             else -> !isCloudReady && isLocalReady
         }
 
-        if (useLocal && isLocalReady) {
-            chosenProviderName = "LOCAL_SLM"
-            fullAnswer = localProvider!!.chatStreaming(prompt) { delta ->
-                onDelta(delta)
+        val result: ExternalAiResult = try {
+            if (useLocal && isLocalReady) {
+                val fullAnswer = localProvider!!.chatStreaming(prompt) { delta ->
+                    onDelta(delta)
+                }
+                ExternalAiResult.Success(
+                    answer = fullAnswer,
+                    provider = "LOCAL_SLM",
+                    intent = intent,
+                    latencyMs = System.currentTimeMillis() - startMs
+                )
+            } else if (isCloudReady) {
+                val fullAnswer = cloudProvider!!.generateStreaming(prompt, systemPrompt) { delta ->
+                    onDelta(delta)
+                }
+                ExternalAiResult.Success(
+                    answer = fullAnswer,
+                    provider = cloudProvider.name,
+                    intent = intent,
+                    latencyMs = System.currentTimeMillis() - startMs
+                )
+            } else if (isLocalReady) {
+                val fullAnswer = localProvider!!.chatStreaming(prompt) { delta ->
+                    onDelta(delta)
+                }
+                ExternalAiResult.Success(
+                    answer = fullAnswer,
+                    provider = "LOCAL_SLM",
+                    intent = intent,
+                    latencyMs = System.currentTimeMillis() - startMs
+                )
+            } else {
+                val reason = "No AI provider or on-device model is configured to answer this question. Download an on-device model in Models or configure an API key in Settings."
+                val answer = "⚠️ $reason"
+                onDelta(answer)
+                ExternalAiResult.Unavailable(
+                    answer = answer,
+                    provider = "NO_PROVIDER",
+                    intent = intent,
+                    latencyMs = System.currentTimeMillis() - startMs,
+                    reason = reason
+                )
             }
-        } else if (isCloudReady) {
-            chosenProviderName = cloudProvider!!.name
-            fullAnswer = cloudProvider.generateStreaming(prompt, systemPrompt) { delta ->
-                onDelta(delta)
-            }
-        } else if (isLocalReady) {
-            chosenProviderName = "LOCAL_SLM"
-            fullAnswer = localProvider!!.chatStreaming(prompt) { delta ->
-                onDelta(delta)
-            }
-        } else {
-            chosenProviderName = "NO_PROVIDER"
-            fullAnswer = generateFallbackAnswer(prompt, intent)
-            onDelta(fullAnswer)
+        } catch (e: Exception) {
+            val errMsg = "Failed to query AI provider: ${e.message ?: "Unknown error"}"
+            onDelta(errMsg)
+            ExternalAiResult.Error(
+                answer = errMsg,
+                provider = "ERROR",
+                intent = intent,
+                latencyMs = System.currentTimeMillis() - startMs,
+                cause = e.message ?: "Unknown error"
+            )
         }
 
-        // Save preference if user instructed "remember"
-        if (prompt.contains("remember", ignoreCase = true) || intent == AniobIntent.VAULT_QUERY) {
-            sharedKnowledgeStore.put(prompt.lowercase(), fullAnswer)
+        // Only save preference into vault when successfully answered
+        if (result is ExternalAiResult.Success) {
+            if (prompt.contains("remember", ignoreCase = true) || intent == AniobIntent.VAULT_QUERY) {
+                sharedKnowledgeStore.put(prompt.lowercase(), result.answer)
+            }
         }
 
-        return ExternalAiResult(
-            answer = fullAnswer,
-            provider = chosenProviderName,
-            intent = intent,
-            latencyMs = System.currentTimeMillis() - startMs,
-            fromVault = false
-        )
-    }
-
-    private fun generateFallbackAnswer(prompt: String, intent: AniobIntent): String {
-        val lower = prompt.lowercase()
-        return when {
-            lower.contains("capital of france") -> "The capital of France is Paris."
-            lower.contains("capital of") -> "That is a great geography question. Paris is the capital of France, Tokyo of Japan, and Washington, D.C. of the United States."
-            else -> "⚠️ No AI provider or on-device model is configured to answer this question. Download an on-device model in Models or configure an API key in Settings."
-        }
+        return result
     }
 }

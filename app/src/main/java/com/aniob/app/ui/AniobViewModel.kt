@@ -424,11 +424,16 @@ class AniobViewModel(
             togglePause()
         }
         AniobForegroundService.onConfirmDecisionWithIds = { decision, taskId, reqId ->
-            val pending = _uiState.value.confirmRequest
-            if (pending != null && (taskId == null || taskId == pending.taskId) && (reqId == null || reqId == pending.id)) {
-                resolveConfirmation(decision)
+            if (!taskId.isNullOrBlank() && !reqId.isNullOrBlank()) {
+                resolveConfirmation(decision, taskId, reqId)
             } else {
-                app.eventLogger.warn("AniobViewModel", "Ignored stale confirmation: taskId=$taskId reqId=$reqId")
+                app.eventLogger.warn("AniobViewModel", "Ignored ID-less confirmation from notification")
+            }
+        }
+
+        viewModelScope.launch {
+            app.approvalController.confirmRequest.collect { req ->
+                _uiState.update { it.copy(confirmRequest = req) }
             }
         }
     }
@@ -531,48 +536,50 @@ class AniobViewModel(
     private fun restoreInterruptedSummary() {
         viewModelScope.launch(Dispatchers.IO) {
             // Check workflow repository first
-            val recoveredWf = try {
-                app.workflowRepository.checkAndRecoverOnStartup()
-            } catch (_: Exception) { null }
+            val recoveredList = try {
+                app.workflowRepository.recoverAllOnStartup()
+            } catch (_: Exception) { emptyList() }
 
-            if (recoveredWf != null) {
-                if (recoveredWf.state == "WaitingForUser") {
-                    val dest = com.aniob.core.workflow.Destination(
-                        handler = recoveredWf.destinationKey,
-                        url = recoveredWf.destinationUrl,
-                        category = com.aniob.core.workflow.DestinationCategory.WEBSITE
-                    )
-                    val identity = com.aniob.core.workflow.OperationIdentity(
-                        taskId = recoveredWf.taskId,
-                        actionId = recoveredWf.actionId,
-                        generation = recoveredWf.generation,
-                        destinationKey = recoveredWf.destinationKey,
-                        approvedPayloadHash = recoveredWf.payloadHash
-                    )
-                    app.workflowCoordinator.updateState(
-                        com.aniob.core.workflow.WorkflowState.WaitingForUser(
-                            identity = identity,
-                            destination = dest,
-                            brief = recoveredWf.evidence
-                        )
-                    )
-                    return@launch
-                } else if (recoveredWf.state == "EffectUnknown") {
-                    val summary = buildSummary(
-                        prompt = "Workflow ${recoveredWf.taskId}",
-                        outcome = Outcome.INTERRUPTED,
-                        steps = 1,
-                        durationMs = 0L,
-                        provider = "WORKFLOW",
-                        evidence = emptyList(),
-                        reason = "Interrupted during dispatch. Outcome in external app is unverified."
-                    )
-                    kotlinx.coroutines.withContext(Dispatchers.Main) {
-                        _uiState.update { it.copy(interruptedSummary = summary, isRunning = false) }
-                    }
-                    return@launch
+            val interrupted = recoveredList.firstOrNull { it.state == "EffectUnknown" }
+            if (interrupted != null) {
+                val summary = buildSummary(
+                    prompt = "Workflow ${interrupted.taskId}",
+                    outcome = Outcome.INTERRUPTED,
+                    steps = 1,
+                    durationMs = 0L,
+                    provider = "WORKFLOW",
+                    evidence = emptyList(),
+                    reason = "Interrupted during dispatch. Outcome in external app is unverified."
+                )
+                kotlinx.coroutines.withContext(Dispatchers.Main) {
+                    _uiState.update { it.copy(interruptedSummary = summary, isRunning = false) }
                 }
             }
+
+            val waiting = recoveredList.firstOrNull { it.state == "WaitingForUser" }
+            if (waiting != null) {
+                val dest = com.aniob.core.workflow.Destination(
+                    handler = waiting.destinationKey,
+                    url = waiting.destinationUrl,
+                    category = com.aniob.core.workflow.DestinationCategory.WEBSITE
+                )
+                val identity = com.aniob.core.workflow.OperationIdentity(
+                    taskId = waiting.taskId,
+                    actionId = waiting.actionId,
+                    generation = waiting.generation,
+                    destinationKey = waiting.destinationKey,
+                    approvedPayloadHash = waiting.payloadHash
+                )
+                app.workflowCoordinator.updateState(
+                    com.aniob.core.workflow.WorkflowState.WaitingForUser(
+                        identity = identity,
+                        destination = dest,
+                        brief = waiting.evidence
+                    )
+                )
+            }
+
+            if (interrupted != null) return@launch
 
             val marker = try {
                 app.database.activeTaskDao().getActiveTask()
@@ -926,20 +933,162 @@ class AniobViewModel(
     fun handleIncomingShare(shared: com.aniob.app.workflow.ParsedIncomingContent) {
         val text = shared.text
         if (!text.isNullOrBlank()) {
-            _uiState.update { it.copy(pendingInputPrefill = text.take(2000)) }
+            val bytes = text.toByteArray(Charsets.UTF_8)
+            if (bytes.size > com.aniob.core.workflow.WorkflowLimits.TEXT_BRIEF_MAX_BYTES) {
+                _uiState.update {
+                    it.copy(
+                        statusMessage = "Shared text exceeds 64 KiB limit (${bytes.size} bytes). Cannot import.",
+                        pendingInputPrefill = null
+                    )
+                }
+            } else {
+                _uiState.update { it.copy(pendingInputPrefill = text) }
+            }
+        }
+    }
+
+    fun consumePendingInputPrefill(): String? {
+        val prefill = _uiState.value.pendingInputPrefill
+        if (prefill != null) {
+            _uiState.update { it.copy(pendingInputPrefill = null) }
+        }
+        return prefill
+    }
+
+    internal fun executeOwnedWorkflowAction(
+        taskId: String,
+        leaseGen: Long,
+        prompt: String,
+        action: com.aniob.core.workflow.WorkflowAction
+    ) {
+        val startTime = System.currentTimeMillis()
+        val destName = when (action) {
+            is com.aniob.core.workflow.WorkflowAction.OpenWebsite -> action.destination.handler
+            is com.aniob.core.workflow.WorkflowAction.OpenApp -> action.destination.handler
+            else -> "destination"
+        }
+
+        activeTaskJob = viewModelScope.launch(Dispatchers.Default) {
+            val currentJob = currentCoroutineContext()[kotlinx.coroutines.Job]!!
+            app.taskOwner.attachJob(leaseGen, currentJob)
+
+            _uiState.update {
+                it.copy(
+                    isRunning = true,
+                    statusMessage = "Opening $destName...",
+                    lastProviderUsed = "WORKFLOW"
+                )
+            }
+
+            val result = app.workflowCoordinator.executeAction(action, taskId, leaseGen)
+            when (result) {
+                is com.aniob.core.workflow.WorkflowResult.WaitingForUser -> {
+                    AniobForegroundService.notifyWaitingForUser(app, destName)
+                    _uiState.update {
+                        it.copy(
+                            isRunning = false,
+                            statusMessage = "Task waiting on $destName",
+                            lastProviderUsed = "WORKFLOW"
+                        )
+                    }
+                }
+                is com.aniob.core.workflow.WorkflowResult.LaunchAccepted -> {
+                    app.metricsCollector.recordWorkflowOutcome(taskId, prompt, result)
+                    val summary = buildSummary(
+                        prompt = prompt,
+                        outcome = Outcome.SUCCESS,
+                        steps = 1,
+                        durationMs = System.currentTimeMillis() - startTime,
+                        provider = "WORKFLOW",
+                        evidence = listOf(EvidenceItem(description = "Opened $destName", satisfied = true))
+                    )
+                    _uiState.update {
+                        it.copy(
+                            isRunning = false,
+                            lastSummary = summary,
+                            statusMessage = "Action launched: $destName",
+                            lastProviderUsed = "WORKFLOW"
+                        )
+                    }
+                }
+                is com.aniob.core.workflow.WorkflowResult.Failed -> {
+                    app.metricsCollector.recordWorkflowOutcome(taskId, prompt, result)
+                    val summary = buildSummary(
+                        prompt = prompt,
+                        outcome = Outcome.FAILED,
+                        steps = 1,
+                        durationMs = System.currentTimeMillis() - startTime,
+                        provider = "WORKFLOW",
+                        evidence = emptyList(),
+                        reason = result.errorReason
+                    )
+                    _uiState.update {
+                        it.copy(
+                            isRunning = false,
+                            lastSummary = summary,
+                            statusMessage = "Action failed: ${result.errorReason}",
+                            lastProviderUsed = "WORKFLOW"
+                        )
+                    }
+                }
+                is com.aniob.core.workflow.WorkflowResult.Cancelled -> {
+                    val summary = buildSummary(
+                        prompt = prompt,
+                        outcome = Outcome.STOPPED,
+                        steps = 1,
+                        durationMs = System.currentTimeMillis() - startTime,
+                        provider = "WORKFLOW",
+                        evidence = emptyList(),
+                        reason = result.reason
+                    )
+                    _uiState.update {
+                        it.copy(
+                            isRunning = false,
+                            lastSummary = summary,
+                            statusMessage = "Cancelled by user",
+                            lastProviderUsed = "WORKFLOW"
+                        )
+                    }
+                }
+                else -> {
+                    _uiState.update { it.copy(isRunning = false) }
+                }
+            }
         }
     }
 
     fun onDestinationChosen(destination: com.aniob.core.workflow.Destination, brief: String?) {
-        viewModelScope.launch(Dispatchers.Default) {
-            val taskId = "task_chooser_${System.currentTimeMillis()}"
+        val taskId = "task_chooser_${System.currentTimeMillis()}"
+        val leaseGen = app.taskOwner.acquireLease(taskId)
+        val action = com.aniob.core.workflow.WorkflowAction.OpenWebsite(
+            actionId = "action_${System.currentTimeMillis()}",
+            destination = destination,
+            briefText = brief
+        )
+        executeOwnedWorkflowAction(
+            taskId = taskId,
+            leaseGen = leaseGen,
+            prompt = "Open ${destination.handler}",
+            action = action
+        )
+    }
+
+    fun onContinueInWebsite(taskId: String) {
+        val ws = app.workflowCoordinator.workflowState.value
+        val waiting = (ws as? com.aniob.core.workflow.WorkflowState.WaitingForUser)?.takeIf { it.identity.taskId == taskId }
+        if (waiting != null) {
             val leaseGen = app.taskOwner.acquireLease(taskId)
             val action = com.aniob.core.workflow.WorkflowAction.OpenWebsite(
-                actionId = "action_${System.currentTimeMillis()}",
-                destination = destination,
-                briefText = brief
+                actionId = "action_continue_${System.currentTimeMillis()}",
+                destination = waiting.destination,
+                briefText = waiting.brief
             )
-            app.workflowCoordinator.executeAction(action, taskId, leaseGen)
+            executeOwnedWorkflowAction(
+                taskId = taskId,
+                leaseGen = leaseGen,
+                prompt = "Continue in ${waiting.destination.handler}",
+                action = action
+            )
         }
     }
 
@@ -963,13 +1112,50 @@ class AniobViewModel(
 
     fun onWorkflowMarkComplete(taskId: String, userNotes: String = "") {
         viewModelScope.launch(Dispatchers.IO) {
-            app.workflowCoordinator.completeWaitingTask(taskId, userNotes)
+            val result = app.workflowCoordinator.completeWaitingTask(taskId, userNotes)
+            val summary = buildSummary(
+                prompt = "Workflow $taskId",
+                outcome = Outcome.SUCCESS,
+                steps = 1,
+                durationMs = 0L,
+                provider = "WORKFLOW",
+                evidence = if (userNotes.isNotBlank()) listOf(EvidenceItem(description = userNotes, satisfied = true)) else emptyList()
+            )
+            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                _uiState.update {
+                    it.copy(
+                        isRunning = false,
+                        lastSummary = summary,
+                        statusMessage = "Workflow marked complete",
+                        lastProviderUsed = "WORKFLOW"
+                    )
+                }
+            }
         }
     }
 
     fun onWorkflowCancel(taskId: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            app.workflowCoordinator.cancelWorkflow(taskId)
+            val result = app.workflowCoordinator.cancelWorkflow(taskId)
+            val summary = buildSummary(
+                prompt = "Workflow $taskId",
+                outcome = Outcome.STOPPED,
+                steps = 1,
+                durationMs = 0L,
+                provider = "WORKFLOW",
+                evidence = emptyList(),
+                reason = "Cancelled by user"
+            )
+            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                _uiState.update {
+                    it.copy(
+                        isRunning = false,
+                        lastSummary = summary,
+                        statusMessage = "Workflow cancelled",
+                        lastProviderUsed = "WORKFLOW"
+                    )
+                }
+            }
         }
     }
 
@@ -1025,62 +1211,13 @@ class AniobViewModel(
             val workflowDecision = com.aniob.core.workflow.WorkflowRouter.route(trimmed)
             when (workflowDecision) {
                 is com.aniob.core.workflow.WorkflowDecision.DirectAction -> {
-                    _uiState.update { it.copy(statusMessage = "Executing direct action...", lastProviderUsed = "WORKFLOW") }
-                    val result = app.workflowCoordinator.executeAction(workflowDecision.action, taskId, leaseGen)
-                    when (result) {
-                        is com.aniob.core.workflow.WorkflowResult.WaitingForUser -> {
-                            val dest = when (val a = workflowDecision.action) {
-                                is com.aniob.core.workflow.WorkflowAction.OpenWebsite -> a.destination.handler
-                                is com.aniob.core.workflow.WorkflowAction.OpenApp -> a.destination.handler
-                                else -> "destination"
-                            }
-                            AniobForegroundService.notifyWaitingForUser(app, dest)
-                            _uiState.update {
-                                it.copy(
-                                    isRunning = false,
-                                    statusMessage = "Task waiting on $dest",
-                                    lastProviderUsed = "WORKFLOW"
-                                )
-                            }
-                            return@launch
-                        }
-                        is com.aniob.core.workflow.WorkflowResult.LaunchAccepted -> {
-                            app.metricsCollector.recordWorkflowOutcome(taskId, trimmed, result)
-                            _uiState.update {
-                                it.copy(
-                                    isRunning = false,
-                                    statusMessage = "Action launched",
-                                    lastProviderUsed = "WORKFLOW"
-                                )
-                            }
-                            return@launch
-                        }
-                        is com.aniob.core.workflow.WorkflowResult.Failed -> {
-                            app.metricsCollector.recordWorkflowOutcome(taskId, trimmed, result)
-                            _uiState.update {
-                                it.copy(
-                                    isRunning = false,
-                                    statusMessage = "Action failed: ${result.errorReason}",
-                                    lastProviderUsed = "WORKFLOW"
-                                )
-                            }
-                            return@launch
-                        }
-                        is com.aniob.core.workflow.WorkflowResult.Cancelled -> {
-                            _uiState.update {
-                                it.copy(
-                                    isRunning = false,
-                                    statusMessage = "Cancelled by user",
-                                    lastProviderUsed = "WORKFLOW"
-                                )
-                            }
-                            return@launch
-                        }
-                        else -> {
-                            _uiState.update { it.copy(isRunning = false) }
-                            return@launch
-                        }
-                    }
+                    executeOwnedWorkflowAction(
+                        taskId = taskId,
+                        leaseGen = leaseGen,
+                        prompt = trimmed,
+                        action = workflowDecision.action
+                    )
+                    return@launch
                 }
                 is com.aniob.core.workflow.WorkflowDecision.NeedsChooser -> {
                     app.workflowCoordinator.updateState(

@@ -134,5 +134,13 @@ class WorkflowPayloadStore(private val context: Context) {
             val md = MessageDigest.getInstance("SHA-256")
             return md.digest(bytes).joinToString("") { "%02x".format(it) }
         }
+
+        fun boundUtf8Bytes(text: String, maxBytes: Int): String {
+            val bytes = text.toByteArray(Charsets.UTF_8)
+            if (bytes.size <= maxBytes) return text
+            val truncatedBytes = bytes.copyOf(maxBytes)
+            val decoded = String(truncatedBytes, Charsets.UTF_8)
+            return decoded.trimEnd('\uFFFD')
+        }
     }
 }

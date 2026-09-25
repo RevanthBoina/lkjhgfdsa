@@ -81,7 +81,7 @@ object WorkflowRouter {
                     category = DestinationCategory.WEBSITE,
                     provenance = DestinationProvenance.USER_INPUT
                 )
-                val brief = if (trimmed.equals(extractedUrl, ignoreCase = true)) null else trimmed
+                val brief = if (isPureUrlOpen(trimmed, extractedUrl)) null else trimmed
                 val action = WorkflowAction.OpenWebsite(
                     actionId = "action_${System.currentTimeMillis()}",
                     destination = destination,
@@ -93,13 +93,44 @@ object WorkflowRouter {
             }
         }
 
-        // 2b. Named app direct open/launch -> delegate to existing intent resolver
+        // 2b. Named app direct open/launch -> check AppCatalog
         val openAppMatch = Regex("""^(?:open|launch|start)\s+([a-zA-Z0-9\s]+)$""", RegexOption.IGNORE_CASE)
             .find(trimmed)
         if (openAppMatch != null) {
-            val candidate = openAppMatch.groupValues[1].trim().lowercase()
-            if (candidate != "chatgpt" && candidate != "notes" && candidate != "website") {
-                return WorkflowDecision.DelegateToExisting(trimmed)
+            val candidate = openAppMatch.groupValues[1].trim()
+            val candidateLower = candidate.lowercase()
+            if (candidateLower != "chatgpt" && candidateLower != "notes" && candidateLower != "website" && candidateLower != "browser") {
+                val appResolution = com.aniob.core.knowledge.AniobAppCatalog.getInstance().resolveApp(candidate)
+                when (appResolution) {
+                    is com.aniob.core.knowledge.AniobAppCatalog.AppResolution.ExactMatch -> {
+                        val destination = Destination(
+                            handler = appResolution.entry.packageName,
+                            category = DestinationCategory.APP,
+                            provenance = DestinationProvenance.SYSTEM_RESOLVED
+                        )
+                        val action = WorkflowAction.OpenApp(
+                            actionId = "action_${System.currentTimeMillis()}",
+                            destination = destination
+                        )
+                        return WorkflowDecision.DirectAction(action)
+                    }
+                    is com.aniob.core.knowledge.AniobAppCatalog.AppResolution.Ambiguous -> {
+                        val candidates = appResolution.candidates.map {
+                            Destination(
+                                handler = it.packageName,
+                                category = DestinationCategory.APP,
+                                provenance = DestinationProvenance.SYSTEM_RESOLVED
+                            )
+                        }
+                        return WorkflowDecision.NeedsChooser(
+                            candidates = candidates,
+                            prompt = trimmed
+                        )
+                    }
+                    com.aniob.core.knowledge.AniobAppCatalog.AppResolution.NotFound -> {
+                        return WorkflowDecision.DelegateToExisting(trimmed)
+                    }
+                }
             }
         }
 
@@ -134,13 +165,6 @@ object WorkflowRouter {
         // 5. Note taking / editing requests
         if (isNoteCreationRequest(normalized)) {
             val noteText = extractNoteContent(normalized, trimmed)
-            val notePayload = if (!noteText.isNullOrBlank()) {
-                PayloadReference(
-                    content = noteText,
-                    contentHash = sha256(noteText),
-                    isSensitive = false
-                )
-            } else null
             val noteDestination = Destination(
                 handler = "com.google.android.keep",
                 category = DestinationCategory.APP,
@@ -149,13 +173,30 @@ object WorkflowRouter {
             val action = WorkflowAction.OpenApp(
                 actionId = "action_${System.currentTimeMillis()}",
                 destination = noteDestination,
-                payload = notePayload
+                payload = null,
+                draftText = noteText
             )
             return WorkflowDecision.DirectAction(action)
         }
 
         // Fallback: delegate to existing pipeline (Q&A or screen automation)
         return WorkflowDecision.DelegateToExisting(trimmed)
+    }
+
+    private fun isPureUrlOpen(prompt: String, url: String): Boolean {
+        val trimmed = prompt.trim()
+        if (trimmed.equals(url, ignoreCase = true)) return true
+        val withoutUrl = trimmed.replace(url, "").trim().lowercase()
+        return withoutUrl.isEmpty() ||
+            withoutUrl in setOf("open", "go to", "browse", "visit", "launch", "navigate to", "open link", "view", "open in browser")
+    }
+
+    private fun isSummarizeRequest(normalized: String): Boolean {
+        return normalized.startsWith("summarize ") ||
+            normalized.startsWith("summarise ") ||
+            normalized.startsWith("give me a summary of ") ||
+            normalized.startsWith("tldr ") ||
+            normalized.contains("summarize")
     }
 
     private fun isExplanationRequest(normalized: String): Boolean {
@@ -181,15 +222,31 @@ object WorkflowRouter {
     }
 
     private fun isHostedReasoningRequest(normalized: String): Boolean {
-        if (normalized.startsWith("compare ") || normalized.startsWith("what is better") ||
-            normalized.contains(" vs ") || normalized.contains(" versus ") ||
-            normalized.contains(" or ")) {
+        if (isInformationalAiQuestion(normalized)) {
             return false
         }
-        return (normalized.contains("chatgpt") && !normalized.contains("compare")) ||
-            normalized.startsWith("ask reasoning") ||
+        return normalized.startsWith("ask chatgpt") ||
             normalized.startsWith("use chatgpt") ||
-            normalized.startsWith("open chatgpt")
+            normalized.startsWith("open chatgpt") ||
+            normalized.startsWith("ask reasoning") ||
+            normalized.matches(Regex("""^chatgpt\s+(?:to|please|help|can you)\b.*""")) ||
+            normalized.contains("with chatgpt") ||
+            normalized.contains("using chatgpt")
+    }
+
+    private fun isInformationalAiQuestion(normalized: String): Boolean {
+        return normalized.startsWith("what is ") ||
+            normalized.startsWith("who made ") ||
+            normalized.startsWith("is chatgpt ") ||
+            normalized.startsWith("how does chatgpt ") ||
+            normalized.startsWith("can chatgpt ") ||
+            normalized.startsWith("compare ") ||
+            normalized.startsWith("which is better ") ||
+            normalized.startsWith("difference between ") ||
+            normalized.contains("what is chatgpt") ||
+            normalized.contains("is chatgpt free") ||
+            normalized.contains("chatgpt vs") ||
+            normalized.contains("chatgpt versus")
     }
 
     private fun isNoteCreationRequest(normalized: String): Boolean {
@@ -274,14 +331,18 @@ object WorkflowRouter {
             trimmed
         }
 
-        // Check for embedded credentials user:pass@
+        // Check for embedded credentials user:pass@ and invalid host authority
         val afterScheme = targetUrl.substring("https://".length)
         val hostPart = afterScheme.substringBefore('/').substringBefore('?').substringBefore('#')
-        if (hostPart.contains('@')) {
+        if (hostPart.contains('@') || hostPart.any { it.isWhitespace() } || hostPart.isBlank()) {
             return null
         }
-
-        if (hostPart.isBlank()) return null
+        if (!hostPart.matches(Regex("""^[a-zA-Z0-9.\-]+(?::\d+)?$"""))) {
+            return null
+        }
+        if (!hostPart.contains('.') && !hostPart.startsWith("localhost")) {
+            return null
+        }
 
         return targetUrl
     }

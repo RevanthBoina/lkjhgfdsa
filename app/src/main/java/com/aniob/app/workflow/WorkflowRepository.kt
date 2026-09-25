@@ -133,24 +133,44 @@ class WorkflowRepository(
         persistResult(identity, WorkflowResult.EffectUnknown(reason))
     }
 
+    suspend fun getAllWaitingWorkflows(): List<WorkflowEntity> {
+        return dao.getAllWaitingWorkflows()
+    }
+
+    suspend fun getAllDispatchingWorkflows(): List<WorkflowEntity> {
+        return dao.getAllDispatchingWorkflows()
+    }
+
     /**
-     * Cold-start inspection:
-     * If a workflow was in `Dispatching` when process died, marks it EffectUnknown.
-     * If a workflow was in `WaitingForUser`, restores it as reviewable waiting state.
+     * Cold-start inspection for all in-flight tasks:
+     * If workflows were in `Dispatching` when process died, marks all of them EffectUnknown.
+     * Returns all recovered dispatching and waiting workflows.
      */
-    suspend fun checkAndRecoverOnStartup(): WorkflowEntity? {
-        val latest = dao.getLatestWorkflow() ?: return null
-        if (latest.state == "Dispatching") {
-            val recovered = latest.copy(
+    suspend fun recoverAllOnStartup(): List<WorkflowEntity> {
+        val dispatching = dao.getAllDispatchingWorkflows()
+        val recoveredDispatching = dispatching.map { wf ->
+            val recovered = wf.copy(
                 state = "EffectUnknown",
                 resultKind = "EffectUnknown",
                 evidence = "Process terminated during dispatch. External effect cannot be verified.",
                 updatedAt = System.currentTimeMillis()
             )
             dao.insertOrUpdate(recovered)
-            return recovered
+            recovered
         }
-        return latest
+        val waiting = dao.getAllWaitingWorkflows()
+        return recoveredDispatching + waiting
+    }
+
+    /**
+     * Backward-compatible cold-start inspection returning the primary recovered task.
+     * All dispatching workflows are still safely marked EffectUnknown.
+     */
+    suspend fun checkAndRecoverOnStartup(): WorkflowEntity? {
+        val all = recoverAllOnStartup()
+        return all.firstOrNull { it.state == "EffectUnknown" }
+            ?: all.firstOrNull { it.state == "WaitingForUser" }
+            ?: dao.getLatestWorkflow()
     }
 
     suspend fun deleteWorkflow(taskId: String) {

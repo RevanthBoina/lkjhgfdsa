@@ -42,6 +42,12 @@ interface WorkflowDao {
     @Query("SELECT * FROM workflow_records WHERE state = 'WaitingForUser' ORDER BY updatedAt DESC LIMIT 1")
     suspend fun getLatestWaitingWorkflow(): WorkflowEntity?
 
+    @Query("SELECT * FROM workflow_records WHERE state = 'WaitingForUser' ORDER BY updatedAt DESC")
+    suspend fun getAllWaitingWorkflows(): List<WorkflowEntity>
+
+    @Query("SELECT * FROM workflow_records WHERE state = 'Dispatching' ORDER BY updatedAt DESC")
+    suspend fun getAllDispatchingWorkflows(): List<WorkflowEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertOrUpdate(record: WorkflowEntity)
 

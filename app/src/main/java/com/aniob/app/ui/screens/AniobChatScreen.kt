@@ -41,6 +41,7 @@ import com.aniob.app.system.SystemState
 import com.aniob.app.ui.AniobUiState
 import com.aniob.app.ui.chat.ChatMessage
 import com.aniob.app.ui.model.*
+import com.aniob.core.knowledge.AniobAppCatalog
 import com.aniob.core.narration.FailureReasonCopy
 import java.text.SimpleDateFormat
 import java.util.*
@@ -70,6 +71,8 @@ fun AniobChatScreen(
     onStartQueuedTask: () -> Unit = {},
     onWorkflowMarkComplete: (String, String) -> Unit = { _, _ -> },
     onWorkflowCancel: (String) -> Unit = {},
+    onContinueInWebsite: (String) -> Unit = {},
+    onConsumePendingPrefill: () -> Unit = {},
     renderWindow: () -> List<ChatMessage> = { emptyList() }
 ) {
     val context = LocalContext.current
@@ -84,6 +87,7 @@ fun AniobChatScreen(
         val prefill = uiState.pendingInputPrefill
         if (!prefill.isNullOrBlank()) {
             promptInput = prefill
+            onConsumePendingPrefill()
         }
     }
 
@@ -270,14 +274,7 @@ fun AniobChatScreen(
             com.aniob.app.ui.workflow.ContinueWorkflowCard(
                 waitingState = ws,
                 onContinueInWebsite = {
-                    val url = ws.destination.url ?: "https://${ws.destination.handler}"
-                    app?.platformTools?.let { pt ->
-                        coroutineScope.launch {
-                            val browser = app.destinationPreferences.getPreferredBrowserPackage().firstOrNull()
-                            val customTab = pt.buildCustomTabsIntent(url, browser)
-                            context.startActivity(customTab)
-                        }
-                    }
+                    onContinueInWebsite(ws.identity.taskId)
                 },
                 onCopyBrief = {
                     val brief = ws.brief
