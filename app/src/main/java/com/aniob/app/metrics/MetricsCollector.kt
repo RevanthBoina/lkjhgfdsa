@@ -43,4 +43,37 @@ class MetricsCollector(private val database: AniobDatabase) {
         )
         return database.sessionScoreDao().insertScore(entity)
     }
+
+    suspend fun recordWorkflowOutcome(
+        taskId: String,
+        prompt: String,
+        result: com.aniob.core.workflow.WorkflowResult,
+        durationMs: Long = 0L
+    ): Long {
+        val (status, decisionReason) = when (result) {
+            is com.aniob.core.workflow.WorkflowResult.CompletedWithEvidence -> "SUCCESS" to "Completed: ${result.evidenceKind}"
+            is com.aniob.core.workflow.WorkflowResult.UserReportedCompletion -> "SUCCESS" to "User marked complete"
+            is com.aniob.core.workflow.WorkflowResult.Failed -> "FAILED" to result.errorReason
+            is com.aniob.core.workflow.WorkflowResult.Cancelled -> "CANCELLED" to result.reason
+            is com.aniob.core.workflow.WorkflowResult.LaunchAccepted -> "WAITING" to "Launch accepted"
+            is com.aniob.core.workflow.WorkflowResult.WaitingForUser -> "WAITING" to result.reason
+            is com.aniob.core.workflow.WorkflowResult.EffectUnknown -> "UNKNOWN" to result.details
+        }
+
+        if (status == "WAITING" || status == "UNKNOWN") {
+            return -1L
+        }
+
+        val entity = SessionScoreEntity(
+            taskId = taskId,
+            userPrompt = prompt,
+            status = status,
+            totalSteps = 1,
+            durationMs = durationMs,
+            tokensUsed = 0,
+            providerUsed = "NATIVE_WORKFLOW",
+            decisionReason = decisionReason
+        )
+        return database.sessionScoreDao().insertScore(entity)
+    }
 }

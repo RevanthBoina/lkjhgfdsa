@@ -38,7 +38,6 @@ class AniobPackageReceiver : BroadcastReceiver() {
                 }
             }
             saveCatalog(context, catalog)
-            android.widget.Toast.makeText(context, "App catalog updated", android.widget.Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Log.w(TAG, "Package reflex failed for $packageName", e)
         }

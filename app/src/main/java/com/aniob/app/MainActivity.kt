@@ -18,11 +18,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val app = application as AniobApplication
         AniobBackgroundController.registerActivity(this)
-        // UX-4: wire notification Approve/Deny actions into the suspending confirm gate.
-        com.aniob.app.background.AniobForegroundService.onConfirmDecision = { decision ->
-            viewModel.resolveConfirmation(decision)
-        }
+        app.workflowActionHost.attach(this)
+
         // UX-3: wire Stop/Pause notification actions.
         com.aniob.app.background.AniobForegroundService.onStopRequestedFromNotification = {
             viewModel.stopCurrentTask()
@@ -32,8 +31,9 @@ class MainActivity : ComponentActivity() {
         }
         enableEdgeToEdge()
 
-        // Deep links (UX-0 §2): aniob://chat|tracker|result|skills|confirm.
-        viewModel.handleDeepLink(intent?.dataString)
+        if (savedInstanceState == null) {
+            handleIncomingIntent(intent)
+        }
 
         setContent {
             AniobTheme {
@@ -43,13 +43,23 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Catches result/pill deep links while the activity is alive. Before UX-0 the result extra
-     * was passed but no `onNewIntent` existed, so the user saw nothing (U3).
+     * Catches result/pill deep links while the activity is alive.
      */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        viewModel.handleDeepLink(intent.dataString)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: Intent?) {
+        if (intent == null) return
+        val app = application as AniobApplication
+        val sharedContent = app.incomingContentReader.parse(intent)
+        if (sharedContent != null) {
+            viewModel.handleIncomingShare(sharedContent)
+        } else {
+            viewModel.handleDeepLink(intent.dataString)
+        }
     }
 
     /** Every return from Settings re-reads permission state so banners never go stale (U2). */
@@ -66,6 +76,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        (application as AniobApplication).workflowActionHost.detach()
         AniobBackgroundController.unregisterActivity(this)
     }
 }

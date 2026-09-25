@@ -30,22 +30,46 @@ class AniobAppCatalog private constructor() {
     @Synchronized
     fun getAll(): List<AppCatalogEntry> = catalog.values.toList()
 
+    sealed class AppResolution {
+        data class ExactMatch(val entry: AppCatalogEntry) : AppResolution()
+        data class Ambiguous(val candidates: List<AppCatalogEntry>) : AppResolution()
+        object NotFound : AppResolution()
+    }
+
+    @Synchronized
+    fun findCandidates(query: String): List<AppCatalogEntry> {
+        val q = query.trim().lowercase()
+        if (q.isBlank()) return emptyList()
+
+        catalog[q]?.let { return listOf(it) }
+
+        val exactMatches = catalog.values.filter { entry ->
+            entry.appName.lowercase() == q || entry.aliases.any { it.lowercase() == q }
+        }
+        if (exactMatches.isNotEmpty()) return exactMatches
+
+        return catalog.values.filter { entry ->
+            entry.appName.lowercase().contains(q) || entry.aliases.any { it.lowercase().contains(q) }
+        }
+    }
+
+    @Synchronized
+    fun resolveApp(query: String): AppResolution {
+        val candidates = findCandidates(query)
+        return when {
+            candidates.isEmpty() -> AppResolution.NotFound
+            candidates.size == 1 -> AppResolution.ExactMatch(candidates.first())
+            else -> AppResolution.Ambiguous(candidates)
+        }
+    }
+
     @Synchronized
     fun findPackageForName(query: String): String? {
-        val q = query.trim().lowercase()
-        // Exact match on package name
-        if (catalog.containsKey(q)) return q
-
-        // Exact match on app name
-        catalog.values.firstOrNull { it.appName.lowercase() == q }?.let { return it.packageName }
-
-        // Alias match
-        catalog.values.firstOrNull { entry -> entry.aliases.any { it.lowercase() == q } }?.let { return it.packageName }
-
-        // Substring match
-        catalog.values.firstOrNull { it.appName.lowercase().contains(q) }?.let { return it.packageName }
-
-        return null
+        return when (val res = resolveApp(query)) {
+            is AppResolution.ExactMatch -> res.entry.packageName
+            is AppResolution.Ambiguous -> null // Ambiguous match requires chooser
+            is AppResolution.NotFound -> null
+        }
     }
 
     @Synchronized

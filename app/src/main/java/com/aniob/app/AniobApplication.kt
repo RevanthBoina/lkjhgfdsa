@@ -21,6 +21,42 @@ class AniobApplication : Application(), ComponentCallbacks2 {
     lateinit var systemState: AniobSystemState
         private set
 
+    val workflowRepository: com.aniob.app.workflow.WorkflowRepository by lazy {
+        com.aniob.app.workflow.WorkflowRepository(database)
+    }
+    val taskOwner: com.aniob.app.workflow.TaskOwner by lazy {
+        com.aniob.app.workflow.TaskOwner()
+    }
+    val approvalController: com.aniob.app.workflow.ApprovalController by lazy {
+        com.aniob.app.workflow.ApprovalController()
+    }
+    val destinationPreferences: com.aniob.app.workflow.DestinationPreferences by lazy {
+        com.aniob.app.workflow.DestinationPreferences(this)
+    }
+    val workflowPayloadStore: com.aniob.app.workflow.WorkflowPayloadStore by lazy {
+        com.aniob.app.workflow.WorkflowPayloadStore(this)
+    }
+    val platformTools: com.aniob.app.workflow.PlatformTools by lazy {
+        com.aniob.app.workflow.PlatformTools(this)
+    }
+    val workflowActionHost: com.aniob.app.workflow.WorkflowActionHost by lazy {
+        com.aniob.app.workflow.WorkflowActionHost()
+    }
+    val incomingContentReader: com.aniob.app.workflow.IncomingContentReader by lazy {
+        com.aniob.app.workflow.IncomingContentReader(this)
+    }
+    val workflowCoordinator: com.aniob.app.workflow.WorkflowCoordinator by lazy {
+        com.aniob.app.workflow.WorkflowCoordinator(
+            repository = workflowRepository,
+            taskOwner = taskOwner,
+            approvalController = approvalController,
+            platformTools = platformTools,
+            payloadStore = workflowPayloadStore,
+            actionHost = workflowActionHost,
+            destinationPreferences = destinationPreferences
+        )
+    }
+
     /**
      * Registered by AniobViewModel so the LiteRT engine can be released on
      * memory pressure without the Application holding an Android runtime dependency.

@@ -44,6 +44,7 @@ class AniobForegroundService : Service() {
         const val EXTRA_REQUEST_ID = "extra_request_id"
 
         private const val CONFIRM_NOTIFICATION_ID = 8768
+        private const val WAITING_NOTIFICATION_ID = 8769
 
         /** Lets the ViewModel cancel the running task when the notification Stop action is tapped. */
         @Volatile var onStopRequestedFromNotification: (() -> Unit)? = null
@@ -51,10 +52,7 @@ class AniobForegroundService : Service() {
         /** Lets the ViewModel flip its cooperative pause flag from the notification/pill. */
         @Volatile var onPauseToggleFromNotification: (() -> Unit)? = null
 
-        /** UX-4: carries the user's approval decision back into the suspending confirm gate. */
-        @Volatile var onConfirmDecision: ((com.aniob.app.ui.model.ConfirmDecision) -> Unit)? = null
-
-        /** Carries the user's approval decision back with task and request IDs to prevent stale approvals. */
+        /** Carries the user's approval decision back with mandatory task and request IDs to prevent stale approvals. */
         @Volatile var onConfirmDecisionWithIds: ((com.aniob.app.ui.model.ConfirmDecision, String?, String?) -> Unit)? = null
 
         @Volatile private var currentPrompt: String = ""
@@ -237,6 +235,33 @@ class AniobForegroundService : Service() {
             nm.cancel(CONFIRM_NOTIFICATION_ID)
         }
 
+        fun notifyWaitingForUser(context: Context, target: String) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+            ensureChannels(context, nm)
+            val continueIntent = Intent(context, MainActivity::class.java).apply {
+                action = Intent.ACTION_VIEW
+                data = Uri.parse("aniob://chat")
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            val continuePi = PendingIntent.getActivity(
+                context, 10, continueIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val notification = NotificationCompat.Builder(context, CHANNEL_DONE)
+                .setContentTitle("Task waiting on $target")
+                .setContentText("Tap to return to Aniob and continue")
+                .setSmallIcon(R.drawable.ic_stat_aniob)
+                .setContentIntent(continuePi)
+                .setAutoCancel(true)
+                .build()
+            nm.notify(WAITING_NOTIFICATION_ID, notification)
+        }
+
+        fun clearWaitingNotification(context: Context) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+            nm.cancel(WAITING_NOTIFICATION_ID)
+        }
+
         /** A11y revoked mid-run: recovery door with [Re-enable] [Stop task] (UX-6). */
         fun notifyAccessibilityLost(context: Context) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
@@ -322,16 +347,18 @@ class AniobForegroundService : Service() {
                 val taskId = intent?.getStringExtra(EXTRA_TASK_ID)
                 val reqId = intent?.getStringExtra(EXTRA_REQUEST_ID)
                 clearConfirmation(this)
-                onConfirmDecisionWithIds?.invoke(com.aniob.app.ui.model.ConfirmDecision.APPROVE_ONCE, taskId, reqId)
-                    ?: onConfirmDecision?.invoke(com.aniob.app.ui.model.ConfirmDecision.APPROVE_ONCE)
+                if (taskId != null && reqId != null) {
+                    onConfirmDecisionWithIds?.invoke(com.aniob.app.ui.model.ConfirmDecision.APPROVE_ONCE, taskId, reqId)
+                }
                 return START_STICKY
             }
             ACTION_CONFIRM_DENY -> {
                 val taskId = intent?.getStringExtra(EXTRA_TASK_ID)
                 val reqId = intent?.getStringExtra(EXTRA_REQUEST_ID)
                 clearConfirmation(this)
-                onConfirmDecisionWithIds?.invoke(com.aniob.app.ui.model.ConfirmDecision.DENY, taskId, reqId)
-                    ?: onConfirmDecision?.invoke(com.aniob.app.ui.model.ConfirmDecision.DENY)
+                if (taskId != null && reqId != null) {
+                    onConfirmDecisionWithIds?.invoke(com.aniob.app.ui.model.ConfirmDecision.DENY, taskId, reqId)
+                }
                 return START_STICKY
             }
             else -> {

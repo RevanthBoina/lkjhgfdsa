@@ -15,6 +15,16 @@
     <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
         tools:ignore="ProtectedPermissions" />
 
+    <queries>
+        <intent>
+            <action android:name="android.support.customtabs.action.CustomTabsService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+    </queries>
+
     <application
         android:name=".AniobApplication"
         android:allowBackup="true"
@@ -46,11 +56,44 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="aniob" />
             </intent-filter>
+            <!-- Inbound text share filters -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
             <!-- Launcher shortcuts (UX-6 §2): New task, Teach a task, Skills. -->
             <meta-data
                 android:name="android.app.shortcuts"
                 android:resource="@xml/aniob_shortcuts" />
         </activity>
+
+        <activity
+            android:name=".workflow.TextActionActivity"
+            android:exported="true"
+            android:label="@string/action_process_text"
+            android:taskAffinity="">
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.workflow.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/workflow_file_paths" />
+        </provider>
 
         <!-- Quick Settings tile (UX-6 §2): idle → "Ask Aniob", running → "Stop task". -->
         <service

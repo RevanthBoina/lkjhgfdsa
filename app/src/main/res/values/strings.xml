@@ -29,4 +29,19 @@
     <!-- Quick Settings tile (UX-6) -->
     <string name="tile_idle">Ask Aniob</string>
     <string name="tile_running">Stop task</string>
+
+    <!-- Workflow strings -->
+    <string name="action_process_text">Aniob Text Action</string>
+    <string name="destination_label">Destination</string>
+    <string name="workflow_continue">Continue task</string>
+    <string name="workflow_copy_brief">Copy brief &amp; open</string>
+    <string name="workflow_limit_exceeded_brief">Brief exceeds maximum size of 64 KB</string>
+    <string name="workflow_limit_exceeded_doc">Document exceeds maximum size of 512 KB</string>
+    <string name="workflow_limit_exceeded_attachments">Attachments exceed limit of 8 items or 20 MB total</string>
+    <string name="workflow_no_handler">No handler or browser available to perform this action</string>
+    <string name="workflow_waiting">Waiting for user action on website</string>
+    <string name="workflow_effect_unknown">Interrupted during dispatch. Outcome is unverified.</string>
+    <string name="workflow_settings_destinations">Preferred Destinations</string>
+    <string name="workflow_settings_browser">Preferred Browser</string>
+    <string name="workflow_settings_forget">Reset destination preferences</string>
 </resources>

@@ -27,12 +27,14 @@ class AniobTileService : TileService() {
 
     override fun onClick() {
         super.onClick()
-        val running = AniobAccessibilityService.isTaskActive
+        val app = applicationContext as? com.aniob.app.AniobApplication
+        val running = app?.taskOwner?.isActive() == true || AniobAccessibilityService.isTaskActive
         if (isLocked || !running) {
             // Locked devices only get the safe "open the app" action.
             openApp()
             return
         }
+        app?.taskOwner?.stop()
         AniobForegroundService.requestStop()
         updateTile()
     }
@@ -42,12 +44,22 @@ class AniobTileService : TileService() {
             action = Intent.ACTION_VIEW
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         }
-        startActivityAndCollapse(intent)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val pi = android.app.PendingIntent.getActivity(
+                this, 0, intent,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+            startActivityAndCollapse(pi)
+        } else {
+            @Suppress("DEPRECATION")
+            startActivityAndCollapse(intent)
+        }
     }
 
     private fun updateTile() {
         val tile = qsTile ?: return
-        val running = AniobAccessibilityService.isTaskActive
+        val app = applicationContext as? com.aniob.app.AniobApplication
+        val running = app?.taskOwner?.isActive() == true || AniobAccessibilityService.isTaskActive
         tile.state = if (running) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         tile.label = getString(if (running) R.string.tile_running else R.string.tile_idle)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

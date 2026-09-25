@@ -336,6 +336,32 @@ fun AniobSettingsScreen(
                 }
             }
 
+            // Preferred Destinations & Browser
+            val app = context.applicationContext as? com.aniob.app.AniobApplication
+            val coroutineScope = rememberCoroutineScope()
+            Card(modifier = Modifier.fillMaxWidth().testTag("card_preferred_destinations")) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Preferred Destinations & Browser", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = "Customize default website builder and preferred Custom Tabs browser.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                app?.destinationPreferences?.clearAll()
+                            }
+                        },
+                        modifier = Modifier.testTag("btn_reset_destinations")
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Reset destination preferences")
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(24.dp))
         }
     }

@@ -11,10 +11,11 @@ import androidx.room.RoomDatabase
         AppKnowledgeBaseEntity::class,
         TipEntity::class,
         LogEventEntity::class,
-        ActiveTaskEntity::class
+        ActiveTaskEntity::class,
+        WorkflowEntity::class
     ],
-    version = 3,
-    exportSchema = false
+    version = 4,
+    exportSchema = true
 )
 abstract class AniobDatabase : RoomDatabase() {
     abstract fun sessionScoreDao(): SessionScoreDao
@@ -22,6 +23,7 @@ abstract class AniobDatabase : RoomDatabase() {
     abstract fun tipDao(): TipDao
     abstract fun logEventDao(): LogEventDao
     abstract fun activeTaskDao(): ActiveTaskDao
+    abstract fun workflowDao(): WorkflowDao
 
     companion object {
         @Volatile
@@ -41,9 +43,11 @@ abstract class AniobDatabase : RoomDatabase() {
                     context.applicationContext,
                     AniobDatabase::class.java,
                     "aniob_database.db"
-                ).addMigrations(MIGRATION_1_2)
-                    .fallbackToDestructiveMigration()
-                    .build()
+                ).addMigrations(
+                    MIGRATION_1_2,
+                    WorkflowDatabaseMigrations.MIGRATION_2_3,
+                    WorkflowDatabaseMigrations.MIGRATION_3_4
+                ).build()
                 INSTANCE = instance
                 instance
             }

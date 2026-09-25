@@ -57,4 +57,24 @@ class AniobIntentResolverTest {
         assertNotNull(AniobIntentResolver.resolve("open the flashlight"))
         assertNotNull(AniobIntentResolver.resolve("What is my battery?"))
     }
+
+    @Test
+    fun testOpenWebsitePreservesCasingAndQuery() {
+        val result = AniobIntentResolver.resolve("open website https://example.com/PathWithCaps?Param=Value123")
+        assertNotNull(result)
+        assertEquals(AniobIntentResolver.ACTION_VIEW, result?.action)
+        assertEquals("https://example.com/PathWithCaps?Param=Value123", result?.uriString)
+    }
+
+    @Test
+    fun testOpenWebsiteRejectsCredentialsAndControlChars() {
+        val credResult = AniobIntentResolver.resolve("open website https://user:pass@example.com/secret")
+        assertNull("URLs with embedded credentials must be rejected", credResult)
+
+        val ctrlResult = AniobIntentResolver.resolve("open website https://example.com/\u0000bad")
+        assertNull("URLs with control characters must be rejected", ctrlResult)
+
+        val jsResult = AniobIntentResolver.resolve("open website javascript:alert(1)")
+        assertNull("JavaScript scheme must be rejected", jsResult)
+    }
 }

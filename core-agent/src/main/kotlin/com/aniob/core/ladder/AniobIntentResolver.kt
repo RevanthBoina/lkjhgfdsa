@@ -74,22 +74,58 @@ object AniobIntentResolver {
                 } else null
             }
             lower.startsWith("open website ") -> {
-                val raw = lower.removePrefix("open website ").trim()
-                val targetUrl = if (raw.startsWith("http://") || raw.startsWith("https://")) raw else "https://$raw"
-                ResolvedIntentShortcut(
-                    action = ACTION_VIEW,
-                    uriString = targetUrl
-                )
+                val prefixLen = command.indexOf("open website ", ignoreCase = true) + "open website ".length
+                val raw = command.substring(prefixLen).trim()
+                val validated = sanitizeAndValidateUrl(raw)
+                if (validated != null) {
+                    ResolvedIntentShortcut(
+                        action = ACTION_VIEW,
+                        uriString = validated
+                    )
+                } else null
             }
             lower.startsWith("browse ") -> {
-                val raw = lower.removePrefix("browse ").trim()
-                val targetUrl = if (raw.startsWith("http://") || raw.startsWith("https://")) raw else "https://$raw"
-                ResolvedIntentShortcut(
-                    action = ACTION_VIEW,
-                    uriString = targetUrl
-                )
+                val prefixLen = command.indexOf("browse ", ignoreCase = true) + "browse ".length
+                val raw = command.substring(prefixLen).trim()
+                val validated = sanitizeAndValidateUrl(raw)
+                if (validated != null) {
+                    ResolvedIntentShortcut(
+                        action = ACTION_VIEW,
+                        uriString = validated
+                    )
+                } else null
             }
             else -> null
         }
+    }
+
+    fun sanitizeAndValidateUrl(raw: String): String? {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return null
+
+        for (c in trimmed) {
+            if (c.code in 0..31 || c.code == 127) return null
+        }
+
+        val lower = trimmed.lowercase()
+        if (lower.startsWith("javascript:") || lower.startsWith("file:") || lower.startsWith("content:") || lower.startsWith("data:")) {
+            return null
+        }
+
+        val targetUrl = if (lower.startsWith("http://") || lower.startsWith("https://")) {
+            trimmed
+        } else {
+            "https://$trimmed"
+        }
+
+        val schemeEnd = targetUrl.indexOf("://")
+        if (schemeEnd == -1) return null
+        val afterScheme = targetUrl.substring(schemeEnd + 3)
+        val hostPart = afterScheme.substringBefore('/').substringBefore('?').substringBefore('#')
+        if (hostPart.contains('@') || hostPart.isBlank()) {
+            return null
+        }
+
+        return targetUrl
     }
 }

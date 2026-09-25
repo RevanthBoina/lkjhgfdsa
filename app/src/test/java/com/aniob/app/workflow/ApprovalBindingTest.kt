@@ -1,0 +1,96 @@
+package com.aniob.app.workflow
+
+import androidx.test.core.app.ApplicationProvider
+import com.aniob.app.AniobApplication
+import com.aniob.app.ui.model.ConfirmDecision
+import com.aniob.app.ui.model.ConfirmRequest
+import com.aniob.core.workflow.OperationIdentity
+import kotlinx.coroutines.async
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.*
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+
+@RunWith(RobolectricTestRunner::class)
+@Config(application = AniobApplication::class, sdk = [33])
+class ApprovalBindingTest {
+
+    @Test
+    fun testApprovalRequiresMatchingIdentity() = runTest {
+        val controller = ApprovalController()
+        val identity = OperationIdentity(
+            taskId = "task_1",
+            actionId = "action_1",
+            generation = 1L,
+            destinationKey = "https://example.com",
+            approvedPayloadHash = "hash_aaa"
+        )
+        val request = ConfirmRequest(
+            id = "req_1",
+            title = "Approval needed",
+            what = "Send data",
+            why = "Test",
+            risk = ConfirmRequest.Risk.MEDIUM,
+            details = "details",
+            timeoutSec = 5,
+            taskId = "task_1",
+            target = "https://example.com"
+        )
+
+        val approvalJob = async {
+            controller.requestApproval(request, identity)
+        }
+
+        // Resolving with wrong task ID must be rejected
+        val wrongIdResolved = controller.resolveConfirmation(ConfirmDecision.APPROVE_ONCE, taskId = "wrong_task", requestId = "req_1")
+        assertFalse("Resolution with wrong taskId must return false", wrongIdResolved)
+
+        // Resolving with correct IDs succeeds
+        val correctResolved = controller.resolveConfirmation(ConfirmDecision.APPROVE_ONCE, taskId = "task_1", requestId = "req_1")
+        assertTrue(correctResolved)
+
+        val decision = approvalJob.await()
+        assertEquals(ConfirmDecision.APPROVE_ONCE, decision)
+    }
+
+    @Test
+    fun testChangedPayloadHashInvalidatesGrant() = runTest {
+        val controller = ApprovalController()
+        val identity1 = OperationIdentity(
+            taskId = "task_1",
+            actionId = "action_1",
+            generation = 1L,
+            destinationKey = "https://example.com",
+            approvedPayloadHash = "hash_old"
+        )
+        val request = ConfirmRequest(
+            id = "req_1",
+            title = "Approval needed",
+            what = "Send low-risk data",
+            why = "Test",
+            risk = ConfirmRequest.Risk.LOW,
+            details = "details",
+            timeoutSec = 5,
+            taskId = "task_1",
+            target = "https://example.com"
+        )
+
+        // Approve for task with hash_old
+        val job1 = async { controller.requestApproval(request, identity1) }
+        controller.resolveConfirmation(ConfirmDecision.APPROVE_FOR_TASK, "task_1", "req_1")
+        val decision1 = job1.await()
+        assertEquals(ConfirmDecision.APPROVE_FOR_TASK, decision1)
+
+        // Now payload changes -> hash_new
+        val identity2 = identity1.copy(approvedPayloadHash = "hash_new")
+        val job2 = async { controller.requestApproval(request, identity2) }
+
+        // Must NOT be auto-approved because payload hash changed!
+        assertNotNull("Pending request must exist for modified payload", controller.confirmRequest.value)
+        controller.resolveConfirmation(ConfirmDecision.DENY, "task_1", "req_1")
+        val decision2 = job2.await()
+        assertEquals(ConfirmDecision.DENY, decision2)
+    }
+}

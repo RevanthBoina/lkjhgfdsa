@@ -52,7 +52,10 @@ fun ConfirmSheet(
                 }
                 Text("Action: ${request.what}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                 if (request.target.isNotBlank()) {
-                    Text("Target App: ${request.target}", style = MaterialTheme.typography.bodyMedium)
+                    Text("Destination: ${request.target}", style = MaterialTheme.typography.bodyMedium)
+                }
+                if (request.payload.isNotBlank()) {
+                    Text("Payload: ${request.payload}", style = MaterialTheme.typography.bodySmall)
                 }
                 Text("Consequence: ${request.details.ifBlank { request.why }}", style = MaterialTheme.typography.bodyMedium)
                 Text("Why: ${request.why}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

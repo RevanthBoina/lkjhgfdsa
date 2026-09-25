@@ -528,6 +528,50 @@ class AniobViewModel(
     /** Reads the persisted marker on cold start and surfaces it as an Interrupted card. */
     private fun restoreInterruptedSummary() {
         viewModelScope.launch(Dispatchers.IO) {
+            // Check workflow repository first
+            val recoveredWf = try {
+                app.workflowRepository.checkAndRecoverOnStartup()
+            } catch (_: Exception) { null }
+
+            if (recoveredWf != null) {
+                if (recoveredWf.state == "WaitingForUser") {
+                    val dest = com.aniob.core.workflow.Destination(
+                        handler = recoveredWf.destinationKey,
+                        url = recoveredWf.destinationUrl,
+                        category = com.aniob.core.workflow.DestinationCategory.WEBSITE
+                    )
+                    val identity = com.aniob.core.workflow.OperationIdentity(
+                        taskId = recoveredWf.taskId,
+                        actionId = recoveredWf.actionId,
+                        generation = recoveredWf.generation,
+                        destinationKey = recoveredWf.destinationKey,
+                        approvedPayloadHash = recoveredWf.payloadHash
+                    )
+                    app.workflowCoordinator.updateState(
+                        com.aniob.core.workflow.WorkflowState.WaitingForUser(
+                            identity = identity,
+                            destination = dest,
+                            brief = recoveredWf.evidence
+                        )
+                    )
+                    return@launch
+                } else if (recoveredWf.state == "EffectUnknown") {
+                    val summary = buildSummary(
+                        prompt = "Workflow ${recoveredWf.taskId}",
+                        outcome = Outcome.INTERRUPTED,
+                        steps = 1,
+                        durationMs = 0L,
+                        provider = "WORKFLOW",
+                        evidence = emptyList(),
+                        reason = "Interrupted during dispatch. Outcome in external app is unverified."
+                    )
+                    kotlinx.coroutines.withContext(Dispatchers.Main) {
+                        _uiState.update { it.copy(interruptedSummary = summary, isRunning = false) }
+                    }
+                    return@launch
+                }
+            }
+
             val marker = try {
                 app.database.activeTaskDao().getActiveTask()
             } catch (_: Exception) { null } ?: return@launch
@@ -746,43 +790,30 @@ class AniobViewModel(
      */
     internal suspend fun requestConfirmation(request: ConfirmRequest): ConfirmDecision {
         val currentTask = _uiState.value.activeTask
-        val memoKey = "${currentTask?.id}|${request.id}|${request.what}|${request.payload}|${request.target}"
-        if (taskApprovals.contains(memoKey)) return ConfirmDecision.APPROVE_FOR_TASK
-
-        val deferred = CompletableDeferred<ConfirmDecision>()
-        pendingConfirmation = deferred
+        val identity = com.aniob.core.workflow.OperationIdentity(
+            taskId = request.taskId.ifBlank { currentTask?.id ?: "" },
+            actionId = request.id,
+            generation = activeGeneration,
+            destinationKey = request.target
+        )
         _uiState.update { it.copy(confirmRequest = request) }
-
-        // Post the high-priority door so a minimized user actually sees the ask.
         AniobForegroundService.notifyConfirmation(app, request)
-
-        val decision = withTimeoutOrNull(request.timeoutSec * 1000L) { deferred.await() }
-            ?: ConfirmDecision.TIMEOUT_DENY
-
-        // Revalidate after approval: if task changed or cancelled, reject!
-        if (_uiState.value.activeTask?.id != request.taskId && request.taskId.isNotBlank()) {
-            _uiState.update { it.copy(confirmRequest = null) }
-            pendingConfirmation = null
-            AniobForegroundService.clearConfirmation(app)
-            return ConfirmDecision.TIMEOUT_DENY
-        }
-
-        // Consequential commits should prefer APPROVE_ONCE and not memoize for whole task!
-        val isConsequential = request.risk == ConfirmRequest.Risk.HIGH ||
-            request.what.contains(Regex("(?i)pay|transfer|send|delete|purchase"))
-        if (decision == ConfirmDecision.APPROVE_FOR_TASK && !isConsequential) {
-            taskApprovals.add(memoKey)
-        }
+        val decision = app.approvalController.requestApproval(request, identity)
         recordConfirmation(request, decision)
         AniobForegroundService.clearConfirmation(app)
         _uiState.update { it.copy(confirmRequest = null) }
-        pendingConfirmation = null
         return decision
     }
 
     /** Called by the ConfirmSheet / notification action with the user's real choice. */
-    fun resolveConfirmation(decision: ConfirmDecision) {
-        pendingConfirmation?.complete(decision)
+    fun resolveConfirmation(decision: ConfirmDecision, taskId: String? = null, reqId: String? = null) {
+        val handled = app.approvalController.resolveConfirmation(decision, taskId, reqId)
+        if (!handled) {
+            val pending = _uiState.value.confirmRequest
+            if (pending != null) {
+                app.approvalController.resolveConfirmation(decision, pending.taskId, pending.id)
+            }
+        }
     }
 
     /**
@@ -896,6 +927,19 @@ class AniobViewModel(
         _uiState.update { it.copy(omnirouteApiKey = apiKey, omnirouteModel = model) }
     }
 
+    fun handleIncomingShare(shared: com.aniob.app.workflow.ParsedIncomingContent) {
+        val text = shared.text
+        if (!text.isNullOrBlank()) {
+            val userMsg = ChatMessage(
+                id = "msg_share_${System.currentTimeMillis()}",
+                role = "user",
+                content = "Shared text received: \"${text.take(100)}\""
+            )
+            _uiState.update { it.copy(chatMessages = it.chatMessages + userMsg) }
+            submitTask(text)
+        }
+    }
+
     /**
      * Entry point when user submits a natural language command.
      */
@@ -909,8 +953,9 @@ class AniobViewModel(
             return
         }
 
-        val generation = ++activeGeneration
         val taskId = "task_${System.currentTimeMillis()}"
+        val leaseGen = app.taskOwner.acquireLease(taskId)
+        val generation = ++activeGeneration
         val task = AniobTask(id = taskId, rawPrompt = trimmed)
 
         // Clear task-local state
@@ -940,6 +985,102 @@ class AniobViewModel(
         }
 
         activeTaskJob = viewModelScope.launch(Dispatchers.Default) {
+            app.taskOwner.attachJob(leaseGen, currentCoroutineContext()[kotlinx.coroutines.Job]!!)
+
+            // Route via WorkflowRouter before existing automation
+            val workflowDecision = com.aniob.core.workflow.WorkflowRouter.route(trimmed)
+            when (workflowDecision) {
+                is com.aniob.core.workflow.WorkflowDecision.DirectAction -> {
+                    _uiState.update { it.copy(statusMessage = "Executing direct action...", lastProviderUsed = "WORKFLOW") }
+                    val result = app.workflowCoordinator.executeAction(workflowDecision.action, taskId, leaseGen)
+                    when (result) {
+                        is com.aniob.core.workflow.WorkflowResult.WaitingForUser -> {
+                            val dest = when (val a = workflowDecision.action) {
+                                is com.aniob.core.workflow.WorkflowAction.OpenWebsite -> a.destination.handler
+                                is com.aniob.core.workflow.WorkflowAction.OpenApp -> a.destination.handler
+                                else -> "destination"
+                            }
+                            AniobForegroundService.notifyWaitingForUser(app, dest)
+                            _uiState.update {
+                                it.copy(
+                                    isRunning = false,
+                                    statusMessage = "Task waiting on $dest",
+                                    lastProviderUsed = "WORKFLOW"
+                                )
+                            }
+                            return@launch
+                        }
+                        is com.aniob.core.workflow.WorkflowResult.LaunchAccepted -> {
+                            app.metricsCollector.recordWorkflowOutcome(taskId, trimmed, result)
+                            _uiState.update {
+                                it.copy(
+                                    isRunning = false,
+                                    statusMessage = "Action launched",
+                                    lastProviderUsed = "WORKFLOW"
+                                )
+                            }
+                            return@launch
+                        }
+                        is com.aniob.core.workflow.WorkflowResult.Failed -> {
+                            app.metricsCollector.recordWorkflowOutcome(taskId, trimmed, result)
+                            _uiState.update {
+                                it.copy(
+                                    isRunning = false,
+                                    statusMessage = "Action failed: ${result.errorReason}",
+                                    lastProviderUsed = "WORKFLOW"
+                                )
+                            }
+                            return@launch
+                        }
+                        is com.aniob.core.workflow.WorkflowResult.Cancelled -> {
+                            _uiState.update {
+                                it.copy(
+                                    isRunning = false,
+                                    statusMessage = "Cancelled by user",
+                                    lastProviderUsed = "WORKFLOW"
+                                )
+                            }
+                            return@launch
+                        }
+                        else -> {
+                            _uiState.update { it.copy(isRunning = false) }
+                            return@launch
+                        }
+                    }
+                }
+                is com.aniob.core.workflow.WorkflowDecision.NeedsChooser -> {
+                    app.workflowCoordinator.updateState(
+                        com.aniob.core.workflow.WorkflowState.NeedsChoice(workflowDecision.candidates, workflowDecision.prompt)
+                    )
+                    _uiState.update {
+                        it.copy(
+                            isRunning = false,
+                            statusMessage = "Please choose a destination service"
+                        )
+                    }
+                    return@launch
+                }
+                is com.aniob.core.workflow.WorkflowDecision.NeedsClarification -> {
+                    val asstMsg = ChatMessage(
+                        id = "msg_clarify_${System.currentTimeMillis()}",
+                        role = "assistant",
+                        content = workflowDecision.question,
+                        provider = "WORKFLOW"
+                    )
+                    _uiState.update {
+                        it.copy(
+                            isRunning = false,
+                            chatMessages = it.chatMessages + asstMsg,
+                            statusMessage = "Clarification needed"
+                        )
+                    }
+                    return@launch
+                }
+                is com.aniob.core.workflow.WorkflowDecision.DelegateToExisting -> {
+                    // Fallthrough to existing automation / Q&A
+                }
+            }
+
             // Step 0: Pre-route supported shortcuts before general Q&A classification
             val resolvedShortcut = AniobIntentResolver.resolve(trimmed)
             val intent = if (resolvedShortcut != null) {
@@ -2036,9 +2177,12 @@ class AniobViewModel(
 
     fun stopCurrentTask() {
         val stoppingGen = ++activeGeneration
+        val currentTask = _uiState.value.activeTask
+        app.taskOwner.stop(currentTask?.id)
         activeTaskJob?.cancel()
         activeTaskJob = null
 
+        app.approvalController.clearForTask(currentTask?.id ?: "")
         pendingConfirmation?.complete(ConfirmDecision.DENY)
         pendingConfirmation = null
 
