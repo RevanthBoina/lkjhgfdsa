@@ -21,6 +21,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.aniob.app.ui.AniobUiState
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,6 +38,7 @@ fun AniobSettingsScreen(
     onNavigateToTrust: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var apiKeyInput by remember { mutableStateOf(uiState.omnirouteApiKey) }
     var apiKeyVisible by remember { mutableStateOf(false) }
     var selectedModel by remember { mutableStateOf(uiState.omnirouteModel) }
@@ -338,7 +340,6 @@ fun AniobSettingsScreen(
 
             // Preferred Destinations & Browser
             val app = context.applicationContext as? com.aniob.app.AniobApplication
-            val coroutineScope = rememberCoroutineScope()
             Card(modifier = Modifier.fillMaxWidth().testTag("card_preferred_destinations")) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Preferred Destinations & Browser", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)

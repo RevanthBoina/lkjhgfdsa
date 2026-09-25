@@ -98,7 +98,9 @@ class AniobAppCatalog private constructor() {
         try {
             jsonFile.writeText(toJson())
             mdFile.writeText(toMarkdown())
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            System.err.println("AniobAppCatalog saveToFile error: ${e.message}")
+        }
     }
 
     companion object {

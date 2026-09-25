@@ -121,10 +121,11 @@ fun ContinueWorkflowCard(
                 )
             }
 
-            if (!waitingState.brief.isNullOrBlank()) {
+            val brief = waitingState.brief
+            if (!brief.isNullOrBlank()) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Brief: \"${waitingState.brief.take(120)}${if (waitingState.brief.length > 120) "…" else ""}\"",
+                    text = "Brief: \"${brief.take(120)}${if (brief.length > 120) "…" else ""}\"",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
                 )

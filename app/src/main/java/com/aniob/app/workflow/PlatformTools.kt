@@ -50,7 +50,7 @@ class PlatformTools(private val context: Context) {
      * Finds the preferred or default browser that supports Custom Tabs.
      */
     fun findCustomTabsBrowser(preferredPackage: String? = null): String? {
-        val serviceIntent = Intent(CustomTabsService.ACTION_CUSTOM_TABS_SERVICE)
+        val serviceIntent = Intent(CustomTabsService.ACTION_CUSTOM_TABS_CONNECTION)
         val resolveInfos = packageManager.queryIntentServices(serviceIntent, PackageManager.MATCH_DEFAULT_ONLY)
 
         val supportedPackages = resolveInfos.mapNotNull { it.serviceInfo?.packageName }

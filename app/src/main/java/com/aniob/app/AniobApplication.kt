@@ -40,7 +40,7 @@ class AniobApplication : Application(), ComponentCallbacks2 {
         com.aniob.app.workflow.PlatformTools(this)
     }
     val workflowActionHost: com.aniob.app.workflow.WorkflowActionHost by lazy {
-        com.aniob.app.workflow.WorkflowActionHost()
+        com.aniob.app.workflow.WorkflowActionHost(platformTools)
     }
     val incomingContentReader: com.aniob.app.workflow.IncomingContentReader by lazy {
         com.aniob.app.workflow.IncomingContentReader(this)

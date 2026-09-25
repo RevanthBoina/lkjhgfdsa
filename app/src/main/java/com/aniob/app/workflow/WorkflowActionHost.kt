@@ -12,7 +12,7 @@ import java.util.concurrent.ConcurrentHashMap
  * Invariant: Atomically claims an effect before launch to guarantee exactly-once
  * dispatch without replays on Compose recomposition.
  */
-class WorkflowActionHost {
+class WorkflowActionHost(private val platformTools: PlatformTools) {
 
     private var attachedActivity: Activity? = null
     private val claimedActionIds = ConcurrentHashMap.newKeySet<String>()
@@ -59,7 +59,8 @@ class WorkflowActionHost {
                     onReceipt(WorkflowResult.LaunchAccepted(receiptId = "launch_${actionId}"))
                 }
                 is LaunchSpec.CustomTabs -> {
-                    activity.startActivity(spec.intent)
+                    val intent = platformTools.buildCustomTabsIntent(spec.url, spec.browserPackage)
+                    activity.startActivity(intent)
                     onReceipt(WorkflowResult.LaunchAccepted(receiptId = "tabs_${actionId}"))
                 }
                 is LaunchSpec.Sharesheet -> {
