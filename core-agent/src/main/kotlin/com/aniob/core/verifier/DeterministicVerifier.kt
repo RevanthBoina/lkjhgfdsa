@@ -16,7 +16,9 @@ object DeterministicVerifier {
         val reason: String,
         /** Backwards-compatible aliases (AIM pins use isExpected/reason as primary fields). */
         val isSuccessful: Boolean = isExpected,
-        val explanation: String = reason
+        val explanation: String = reason,
+        val textEvidence: String? = null,
+        val evaluations: List<com.aniob.core.domain.CriterionEvaluation> = emptyList()
     )
 
     /**
@@ -121,7 +123,15 @@ object DeterministicVerifier {
         }
 
         val duration = System.currentTimeMillis() - start
-        return VerificationResult(isExpected = result.first, durationMs = duration, reason = result.second)
+        val textEvidence = when (action) {
+            is AniobAction.OpenApp -> if (result.first) screenAfter.packageName else null
+            is AniobAction.InputText -> if (result.first) action.text else null
+            is AniobAction.Tap -> if (result.first && screenBefore != null && screenBefore.packageName != screenAfter.packageName) {
+                "${screenBefore.packageName} -> ${screenAfter.packageName}"
+            } else null
+            else -> null
+        }
+        return VerificationResult(isExpected = result.first, durationMs = duration, reason = result.second, textEvidence = textEvidence)
     }
 
     /**
@@ -147,10 +157,25 @@ object DeterministicVerifier {
         val evaluations = criteria.evaluateCriteria(finalScreen, steps)
         val failures = evaluations.filter { it.state == com.aniob.core.domain.CriterionState.FAILED }
         val duration = System.currentTimeMillis() - start
+        val passedEvidence = evaluations.filter { it.state == com.aniob.core.domain.CriterionState.PASSED && it.textEvidence != null }
+            .joinToString("; ") { "${it.description}: ${it.textEvidence}" }
+            .ifBlank { null }
         return if (failures.isEmpty()) {
-            VerificationResult(true, duration, "Finish evidence satisfied: all criteria met")
+            VerificationResult(
+                isExpected = true,
+                durationMs = duration,
+                reason = "Finish evidence satisfied: all criteria met",
+                textEvidence = passedEvidence,
+                evaluations = evaluations
+            )
         } else {
-            VerificationResult(false, duration, "Unmet criteria: ${failures.joinToString("; ") { "${it.description}: ${it.detail}" }}")
+            VerificationResult(
+                isExpected = false,
+                durationMs = duration,
+                reason = "Unmet criteria: ${failures.joinToString("; ") { "${it.description}: ${it.detail}" }}",
+                textEvidence = passedEvidence,
+                evaluations = evaluations
+            )
         }
     }
 }

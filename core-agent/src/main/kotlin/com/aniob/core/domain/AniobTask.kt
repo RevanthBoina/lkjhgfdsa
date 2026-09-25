@@ -38,7 +38,10 @@ data class AniobStepRecord(
     val tokensUsed: Int = 0,
     val verifiedSuccess: Boolean = true,
     val failureReason: String? = null,
-    val reflectorInvoked: Boolean = false
+    val reflectorInvoked: Boolean = false,
+    val textEvidence: String? = null,
+    val targetBounds: AniobRect? = null,
+    val imageArtifactPath: String? = null
 )
 
 data class AniobPlan(

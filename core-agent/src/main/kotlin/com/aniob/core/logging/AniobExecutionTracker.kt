@@ -19,7 +19,9 @@ class AniobExecutionTracker {
         val latencyMs: Long,
         val outcome: String, // "SUCCESS", "FAILURE", "BLOCKED", "CONFIRMATION_REQUIRED"
         val isVerified: Boolean = true,
-        val tokensUsed: Int = 0
+        val tokensUsed: Int = 0,
+        val textEvidence: String? = null,
+        val targetBounds: com.aniob.core.domain.AniobRect? = null
     )
 
     private val events = mutableListOf<TrajectoryEvent>()

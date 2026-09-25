@@ -9,7 +9,10 @@ import com.aniob.app.network.AniobHttpClientSingleton
 import com.aniob.core.external.AniobCloudLlmProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -17,7 +20,9 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
 
 /**
  * Omniroute Cloud Provider client.
@@ -236,21 +241,39 @@ class AniobOmniRouteProvider(
                 .build()
 
             val call = client.newCall(request)
-            val response = try {
-                call.execute()
-            } catch (e: Exception) {
-                call.cancel()
-                return@withContext Result.failure(e)
+            suspendCancellableCoroutine<Result<String>> { continuation ->
+                continuation.invokeOnCancellation {
+                    call.cancel()
+                }
+                call.enqueue(object : Callback {
+                    override fun onFailure(call: Call, e: IOException) {
+                        if (continuation.isActive) continuation.resume(Result.failure(e))
+                    }
+
+                    override fun onResponse(call: Call, response: Response) {
+                        try {
+                            val body = response.body?.string().orEmpty()
+                            if (!response.isSuccessful) {
+                                if (continuation.isActive) {
+                                    continuation.resume(Result.failure(Exception("Omniroute Cloud API error (${response.code}): $body")))
+                                }
+                                return
+                            }
+                            val rawContent = JSONObject(body).getJSONArray("choices")
+                                .getJSONObject(0)
+                                .getJSONObject("message")
+                                .getString("content")
+                            if (continuation.isActive) {
+                                continuation.resume(Result.success(rawContent))
+                            }
+                        } catch (e: Exception) {
+                            if (continuation.isActive) continuation.resume(Result.failure(e))
+                        } finally {
+                            response.close()
+                        }
+                    }
+                })
             }
-            val body = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("Omniroute Cloud API error (${response.code}): $body"))
-            }
-            val rawContent = JSONObject(body).getJSONArray("choices")
-                .getJSONObject(0)
-                .getJSONObject("message")
-                .getString("content")
-            Result.success(rawContent)
         } catch (e: Exception) {
             Result.failure(e)
         }

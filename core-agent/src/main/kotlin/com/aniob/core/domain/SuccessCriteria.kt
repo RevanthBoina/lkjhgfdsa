@@ -17,7 +17,8 @@ enum class CriterionState {
 data class CriterionEvaluation(
     val description: String,
     val state: CriterionState,
-    val detail: String = ""
+    val detail: String = "",
+    val textEvidence: String? = null
 )
 
 /**
@@ -50,22 +51,41 @@ data class SuccessCriteria(
         val evaluations = mutableListOf<CriterionEvaluation>()
 
         mustContainText.forEach { needle ->
-            val found = screen.nodes.any {
+            val matchingNode = screen.nodes.firstOrNull {
                 it.text.contains(needle, ignoreCase = true) ||
                     it.contentDescription.contains(needle, ignoreCase = true)
             }
-            if (found) {
-                evaluations += CriterionEvaluation("Text '$needle'", CriterionState.PASSED, "Found on screen")
+            if (matchingNode != null) {
+                val matchedText = matchingNode.text.ifBlank { matchingNode.contentDescription }
+                evaluations += CriterionEvaluation(
+                    description = "Text '$needle'",
+                    state = CriterionState.PASSED,
+                    detail = "Found on screen: '$matchedText'",
+                    textEvidence = matchedText
+                )
             } else {
-                evaluations += CriterionEvaluation("Text '$needle'", CriterionState.FAILED, "Expected text '$needle' not present")
+                evaluations += CriterionEvaluation(
+                    description = "Text '$needle'",
+                    state = CriterionState.FAILED,
+                    detail = "Expected text '$needle' not present"
+                )
             }
         }
 
         mustShowPackage.forEach { pkg ->
             if (screen.packageName.equals(pkg, ignoreCase = true)) {
-                evaluations += CriterionEvaluation("Package '$pkg'", CriterionState.PASSED, "Foreground package matches")
+                evaluations += CriterionEvaluation(
+                    description = "Package '$pkg'",
+                    state = CriterionState.PASSED,
+                    detail = "Foreground package matches",
+                    textEvidence = screen.packageName
+                )
             } else {
-                evaluations += CriterionEvaluation("Package '$pkg'", CriterionState.FAILED, "Expected package '$pkg' not foreground (was '${screen.packageName}')")
+                evaluations += CriterionEvaluation(
+                    description = "Package '$pkg'",
+                    state = CriterionState.FAILED,
+                    detail = "Expected package '$pkg' not foreground (was '${screen.packageName}')"
+                )
             }
         }
 
@@ -75,16 +95,25 @@ data class SuccessCriteria(
             } else {
                 val short = activity.substringAfterLast('.')
                 if (screen.activityName.contains(short, ignoreCase = true)) {
-                    evaluations += CriterionEvaluation("Activity '$activity'", CriterionState.PASSED, "Activity matches")
+                    evaluations += CriterionEvaluation(
+                        description = "Activity '$activity'",
+                        state = CriterionState.PASSED,
+                        detail = "Activity matches",
+                        textEvidence = screen.activityName
+                    )
                 } else {
-                    evaluations += CriterionEvaluation("Activity '$activity'", CriterionState.FAILED, "Expected activity '$activity' not shown (was '${screen.activityName}')")
+                    evaluations += CriterionEvaluation(
+                        description = "Activity '$activity'",
+                        state = CriterionState.FAILED,
+                        detail = "Expected activity '$activity' not shown (was '${screen.activityName}')"
+                    )
                 }
             }
         }
 
         if (minSteps > 0) {
             if (steps >= minSteps) {
-                evaluations += CriterionEvaluation("Min steps ($minSteps)", CriterionState.PASSED, "Took $steps steps")
+                evaluations += CriterionEvaluation("Min steps ($minSteps)", CriterionState.PASSED, "Took $steps steps", textEvidence = "$steps steps")
             } else {
                 evaluations += CriterionEvaluation("Min steps ($minSteps)", CriterionState.FAILED, "Expected at least $minSteps steps, took $steps")
             }

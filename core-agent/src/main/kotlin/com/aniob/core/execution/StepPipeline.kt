@@ -3,6 +3,7 @@ package com.aniob.core.execution
 import com.aniob.core.config.AgentLimits
 import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.AniobNode
+import com.aniob.core.domain.AniobRect
 import com.aniob.core.domain.AniobScreenState
 import com.aniob.core.domain.TaskContext
 import com.aniob.core.learning.LearningPipeline
@@ -94,7 +95,9 @@ class StepPipeline(
         val failureReason: String?,
         val resolvedNode: AniobNode?,
         val latencyMs: Long,
-        val tokensUsed: Int
+        val tokensUsed: Int,
+        val textEvidence: String? = null,
+        val targetBounds: AniobRect? = resolvedNode?.bounds
     )
 
     suspend fun executeStep(
@@ -266,7 +269,9 @@ class StepPipeline(
             failureReason = if (verified) null else reason,
             resolvedNode = resolvedNode,
             latencyMs = System.currentTimeMillis() - start,
-            tokensUsed = 0
+            tokensUsed = 0,
+            textEvidence = verification?.textEvidence,
+            targetBounds = resolvedNode?.bounds
         )
         // RECORD: one call site, verified-only for learning (failures must never distill).
         recordStep(record)

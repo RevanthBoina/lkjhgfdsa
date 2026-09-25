@@ -187,6 +187,9 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                         onRunAgain = { prompt -> viewModel.submitTask(prompt) },
                         onViewSteps = { viewModel.setShowTrackerSheet(true) },
                         onMomentDismiss = { viewModel.clearMomentChips() },
+                        onQueueFollowUp = { viewModel.queueFollowUp(it) },
+                        onCancelQueuedTask = { viewModel.cancelQueuedFollowUp() },
+                        onStartQueuedTask = { viewModel.startQueuedTask() },
                         renderWindow = { viewModel.renderWindow() }
                     )
                 }
@@ -216,6 +219,8 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                 uiState = uiState,
                 onSaveSettings = { key, model -> viewModel.updateSettings(key, model) },
                 onAutoRouterModeChanged = { mode -> viewModel.setAutoRouterMode(mode) },
+                onFastPathChanged = { viewModel.setFastPathEnabled(it) },
+                onSafetyGateChanged = { viewModel.setSafetyGateEnabled(it) },
                 onBack = { viewModel.navigateBack() },
                 onNavigateToModels = { viewModel.navigateTo(AniobRoute.MODELS) },
                 onNavigateToStats = { viewModel.navigateTo(AniobRoute.STATS) },

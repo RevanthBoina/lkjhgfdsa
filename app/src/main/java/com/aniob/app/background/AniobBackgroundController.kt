@@ -55,6 +55,7 @@ object AniobBackgroundController {
 
     fun onTaskPaused(paused: Boolean) {
         pill?.setPaused(paused)
+        AniobForegroundService.setPaused(paused)
     }
 
     fun onTaskFinished(context: Context, summary: String, isSuccess: Boolean = true) {

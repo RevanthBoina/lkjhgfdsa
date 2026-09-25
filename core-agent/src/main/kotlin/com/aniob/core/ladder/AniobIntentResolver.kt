@@ -56,8 +56,7 @@ object AniobIntentResolver {
             lower == "open calculator" || lower == "calculator" -> {
                 ResolvedIntentShortcut(
                     action = ACTION_MAIN,
-                    targetPackage = "com.google.android.calculator",
-                    category = CATEGORY_LAUNCHER
+                    category = "android.intent.category.APP_CALCULATOR"
                 )
             }
             lower == "open camera" || lower == "launch camera" -> {
@@ -74,9 +73,17 @@ object AniobIntentResolver {
                     )
                 } else null
             }
-            lower.startsWith("open website ") || lower.startsWith("browse ") -> {
-                val url = lower.substringAfter(" ").trim()
-                val targetUrl = if (url.startsWith("http")) url else "https://$url"
+            lower.startsWith("open website ") -> {
+                val raw = lower.removePrefix("open website ").trim()
+                val targetUrl = if (raw.startsWith("http://") || raw.startsWith("https://")) raw else "https://$raw"
+                ResolvedIntentShortcut(
+                    action = ACTION_VIEW,
+                    uriString = targetUrl
+                )
+            }
+            lower.startsWith("browse ") -> {
+                val raw = lower.removePrefix("browse ").trim()
+                val targetUrl = if (raw.startsWith("http://") || raw.startsWith("https://")) raw else "https://$raw"
                 ResolvedIntentShortcut(
                     action = ACTION_VIEW,
                     uriString = targetUrl

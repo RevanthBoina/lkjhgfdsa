@@ -50,8 +50,12 @@ fun ConfirmSheet(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                     )
                 }
-                Text("What: ${request.what}", style = MaterialTheme.typography.bodyMedium)
-                Text("Why: ${request.why}", style = MaterialTheme.typography.bodyMedium)
+                Text("Action: ${request.what}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                if (request.target.isNotBlank()) {
+                    Text("Target App: ${request.target}", style = MaterialTheme.typography.bodyMedium)
+                }
+                Text("Consequence: ${request.details.ifBlank { request.why }}", style = MaterialTheme.typography.bodyMedium)
+                Text("Why: ${request.why}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(
                     text = "If you don't answer in ${request.timeoutSec}s, Aniob will deny this step.",
                     style = MaterialTheme.typography.labelSmall,
@@ -69,21 +73,22 @@ fun ConfirmSheet(
             }
         },
         confirmButton = {
-            Column(horizontalAlignment = Alignment.End) {
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Button(
                     onClick = { onDecision(ConfirmDecision.APPROVE_ONCE) },
-                    modifier = Modifier.testTag("confirm_approve_once")
+                    modifier = Modifier.heightIn(min = 48.dp).testTag("confirm_approve_once")
                 ) { Text("Approve once") }
-                TextButton(
+                OutlinedButton(
                     onClick = { onDecision(ConfirmDecision.APPROVE_FOR_TASK) },
-                    modifier = Modifier.testTag("confirm_approve_task")
+                    modifier = Modifier.heightIn(min = 48.dp).testTag("confirm_approve_task")
                 ) { Text("Approve for this task") }
             }
         },
         dismissButton = {
-            TextButton(
+            OutlinedButton(
                 onClick = { onDecision(ConfirmDecision.DENY) },
-                modifier = Modifier.testTag("confirm_deny")
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                modifier = Modifier.heightIn(min = 48.dp).testTag("confirm_deny")
             ) { Text("Deny") }
         }
     )

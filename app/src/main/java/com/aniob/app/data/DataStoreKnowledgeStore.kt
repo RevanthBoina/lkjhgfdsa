@@ -7,8 +7,12 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.aniob.core.memory.PersistentKnowledgeStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 
 private val Context.knowledgeDataStore: DataStore<Preferences> by preferencesDataStore(name = "aniob_knowledge")
 
@@ -23,12 +27,20 @@ private val Context.knowledgeDataStore: DataStore<Preferences> by preferencesDat
  */
 class DataStoreKnowledgeStore(private val context: Context) : PersistentKnowledgeStore {
 
-    /** In-memory mirror so the synchronous [AniobSharedKnowledgeStore] reads stay cheap. */
-    private val mirror = mutableMapOf<String, String>()
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    /** Thread-safe in-memory mirror so the synchronous [AniobSharedKnowledgeStore] reads stay cheap. */
+    private val mirror = ConcurrentHashMap<String, String>()
 
     override fun put(key: String, value: String) {
         mirror[key] = value
-        runBlocking { persist(key, value) }
+        scope.launch {
+            try {
+                persist(key, value)
+            } catch (e: Exception) {
+                android.util.Log.w("DataStoreKnowledgeStore", "Failed to persist key=$key", e)
+            }
+        }
     }
 
     override fun get(key: String): String? = mirror[key]
@@ -37,13 +49,23 @@ class DataStoreKnowledgeStore(private val context: Context) : PersistentKnowledg
 
     override fun remove(key: String) {
         mirror.remove(key)
-        runBlocking { persistRemoval(key) }
+        scope.launch {
+            try {
+                persistRemoval(key)
+            } catch (e: Exception) {
+                android.util.Log.w("DataStoreKnowledgeStore", "Failed to remove key=$key", e)
+            }
+        }
     }
 
     override fun clear() {
         mirror.clear()
-        runBlocking {
-            context.knowledgeDataStore.edit { it.clear() }
+        scope.launch {
+            try {
+                context.knowledgeDataStore.edit { it.clear() }
+            } catch (e: Exception) {
+                android.util.Log.w("DataStoreKnowledgeStore", "Failed to clear knowledge datastore", e)
+            }
         }
     }
 
@@ -52,8 +74,11 @@ class DataStoreKnowledgeStore(private val context: Context) : PersistentKnowledg
         val loaded = prefs.asMap().mapNotNull { (key, value) ->
             (value as? String)?.let { key.name to it }
         }.toMap()
-        mirror.putAll(loaded)
-        loaded
+        // Handle hydration/write race: don't overwrite values updated before hydration completed
+        loaded.forEach { (k, v) ->
+            mirror.putIfAbsent(k, v)
+        }
+        HashMap(mirror)
     } catch (_: Exception) {
         // A corrupt or unreadable store must not block the app; we simply start empty.
         emptyMap()

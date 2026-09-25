@@ -48,14 +48,16 @@ fun AniobTrackerScreen(
     val clipboardManager = LocalClipboardManager.current
 
     val filteredSteps = when (uiState.trackerFilter) {
-        "CORRECT" -> uiState.steps.filter { it.verifiedSuccess }
-        "FAILED" -> uiState.steps.filter { !it.verifiedSuccess }
+        "VERIFIED", "CORRECT" -> uiState.steps.filter { it.verifiedSuccess }
+        "NEEDS_ATTENTION", "FAILED" -> uiState.steps.filter { !it.verifiedSuccess && it.failureReason != null }
+        "NOT_CHECKED" -> uiState.steps.filter { !it.verifiedSuccess && it.failureReason == null }
         else -> uiState.steps
     }
 
     val totalSteps = uiState.steps.size
-    val correctCount = uiState.steps.count { it.verifiedSuccess }
-    val failedCount = uiState.steps.count { !it.verifiedSuccess }
+    val verifiedCount = uiState.steps.count { it.verifiedSuccess }
+    val needsAttentionCount = uiState.steps.count { !it.verifiedSuccess && it.failureReason != null }
+    val notCheckedCount = uiState.steps.count { !it.verifiedSuccess && it.failureReason == null }
     val totalLatency = uiState.steps.sumOf { it.latencyMs }
     val totalTokens = uiState.steps.sumOf { it.tokensUsed }
     val modelCalls = uiState.steps.count { it.provider == "OMNIROUTE_CLOUD" || it.provider == "LOCAL_SLM" }
@@ -104,7 +106,7 @@ fun AniobTrackerScreen(
             }
         }
 
-        // 2. Filter Bar: All / Correct / Failed
+        // 2. Filter Bar: All / Verified / Needs attention / Not checked
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -116,17 +118,25 @@ fun AniobTrackerScreen(
                 modifier = Modifier.testTag("filter_all")
             )
             FilterChip(
-                selected = uiState.trackerFilter == "CORRECT",
-                onClick = { onFilterChanged("CORRECT") },
-                label = { Text("Correct ($correctCount)") },
-                modifier = Modifier.testTag("filter_correct")
+                selected = uiState.trackerFilter == "VERIFIED" || uiState.trackerFilter == "CORRECT",
+                onClick = { onFilterChanged("VERIFIED") },
+                label = { Text("Verified ($verifiedCount)") },
+                modifier = Modifier.testTag("filter_verified")
             )
             FilterChip(
-                selected = uiState.trackerFilter == "FAILED",
-                onClick = { onFilterChanged("FAILED") },
-                label = { Text("Failed ($failedCount)") },
-                modifier = Modifier.testTag("filter_failed")
+                selected = uiState.trackerFilter == "NEEDS_ATTENTION" || uiState.trackerFilter == "FAILED",
+                onClick = { onFilterChanged("NEEDS_ATTENTION") },
+                label = { Text("Needs attention ($needsAttentionCount)") },
+                modifier = Modifier.testTag("filter_needs_attention")
             )
+            if (notCheckedCount > 0) {
+                FilterChip(
+                    selected = uiState.trackerFilter == "NOT_CHECKED",
+                    onClick = { onFilterChanged("NOT_CHECKED") },
+                    label = { Text("Not checked ($notCheckedCount)") },
+                    modifier = Modifier.testTag("filter_not_checked")
+                )
+            }
         }
 
         // 3. SubTask & Step List
@@ -251,15 +261,29 @@ fun ExpandableStepRow(
                         style = MaterialTheme.typography.titleMedium
                     )
                     Column {
+                        val failure = step.failureReason
+                        val title = when {
+                            !step.verifiedSuccess && failure != null -> {
+                                val f = failure.lowercase()
+                                when {
+                                    f.contains("approval") || f.contains("declined") -> "Waiting for approval"
+                                    f.contains("not found") -> "Could not find element"
+                                    f.contains("unverified") || f.contains("cannot verify") -> "Could not verify"
+                                    else -> step.action.describeAction().ifBlank { "Step ${step.stepIndex} failed" }
+                                }
+                            }
+                            step.action.describeAction().isNotBlank() -> step.action.describeAction()
+                            else -> "Step ${step.stepIndex}"
+                        }
                         Text(
-                            text = "Step ${step.stepIndex}: ${step.action.thought.take(45)}",
+                            text = title,
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "${step.provider} · ${step.latencyMs}ms · ${step.tokensUsed} tokens",
+                            text = if (step.verifiedSuccess) "Verified" else (step.failureReason ?: "Needs attention"),
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (step.verifiedSuccess) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
                         )
                     }
                 }
@@ -281,6 +305,12 @@ fun ExpandableStepRow(
                     HorizontalDivider()
 
                     Text(
+                        text = "Provider & Latency: ${step.provider} · ${step.latencyMs}ms · ${step.tokensUsed} tokens",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Text(
                         text = "Action: ${formatActionSummary(step.action)}",
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.Medium
@@ -292,6 +322,25 @@ fun ExpandableStepRow(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+
+                    if (!step.textEvidence.isNullOrBlank()) {
+                        Text(
+                            text = "Evidence: ${step.textEvidence}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+
+                    val bounds = step.targetBounds
+                    if (bounds != null && !bounds.isEmpty) {
+                        Text(
+                            text = "Target Geometry: [${bounds.left}, ${bounds.top}, ${bounds.right}, ${bounds.bottom}]",
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
 
                     if (!step.failureReason.isNullOrBlank()) {
                         Card(

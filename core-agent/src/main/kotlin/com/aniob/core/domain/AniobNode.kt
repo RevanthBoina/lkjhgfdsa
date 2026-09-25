@@ -16,7 +16,8 @@ data class AniobNode(
     val isScrollable: Boolean = false,
     val isSelected: Boolean = false,
     val isEnabled: Boolean = true,
-    val isVisibleToUser: Boolean = true
+    val isVisibleToUser: Boolean = true,
+    val isPassword: Boolean = false
 ) {
     val centerX: Int get() = (bounds.left + bounds.right) / 2
     val centerY: Int get() = (bounds.top + bounds.bottom) / 2

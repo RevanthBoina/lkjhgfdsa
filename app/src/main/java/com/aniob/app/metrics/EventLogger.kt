@@ -26,8 +26,14 @@ class EventLogger(private val database: AniobDatabase) {
         val latencyMs: Long,
         val screenHash: String,
         val provider: String,
-        val timestamp: Long = System.currentTimeMillis()
+        val timestamp: Long = System.currentTimeMillis(),
+        val textEvidence: String? = null,
+        val targetBounds: com.aniob.core.domain.AniobRect? = null
     )
+
+    companion object {
+        const val MAX_TRAJECTORY_CAPACITY = 50
+    }
 
     private val trajectory = mutableListOf<TrajectoryStep>()
 
@@ -38,6 +44,9 @@ class EventLogger(private val database: AniobDatabase) {
 
     @Synchronized
     fun logStep(step: TrajectoryStep) {
+        if (trajectory.size >= MAX_TRAJECTORY_CAPACITY) {
+            trajectory.removeAt(0)
+        }
         trajectory.add(step)
         // Privacy: never store raw user text. Sensitive gates are referenced only via
         // categorical audit entries (stepIndex + targetPackage), not the raw message.

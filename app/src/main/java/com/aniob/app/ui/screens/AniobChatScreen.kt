@@ -64,6 +64,9 @@ fun AniobChatScreen(
     onRunAgain: (String) -> Unit = {},
     onViewSteps: () -> Unit = {},
     onMomentDismiss: () -> Unit = {},
+    onQueueFollowUp: (String) -> Unit = {},
+    onCancelQueuedTask: () -> Unit = {},
+    onStartQueuedTask: () -> Unit = {},
     renderWindow: () -> List<ChatMessage> = { emptyList() }
 ) {
     val context = LocalContext.current
@@ -304,13 +307,13 @@ fun AniobChatScreen(
                         }
                         IconButton(
                             onClick = onStopTask,
-                            modifier = Modifier.size(32.dp).testTag("ticker_stop_btn")
+                            modifier = Modifier.size(48.dp).testTag("ticker_stop_btn")
                         ) {
                             Icon(
                                 Icons.Default.Stop,
                                 contentDescription = "Stop",
                                 tint = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(24.dp)
                             )
                         }
                     }
@@ -404,7 +407,7 @@ fun AniobChatScreen(
             }
         }
 
-        // 6. Queued task chip (PROMPT 2)
+        // 6. Queued task chip (running) & persistent next task card (idle)
         if (uiState.isRunning && uiState.queuedPrompt != null) {
             Surface(
                 color = MaterialTheme.colorScheme.secondaryContainer,
@@ -427,10 +430,42 @@ fun AniobChatScreen(
                         modifier = Modifier.weight(1f)
                     )
                     IconButton(
-                        onClick = { onSubmitTask("") },
+                        onClick = onCancelQueuedTask,
                         modifier = Modifier.size(24.dp)
                     ) {
                         Icon(Icons.Default.Close, contentDescription = "Cancel queued task", modifier = Modifier.size(16.dp))
+                    }
+                }
+            }
+        } else if (!uiState.isRunning && uiState.queuedPrompt != null) {
+            Surface(
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp)
+                    .testTag("queued_task_card")
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Queued next task: \"${uiState.queuedPrompt}\"",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = onStartQueuedTask,
+                            modifier = Modifier.testTag("btn_start_queued_task")
+                        ) {
+                            Text("Start next task")
+                        }
+                        OutlinedButton(
+                            onClick = onCancelQueuedTask,
+                            modifier = Modifier.testTag("btn_discard_queued_task")
+                        ) {
+                            Text("Discard")
+                        }
                     }
                 }
             }
@@ -521,7 +556,11 @@ fun AniobChatScreen(
                         if (promptInput.isNotBlank()) {
                             val cmd = promptInput.trim()
                             promptInput = ""
-                            onSubmitTask(cmd)
+                            if (uiState.isRunning) {
+                                onQueueFollowUp(cmd)
+                            } else {
+                                onSubmitTask(cmd)
+                            }
                         }
                     }
                 )
@@ -564,7 +603,11 @@ fun AniobChatScreen(
                         if (promptInput.isNotBlank()) {
                             val cmd = promptInput.trim()
                             promptInput = ""
-                            onSubmitTask(cmd)
+                            if (uiState.isRunning) {
+                                onQueueFollowUp(cmd)
+                            } else {
+                                onSubmitTask(cmd)
+                            }
                         }
                     },
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary),
@@ -880,12 +923,6 @@ fun TaskSummaryCard(
                         modifier = Modifier.weight(1f).testTag("summary_view_steps")
                     ) {
                         Text("View steps", style = MaterialTheme.typography.labelSmall)
-                    }
-                    OutlinedButton(
-                        onClick = onMakeSkill,
-                        modifier = Modifier.weight(1f).testTag("summary_make_skill")
-                    ) {
-                        Text("Make skill", style = MaterialTheme.typography.labelSmall)
                     }
                 } else if (!isStopped) {
                     Button(

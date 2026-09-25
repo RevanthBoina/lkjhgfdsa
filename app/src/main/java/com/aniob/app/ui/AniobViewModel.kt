@@ -208,7 +208,7 @@ class AniobViewModel(
     private val planningAgent = AniobPlanningAgent()
     private val memoryStore = AniobEmbeddingStore()
     private val reflectionAgent = AniobReflectionAgent()
-    private val executionRouter = AniobExecutionRouter(
+    internal val executionRouter = AniobExecutionRouter(
         semanticSkillMatcher = semanticSkillMatcher,
         planningAgent = planningAgent,
         memoryStore = memoryStore
@@ -331,6 +331,7 @@ class AniobViewModel(
         val savedApiKey = prefs.getString("omniroute_api_key", "") ?: ""
         val savedModel = prefs.getString("omniroute_model", "gpt-4o") ?: "gpt-4o"
         val savedMode = prefs.getString("autorouter_mode", "auto") ?: "auto"
+        val savedQueued = prefs.getString("queued_prompt", null)
         localFailCount = prefs.getInt("local_fail_count", 0)
         disabledSkills = (prefs.getStringSet("disabled_skills", emptySet()) ?: emptySet()).toMutableSet()
         executionRouter.setDisabledSkills(disabledSkills)
@@ -340,6 +341,7 @@ class AniobViewModel(
                 omnirouteApiKey = savedApiKey,
                 omnirouteModel = savedModel,
                 autoRouterMode = savedMode,
+                queuedPrompt = savedQueued,
                 // UX-4: switches are REAL state, restored from disk — never placebo remembr.
                 safetyLevel = SafetyLevel.entries.getOrElse(
                     prefs.getInt("safety_level", SafetyLevel.STANDARD.ordinal)
@@ -349,6 +351,8 @@ class AniobViewModel(
                 disabledSkills = disabledSkills.toSet()
             )
         }
+
+        executionRouter.fastPathEnabled = _uiState.value.fastPathEnabled
 
         // UX-4: an OFF safety level is never silently retained — re-arm on every process start.
         if (_uiState.value.safetyLevel == SafetyLevel.OFF) {
@@ -478,9 +482,9 @@ class AniobViewModel(
         reason: String? = null
     ): TaskSummary {
         val next = when (outcome) {
-            Outcome.SUCCESS -> listOf(NextAction.RUN_AGAIN, NextAction.VIEW_STEPS, NextAction.MAKE_SKILL)
-            Outcome.FAILED -> listOf(NextAction.RETRY, NextAction.EXPLORE_APP, NextAction.TEACH_ME, NextAction.VIEW_STEPS)
-            Outcome.UNVERIFIED -> listOf(NextAction.RETRY, NextAction.TEACH_ME, NextAction.VIEW_STEPS)
+            Outcome.SUCCESS -> listOf(NextAction.RUN_AGAIN, NextAction.VIEW_STEPS)
+            Outcome.FAILED -> listOf(NextAction.RETRY, NextAction.EXPLORE_APP, NextAction.VIEW_STEPS)
+            Outcome.UNVERIFIED -> listOf(NextAction.RETRY, NextAction.VIEW_STEPS)
             Outcome.STOPPED -> listOf(NextAction.VIEW_STEPS)
             Outcome.INTERRUPTED -> listOf(NextAction.VIEW_STEPS)
         }
@@ -555,15 +559,25 @@ class AniobViewModel(
     // UX-2 Smart Composer
     // =========================================================================================
 
-    /** Queues a follow-up while a task runs (depth 1; the label says so honestly). */
+    /** Queues a follow-up while a task runs (depth 1; single-owner queue). */
     fun queueFollowUp(prompt: String) {
         val trimmed = prompt.trim()
         if (trimmed.isBlank()) return
+        app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
+            .edit().putString("queued_prompt", trimmed).apply()
         _uiState.update { it.copy(queuedPrompt = trimmed) }
     }
 
     fun cancelQueuedFollowUp() {
+        app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
+            .edit().remove("queued_prompt").apply()
         _uiState.update { it.copy(queuedPrompt = null) }
+    }
+
+    fun startQueuedTask() {
+        val nextPrompt = _uiState.value.queuedPrompt ?: return
+        cancelQueuedFollowUp()
+        submitTask(nextPrompt)
     }
 
     /** Remember a grill answer in the durable vault (previously in-memory only). */
@@ -661,23 +675,15 @@ class AniobViewModel(
     }
 
     /**
-     * Takeover Bridge (UX-3 §4): after a pause→manual step→resume we offer to teach the step just
-     * performed. Until the Teach producer lands this hands off a prefilled draft.
+     * Takeover Bridge (UX-3 §4): manual step performed by user during pause.
+     * Resume cleanly without claiming an unconsented recording session has started.
      */
     fun onTakeoverCompleted() {
-        val prompt = _uiState.value.activeTask?.rawPrompt ?: return
         _uiState.update {
             it.copy(
-                chatMessages = it.chatMessages + ChatMessage(
-                    id = "msg_takeover_${System.currentTimeMillis()}",
-                    role = "assistant",
-                    content = "Learn what you just did? I can turn '$prompt' into a skill.",
-                    badge = "Takeover",
-                    provider = "TEACH"
-                )
+                statusMessage = "Manual step acknowledged. Ready to resume."
             )
         }
-        startTeachFlow(prompt)
     }
 
     // =========================================================================================
@@ -697,6 +703,7 @@ class AniobViewModel(
 
     /** REAL switch: OFF gates the replay lookup — proven by a zero-replay-hits test. */
     fun setFastPathEnabled(enabled: Boolean) {
+        executionRouter.fastPathEnabled = enabled
         app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
             .edit().putBoolean("fastpath_enabled", enabled).apply()
         _uiState.update { it.copy(fastPathEnabled = enabled) }
@@ -933,8 +940,14 @@ class AniobViewModel(
         }
 
         activeTaskJob = viewModelScope.launch(Dispatchers.Default) {
-            // Step 0: Intent Gate (AIM Phase 2.6 / P0-3)
-            val intent = AniobTaskIntentClassifier.classify(trimmed)
+            // Step 0: Pre-route supported shortcuts before general Q&A classification
+            val resolvedShortcut = AniobIntentResolver.resolve(trimmed)
+            val intent = if (resolvedShortcut != null) {
+                AniobIntent.DEVICE_AUTOMATION
+            } else {
+                AniobTaskIntentClassifier.classify(trimmed)
+            }
+
             if (intent != AniobIntent.DEVICE_AUTOMATION) {
                 _uiState.update {
                     it.copy(
@@ -993,8 +1006,8 @@ class AniobViewModel(
                 return@launch
             }
 
-            // Step 1: Grill-Me Check (Flow: Understand -> Ask questions -> Create plan -> Proceed)
-            val grillResult = grillMeEngine.evaluateTask(trimmed)
+            // Step 1: Grill-Me Check with remembered vault preferences
+            val grillResult = grillMeEngine.evaluateTask(trimmed, sharedKnowledgeStore.getAll())
             if (grillResult.needsClarification && grillResult.questions.isNotEmpty()) {
                 _uiState.update {
                     it.copy(
@@ -1006,56 +1019,72 @@ class AniobViewModel(
                 return@launch
             }
 
-            // Step 1.5: Pre-flight Doctor Check (<500ms fail-fast before burning tokens or execution timeout)
-            val resolvedShortcut = AniobIntentResolver.resolve(trimmed)
-            val doctorResult = com.aniob.core.tools.AniobDoctor.preflightCheck(
-                taskPrompt = trimmed,
-                targetPackage = resolvedShortcut?.targetPackage,
-                isAccessibilityConnected = AniobAccessibilityService.isServiceConnected,
-                modelsDir = modelDownloader.getModelsDir(),
-                installedModelId = modelDownloader.getDefaultModelId(),
-                isNetworkAvailable = AniobDeviceTelemetry.getRealState(app).isNetworkAvailable,
-                autoRouterMode = _uiState.value.autoRouterMode,
-                totalRamGb = AniobDeviceTelemetry.getRealState(app).totalRamGb
+            // Step 1.5: Pre-flight Doctor Check
+            if (!runDoctorPreflight(task, trimmed, resolvedShortcut)) {
+                return@launch
+            }
+
+            // Task is self-contained -> Proceed directly
+            executeTaskPipeline(task, generation)
+        }
+    }
+
+    internal fun checkDoctorPreflight(prompt: String): com.aniob.core.tools.DoctorResult {
+        val resolvedShortcut = AniobIntentResolver.resolve(prompt)
+        return com.aniob.core.tools.AniobDoctor.preflightCheck(
+            taskPrompt = prompt,
+            targetPackage = resolvedShortcut?.targetPackage,
+            isAccessibilityConnected = AniobAccessibilityService.isServiceConnected,
+            modelsDir = modelDownloader.getModelsDir(),
+            installedModelId = modelDownloader.getDefaultModelId(),
+            isNetworkAvailable = AniobDeviceTelemetry.getRealState(app).isNetworkAvailable,
+            autoRouterMode = _uiState.value.autoRouterMode,
+            totalRamGb = AniobDeviceTelemetry.getRealState(app).totalRamGb,
+            isAppInstalled = { pkg -> app.packageManager.getLaunchIntentForPackage(pkg) != null },
+            isOfflineShortcut = (resolvedShortcut != null)
+        )
+    }
+
+    private fun runDoctorPreflight(task: AniobTask, prompt: String, resolvedShortcut: ResolvedIntentShortcut?): Boolean {
+        val doctorResult = checkDoctorPreflight(prompt)
+        if (!doctorResult.allPassed) {
+            val telemetry = AniobDeviceTelemetry.getRealState(app)
+            val recommendedId = modelDownloader.getRecommendedModel(modelDownloader.getDeviceInfo())
+            val recommendedName = AniobModelDownloader.ALL_MODELS.find { it.id == recommendedId }?.name ?: recommendedId
+            val installedName = modelDownloader.getDefaultModelId()
+                ?.let { id -> AniobModelDownloader.ALL_MODELS.find { it.id == id }?.name ?: id }
+            val failedChecksSummary = doctorResult.checks.filter { !it.passed }.joinToString { "${it.name}: ${it.reason}" }
+            val tierInfo = " [Tier: ${doctorResult.readinessTier.name}]"
+            val doctorErrorMsg = ChatMessage(
+                id = "msg_doctor_${System.currentTimeMillis()}",
+                role = "assistant",
+                content = when {
+                    doctorResult.checks.any { it.name == "network_available" && !it.passed } ->
+                        "Offline — install an on-device model (${recommendedName}, ${recommendedModelSizeGb(recommendedId)}GB) " +
+                            "in Models screen or check connection. Your device has ${telemetry.totalRamGb}GB RAM.$tierInfo Checks: $failedChecksSummary"
+                    doctorResult.checks.any { it.name == "accessibility_connected" && !it.passed } ->
+                        "Accessibility Service Disabled — Enable Aniob in Settings to automate apps.$tierInfo Checks: $failedChecksSummary"
+                    doctorResult.checks.any { it.name == "model_file_exists" && !it.passed } ->
+                        "Local model file missing — install ${installedName ?: recommendedName} in Models screen " +
+                            "or switch to Auto mode.$tierInfo Checks: $failedChecksSummary"
+                    else -> "Cannot start task: ${doctorResult.failReason}.$tierInfo Checks: $failedChecksSummary"
+                },
+                badge = "⚠️ Pre-flight Failed",
+                provider = "DOCTOR",
+                retryPrompt = prompt
             )
-            if (!doctorResult.allPassed) {
-                val telemetry = AniobDeviceTelemetry.getRealState(app)
-                val recommendedId = modelDownloader.getRecommendedModel(
-                    modelDownloader.getDeviceInfo()
+            _uiState.update {
+                it.copy(
+                    isRunning = false,
+                    statusMessage = "Pre-flight check failed",
+                    chatMessages = it.chatMessages + doctorErrorMsg,
+                    lastRoutingReason = doctorResult.failReason ?: "Doctor pre-flight failed"
                 )
-                val recommendedName = AniobModelDownloader.ALL_MODELS.find { it.id == recommendedId }?.name ?: recommendedId
-                val installedName = modelDownloader.getDefaultModelId()
-                    ?.let { id -> AniobModelDownloader.ALL_MODELS.find { it.id == id }?.name ?: id }
-                val failedChecksSummary = doctorResult.checks.filter { !it.passed }.joinToString { "${it.name}: ${it.reason}" }
-                val doctorErrorMsg = ChatMessage(
-                    id = "msg_doctor_${System.currentTimeMillis()}",
-                    role = "assistant",
-                    content = when {
-                        doctorResult.checks.any { it.name == "network_available" && !it.passed } ->
-                            "Offline \u2014 install an on-device model (${recommendedName}, ${recommendedModelSizeGb(recommendedId)}GB) " +
-                                "in Models screen or check connection. Your device has ${telemetry.totalRamGb}GB RAM. Checks: $failedChecksSummary"
-                        doctorResult.checks.any { it.name == "accessibility_connected" && !it.passed } ->
-                            "Accessibility Service Disabled \u2014 Enable Aniob in Settings to automate apps. Checks: $failedChecksSummary"
-                        doctorResult.checks.any { it.name == "model_file_exists" && !it.passed } ->
-                            "Local model file missing \u2014 install ${installedName ?: recommendedName} in Models screen " +
-                                "or switch to Auto mode. Checks: $failedChecksSummary"
-                        else -> "Cannot start task: ${doctorResult.failReason}. Checks: $failedChecksSummary"
-                    },
-                    badge = "⚠️ Pre-flight Failed",
-                    provider = "DOCTOR",
-                    retryPrompt = trimmed
-                )
-                _uiState.update {
-                    it.copy(
-                        isRunning = false,
-                        statusMessage = "Pre-flight check failed",
-                        chatMessages = it.chatMessages + doctorErrorMsg,
-                        lastRoutingReason = doctorResult.failReason ?: "Doctor pre-flight failed"
-                    )
-                }
+            }
+            viewModelScope.launch {
                 app.metricsCollector.recordSession(
-                    taskId = taskId,
-                    prompt = trimmed,
+                    taskId = task.id,
+                    prompt = prompt,
                     isSuccess = false,
                     steps = 0,
                     durationMs = 0,
@@ -1063,12 +1092,10 @@ class AniobViewModel(
                     providerUsed = "DOCTOR",
                     decisionReason = doctorResult.failReason ?: "Doctor pre-flight failed"
                 )
-                return@launch
             }
-
-            // Task is self-contained -> Proceed directly
-            executeTaskPipeline(task, generation)
+            return false
         }
+        return true
     }
 
     fun onGrillAnswersSubmitted(answers: Map<String, String>, rememberKeys: Set<String> = emptySet()) {
@@ -1097,6 +1124,10 @@ class AniobViewModel(
 
         val gen = activeGeneration
         activeTaskJob = viewModelScope.launch(Dispatchers.Default) {
+            val resolvedShortcut = AniobIntentResolver.resolve(clarifiedPrompt)
+            if (!runDoctorPreflight(updatedTask, clarifiedPrompt, resolvedShortcut)) {
+                return@launch
+            }
             executeTaskPipeline(updatedTask, gen)
         }
     }
@@ -1177,7 +1208,9 @@ class AniobViewModel(
             provider: String,
             latencyMs: Long,
             screenHash: String,
-            verified: Boolean
+            verified: Boolean,
+            textEvidence: String? = null,
+            targetBounds: AniobRect? = null
         ) {
             hippocampusTracker.recordStep(
                 AniobHippocampusTracker.HippocampusStep(
@@ -1188,7 +1221,9 @@ class AniobViewModel(
                     latencyMs = latencyMs,
                     screenHash = screenHash,
                     provider = provider,
-                    verified = verified
+                    verified = verified,
+                    textEvidence = textEvidence,
+                    targetBounds = targetBounds
                 )
             )
             executionTracker.recordEvent(
@@ -1200,7 +1235,9 @@ class AniobViewModel(
                     action = action,
                     latencyMs = latencyMs,
                     outcome = if (verified) "SUCCESS" else "FAILURE",
-                    isVerified = verified
+                    isVerified = verified,
+                    textEvidence = textEvidence,
+                    targetBounds = targetBounds
                 )
             )
             app.eventLogger.logStep(
@@ -1211,7 +1248,9 @@ class AniobViewModel(
                     action = action,
                     latencyMs = latencyMs,
                     screenHash = screenHash,
-                    provider = provider
+                    provider = provider,
+                    textEvidence = textEvidence,
+                    targetBounds = targetBounds
                 )
             )
         }
@@ -1234,7 +1273,9 @@ class AniobViewModel(
                     provider = stepRecord.provider,
                     latencyMs = stepRecord.latencyMs,
                     screenHash = screenBefore?.treeHash ?: "",
-                    verified = stepRecord.verified
+                    verified = stepRecord.verified,
+                    textEvidence = stepRecord.textEvidence,
+                    targetBounds = stepRecord.targetBounds
                 )
                 publishStep(
                     stepIndex = stepRecord.stepIndex,
@@ -1253,7 +1294,9 @@ class AniobViewModel(
                     latencyMs = stepRecord.latencyMs,
                     tokensUsed = stepRecord.tokensUsed,
                     verifiedSuccess = stepRecord.verified,
-                    failureReason = stepRecord.failureReason
+                    failureReason = stepRecord.failureReason,
+                    textEvidence = stepRecord.textEvidence,
+                    targetBounds = stepRecord.targetBounds
                 )
                 addStepRecord(uiStep)
             },
@@ -1467,7 +1510,19 @@ class AniobViewModel(
                                 apiKey = _uiState.value.omnirouteApiKey,
                                 model = _uiState.value.omnirouteModel
                             )
-                            val raw = omniroute.getNextActionRaw(systemPrompt, executorPrompt)
+                            val needsVision = (localFailCount > 0) || task.rawPrompt.contains(Regex("(?i)look|see|inspect|read|image|photo|visual"))
+                            val isSensitiveScreen = currentScreen.nodes.any {
+                                it.isPassword || it.viewId.contains(Regex("(?i)password|pwd|otp|pin|cvv|card_number"))
+                            }
+                            val screenshotBase64 = if (needsVision && !isSensitiveScreen && a11y != null) {
+                                val snap = a11y.captureScreenshotAsync()
+                                snap.bitmap?.let { bmp ->
+                                    val stream = java.io.ByteArrayOutputStream()
+                                    bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, stream)
+                                    android.util.Base64.encodeToString(stream.toByteArray(), android.util.Base64.NO_WRAP)
+                                }
+                            } else null
+                            val raw = omniroute.getNextActionRaw(systemPrompt, executorPrompt, screenshotBase64)
                             totalTokens += 150
                             raw.fold(
                                 onSuccess = { text ->
@@ -1481,7 +1536,8 @@ class AniobViewModel(
                                         val repaired = runCatching {
                                             omniroute.getNextActionRaw(
                                                 systemPrompt,
-                                                repairMsg
+                                                repairMsg,
+                                                screenshotBase64
                                             ).getOrNull()
                                         }.getOrNull()
                                         if (repaired != null) {
@@ -1548,11 +1604,11 @@ class AniobViewModel(
                         }
                         else -> {
                             if (proposal is StepPipeline.Proposal.DirectIntent && ladderResult is AniobExecutionRouter.ExecutionPlanResult.DirectIntent) {
-                                dispatchSystemIntent(ladderResult.shortcut)
+                                val ok = dispatchSystemIntent(ladderResult.shortcut)
                                 AniobWaitForIdle.waitForIdle(800)
                                 val screenAfter = a11y?.captureCurrentScreenState()
                                 actionsDispatched++
-                                StepPipeline.DispatchOutcome(dispatched = true, screenAfter = screenAfter)
+                                StepPipeline.DispatchOutcome(dispatched = ok, screenAfter = screenAfter)
                             } else {
                                 val ok = if (a11y != null) executeActionSync(a11y, act) else true
                                 actionsDispatched++
@@ -1741,11 +1797,11 @@ class AniobViewModel(
             id = "msg_asst_${System.currentTimeMillis()}",
             role = "assistant",
             content = when (finalOutcome) {
-                Outcome.SUCCESS -> "Completed '${task.rawPrompt}' via $primaryProvider. $resultSummary"
-                Outcome.UNVERIFIED -> "Executed '${task.rawPrompt}' via $primaryProvider, but completion could not be verified: ${terminalReason.ifBlank { "No observable criteria" }}"
+                Outcome.SUCCESS -> "Completed '${task.rawPrompt}' via $primaryProvider. Verified: ${evidenceItems.filter { it.met }.joinToString { it.label }.ifBlank { "All criteria" }}. $resultSummary"
+                Outcome.UNVERIFIED -> "Executed '${task.rawPrompt}' via $primaryProvider, but completion could not be verified automatically (${terminalReason.ifBlank { "No observable criteria" }}). Needs manual review."
                 Outcome.STOPPED -> "Stopped '${task.rawPrompt}'. Earlier changes were not undone."
                 Outcome.INTERRUPTED -> "Interrupted '${task.rawPrompt}'."
-                Outcome.FAILED -> "Failed '${task.rawPrompt}': ${terminalReason.ifBlank { "Unmet criteria" }}"
+                Outcome.FAILED -> "Failed '${task.rawPrompt}': ${terminalReason.ifBlank { "Unmet criteria" }}. Left unverified: ${evidenceItems.filter { !it.met }.joinToString { it.label }.ifBlank { "All criteria" }}."
             },
             badge = chatBadge,
             stepIndex = currentStep + 1
@@ -1922,9 +1978,9 @@ class AniobViewModel(
             .filter { it.length >= 3 && it !in SCROLL_STOPWORDS }
             .distinct()
 
-    private fun dispatchSystemIntent(shortcut: ResolvedIntentShortcut) {
+    private fun dispatchSystemIntent(shortcut: ResolvedIntentShortcut): Boolean {
         val systemAction = shortcut.extras[AniobIntentResolver.EXTRA_SYSTEM_ACTION]
-        try {
+        return try {
             when (systemAction) {
                 AniobIntentResolver.SYSTEM_ACTION_FLASHLIGHT -> {
                     // Reflex: toggling the camera flash needs no LLM ladder.
@@ -1935,10 +1991,11 @@ class AniobViewModel(
                     if (cam != null && flashIds.isNotEmpty()) {
                         cam.setTorchMode(flashIds.first(), true)
                         app.eventLogger.info("AniobViewModel", "Flashlight toggled on (reflex, no LLM)")
+                        true
                     } else {
                         app.eventLogger.error("AniobViewModel", "Flashlight unavailable on this device")
+                        false
                     }
-                    return
                 }
                 AniobIntentResolver.SYSTEM_ACTION_GET_DEVICE_INFO -> {
                     val state = AniobDeviceTelemetry.getRealState(app)
@@ -1958,10 +2015,7 @@ class AniobViewModel(
                         stepIndex = 0
                     )
                     _uiState.update { it.copy(chatMessages = it.chatMessages + deviceMsg) }
-                    AniobAccessibilityService.isTaskActive = false
-                    AniobBackgroundController.onTaskFinished(app, summary)
-                    _uiState.update { it.copy(isRunning = false, statusMessage = "Device info captured") }
-                    return
+                    true
                 }
                 else -> {
                     val intent = Intent(shortcut.action).apply {
@@ -1971,10 +2025,12 @@ class AniobViewModel(
                         shortcut.category?.let { addCategory(it) }
                     }
                     app.startActivity(intent)
+                    true
                 }
             }
         } catch (e: Exception) {
             app.eventLogger.error("AniobViewModel", "Failed to launch system intent: ${e.message}")
+            false
         }
     }
 

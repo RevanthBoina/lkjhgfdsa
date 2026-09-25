@@ -28,7 +28,9 @@ class AniobHippocampusTracker(
         val latencyMs: Long,
         val screenHash: String,
         val provider: String,
-        val verified: Boolean
+        val verified: Boolean,
+        val textEvidence: String? = null,
+        val targetBounds: com.aniob.core.domain.AniobRect? = null
     )
 
     private val steps = mutableListOf<HippocampusStep>()

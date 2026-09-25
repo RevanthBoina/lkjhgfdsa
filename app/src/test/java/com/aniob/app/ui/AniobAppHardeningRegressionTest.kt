@@ -68,7 +68,7 @@ class AniobAppHardeningRegressionTest {
         )
         assertEquals(Outcome.SUCCESS, successSummary.outcome)
         assertEquals(
-            listOf(NextAction.RUN_AGAIN, NextAction.VIEW_STEPS, NextAction.MAKE_SKILL),
+            listOf(NextAction.RUN_AGAIN, NextAction.VIEW_STEPS),
             successSummary.nextActions
         )
 
@@ -83,7 +83,7 @@ class AniobAppHardeningRegressionTest {
         )
         assertEquals(Outcome.UNVERIFIED, unverifiedSummary.outcome)
         assertEquals(
-            listOf(NextAction.RETRY, NextAction.TEACH_ME, NextAction.VIEW_STEPS),
+            listOf(NextAction.RETRY, NextAction.VIEW_STEPS),
             unverifiedSummary.nextActions
         )
 
@@ -108,7 +108,7 @@ class AniobAppHardeningRegressionTest {
         )
         assertEquals(Outcome.FAILED, failedSummary.outcome)
         assertEquals(
-            listOf(NextAction.RETRY, NextAction.EXPLORE_APP, NextAction.TEACH_ME, NextAction.VIEW_STEPS),
+            listOf(NextAction.RETRY, NextAction.EXPLORE_APP, NextAction.VIEW_STEPS),
             failedSummary.nextActions
         )
     }

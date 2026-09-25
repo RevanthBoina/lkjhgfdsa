@@ -90,4 +90,24 @@ class AniobExecutionRouterTest {
         assertTrue(second.progressSummary!!.contains("Step 3 executed"))
         assertTrue(second.progressSummary!!.contains("Step 4 executed"))
     }
+
+    @Test
+    fun `disabled fast path must not attempt cache lookup`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.fastPathEnabled = false
+
+        // Negative control: when fastPathEnabled is false, lookup must immediately return null
+        val lookupResult = router.lookup("any task signature")
+        assertNull("Disabled fast path must skip cache lookup entirely", lookupResult)
+
+        // When planStep runs with fastPathEnabled = false, it must never yield FastPathStep
+        val plan = router.planStep(
+            taskPrompt = "Open wifi settings",
+            screenState = screen,
+            stepIndex = 1,
+            taskSignature = "open wifi settings",
+            powerState = power
+        )
+        assertTrue("Must not return FastPathStep when fastPathEnabled = false", plan !is AniobExecutionRouter.ExecutionPlanResult.FastPathStep)
+    }
 }

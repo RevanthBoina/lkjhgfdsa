@@ -7,6 +7,7 @@ import android.provider.Settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -27,6 +28,8 @@ fun AniobSettingsScreen(
     uiState: AniobUiState,
     onSaveSettings: (String, String) -> Unit,
     onAutoRouterModeChanged: (String) -> Unit = {},
+    onFastPathChanged: (Boolean) -> Unit = {},
+    onSafetyGateChanged: (Boolean) -> Unit = {},
     onBack: () -> Unit = {},
     onNavigateToModels: () -> Unit = {},
     onNavigateToStats: () -> Unit = {},
@@ -35,10 +38,10 @@ fun AniobSettingsScreen(
 ) {
     val context = LocalContext.current
     var apiKeyInput by remember { mutableStateOf(uiState.omnirouteApiKey) }
+    var apiKeyVisible by remember { mutableStateOf(false) }
     var selectedModel by remember { mutableStateOf(uiState.omnirouteModel) }
-    var fastPathEnabled by remember { mutableStateOf(true) }
-    var safetyGateEnabled by remember { mutableStateOf(true) }
     var autoRouterMode by remember { mutableStateOf(uiState.autoRouterMode) }
+    var showAdvancedDetails by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -175,6 +178,15 @@ fun AniobSettingsScreen(
                         onValueChange = { apiKeyInput = it },
                         label = { Text("OMNIROUTE_API_KEY") },
                         placeholder = { Text("sk-omniroute-...") },
+                        visualTransformation = if (apiKeyVisible) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
+                                Icon(
+                                    imageVector = if (apiKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (apiKeyVisible) "Hide API Key" else "Reveal API Key"
+                                )
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth().testTag("input_omniroute_key"),
                         singleLine = true
                     )
@@ -198,11 +210,33 @@ fun AniobSettingsScreen(
                         )
                     }
 
-                    Button(
-                        onClick = { onSaveSettings(apiKeyInput, selectedModel) },
-                        modifier = Modifier.align(Alignment.End).testTag("save_settings_button")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Save Provider Config")
+                        TextButton(onClick = { showAdvancedDetails = !showAdvancedDetails }) {
+                            Text(if (showAdvancedDetails) "Hide Technical Details" else "Show Details")
+                        }
+                        Button(
+                            onClick = { onSaveSettings(apiKeyInput, selectedModel) },
+                            modifier = Modifier.testTag("save_settings_button")
+                        ) {
+                            Text("Save Provider Config")
+                        }
+                    }
+
+                    if (showAdvancedDetails) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("Endpoint: https://api.omniroute.ai/v1/chat/completions", style = MaterialTheme.typography.labelSmall)
+                                Text("Protocol: OpenAI-compatible SSE / ChatCompletions", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
                     }
                 }
             }
@@ -214,15 +248,18 @@ fun AniobSettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "On-Device SLM (Local Provider)",
+                        text = "On-Device SLM & Automation Policy",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold
                     )
-                    Text(
-                        text = "Endpoint: http://127.0.0.1:11434/v1/chat/completions\nModel: On-device GGUF / LiteRT",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+
+                    if (showAdvancedDetails) {
+                        Text(
+                            text = "Endpoint: http://127.0.0.1:11434/v1/chat/completions\nModel Engine: On-device GGUF / LiteRT",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
 
                     HorizontalDivider()
 
@@ -232,12 +269,12 @@ fun AniobSettingsScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("FastPath Replay Cache", fontWeight = FontWeight.SemiBold)
-                            Text("0-token instant execution for repeat tasks", style = MaterialTheme.typography.bodySmall)
+                            Text("Reuse verified tasks", fontWeight = FontWeight.SemiBold)
+                            Text("0-token instant execution for previously verified workflows", style = MaterialTheme.typography.bodySmall)
                         }
                         Switch(
-                            checked = fastPathEnabled,
-                            onCheckedChange = { fastPathEnabled = it },
+                            checked = uiState.fastPathEnabled,
+                            onCheckedChange = { onFastPathChanged(it) },
                             modifier = Modifier.testTag("switch_fastpath")
                         )
                     }
@@ -248,14 +285,23 @@ fun AniobSettingsScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("AniobSafetyGate", fontWeight = FontWeight.SemiBold)
-                            Text("Block unauthorized payments or destructive steps", style = MaterialTheme.typography.bodySmall)
+                            Text("Ask before actions", fontWeight = FontWeight.SemiBold)
+                            Text("Require approval before sensitive or high-risk actions", style = MaterialTheme.typography.bodySmall)
                         }
                         Switch(
-                            checked = safetyGateEnabled,
-                            onCheckedChange = { safetyGateEnabled = it },
+                            checked = uiState.safetyGateEnabled,
+                            onCheckedChange = { onSafetyGateChanged(it) },
                             modifier = Modifier.testTag("switch_safety")
                         )
+                    }
+
+                    OutlinedButton(
+                        onClick = onNavigateToTrust,
+                        modifier = Modifier.fillMaxWidth().testTag("btn_goto_trust")
+                    ) {
+                        Icon(Icons.Default.Security, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Authoritative Safety & Policy Controls")
                     }
                 }
             }

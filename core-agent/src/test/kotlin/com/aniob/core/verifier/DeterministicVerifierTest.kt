@@ -7,6 +7,7 @@ import com.aniob.core.domain.AniobRect
 import com.aniob.core.domain.AniobScreenState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -118,7 +119,7 @@ class DeterministicVerifierTest {
     }
 
     @Test
-    fun `finish with observable criteria satisfied is expected`() {
+    fun `finish with observable criteria satisfied is expected and captures textEvidence`() {
         val criteria = com.aniob.core.domain.SuccessCriteria(
             mustContainText = listOf("Item 0"),
             mustShowPackage = listOf("com.example"),
@@ -129,5 +130,28 @@ class DeterministicVerifierTest {
         val result = DeterministicVerifier.verifyFinish(criteria, screen, steps = 2)
 
         assertTrue("Observable evidence satisfied must verify", result.isExpected)
+        assertNotNull("textEvidence must be populated", result.textEvidence)
+        assertTrue("textEvidence must contain matched item", result.textEvidence!!.contains("Item 0"))
+        assertTrue("textEvidence must contain matched package", result.textEvidence!!.contains("com.example"))
+    }
+
+    @Test
+    fun `open app and input text populate textEvidence`() {
+        val before = screen(nodeCount = 1, treeHash = "x", pkg = "com.launcher")
+        val after = screen(nodeCount = 1, treeHash = "y", pkg = "com.android.settings")
+
+        val openAppRes = DeterministicVerifier.verify(AniobAction.OpenApp("com.android.settings"), before, after)
+        assertTrue(openAppRes.isExpected)
+        assertEquals("com.android.settings", openAppRes.textEvidence)
+
+        val target = AniobNode(id = 1, className = "EditText", text = "hello world", isEditable = true)
+        val screenWithText = AniobScreenState(packageName = "com.android.settings", nodes = listOf(target))
+        val inputRes = DeterministicVerifier.verify(
+            AniobAction.InputText(SemanticTarget.SomIndex(1), text = "hello"),
+            before,
+            screenWithText
+        )
+        assertTrue(inputRes.isExpected)
+        assertEquals("hello", inputRes.textEvidence)
     }
 }

@@ -14,6 +14,22 @@ import com.aniob.core.domain.*
 import com.aniob.core.execution.AniobActionExecutor
 import com.aniob.core.execution.DispatchCommand
 import com.aniob.core.optimizer.AniobTokenOptimizer
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+
+data class ScreenshotCaptureResult(
+    val bitmap: android.graphics.Bitmap? = null,
+    val timestampMs: Long = System.currentTimeMillis(),
+    val status: ScreenshotStatus
+)
+
+enum class ScreenshotStatus {
+    SUCCESS,
+    UNSUPPORTED_API,
+    FAILED,
+    RETRY_EXHAUSTED
+}
 
 /**
  * High-performance Accessibility Service for Aniob UI Automation.
@@ -236,7 +252,8 @@ class AniobAccessibilityService : AccessibilityService() {
             isScrollable = node.isScrollable,
             isSelected = node.isSelected,
             isEnabled = node.isEnabled,
-            isVisibleToUser = node.isVisibleToUser
+            isVisibleToUser = node.isVisibleToUser,
+            isPassword = node.isPassword
         )
         list.add(aniobNode)
 
@@ -246,6 +263,60 @@ class AniobAccessibilityService : AccessibilityService() {
             child.recycle()
         }
     }
+
+    /**
+     * Real screenshot capture on Android 30+ using AccessibilityService.takeScreenshot.
+     * Guarded with a bounded retry (max 1 retry after 300ms).
+     * HardwareBuffer is released promptly.
+     */
+    suspend fun captureScreenshotAsync(): ScreenshotCaptureResult {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return ScreenshotCaptureResult(status = ScreenshotStatus.UNSUPPORTED_API)
+        }
+        var result = takeScreenshotInternal()
+        if (result.status != ScreenshotStatus.SUCCESS) {
+            delay(300L)
+            result = takeScreenshotInternal()
+            if (result.status != ScreenshotStatus.SUCCESS) {
+                return ScreenshotCaptureResult(status = ScreenshotStatus.RETRY_EXHAUSTED)
+            }
+        }
+        return result
+    }
+
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.R)
+    private suspend fun takeScreenshotInternal(): ScreenshotCaptureResult =
+        suspendCancellableCoroutine { continuation ->
+            try {
+                takeScreenshot(
+                    android.view.Display.DEFAULT_DISPLAY,
+                    mainExecutor,
+                    object : TakeScreenshotCallback {
+                        override fun onSuccess(screenshot: ScreenshotResult) {
+                            val hardwareBuffer = screenshot.hardwareBuffer
+                            val colorSpace = screenshot.colorSpace
+                            val timestamp = screenshot.timestamp
+                            val wrapped = android.graphics.Bitmap.wrapHardwareBuffer(hardwareBuffer, colorSpace)
+                            val copy = wrapped?.copy(android.graphics.Bitmap.Config.ARGB_8888, false)
+                            hardwareBuffer.close()
+                            if (copy != null) {
+                                if (continuation.isActive) continuation.resume(ScreenshotCaptureResult(copy, timestamp, ScreenshotStatus.SUCCESS))
+                            } else {
+                                if (continuation.isActive) continuation.resume(ScreenshotCaptureResult(status = ScreenshotStatus.FAILED))
+                            }
+                        }
+
+                        override fun onFailure(errorCode: Int) {
+                            Log.w(TAG, "takeScreenshot failed with code $errorCode")
+                            if (continuation.isActive) continuation.resume(ScreenshotCaptureResult(status = ScreenshotStatus.FAILED))
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "takeScreenshot threw exception: ${e.message}")
+                if (continuation.isActive) continuation.resume(ScreenshotCaptureResult(status = ScreenshotStatus.FAILED))
+            }
+        }
 
     fun findScrollableNode(): AccessibilityNodeInfo? {
         val root = rootInActiveWindow ?: return null
@@ -396,10 +467,33 @@ class AniobAccessibilityService : AccessibilityService() {
                 callback(performGlobalAction(globalAction))
             }
             "CONFIRM_WITH_USER" -> callback(true)
-            "FINISH", "WAIT", "CLIPBOARD", "GET_SCREEN_INFO", "TAKE_SCREENSHOT",
-            "GET_DEVICE_INFO", "GET_NOTIFICATIONS", "GET_INSTALLED_APPS" -> callback(true)
+            "FINISH", "WAIT" -> callback(true)
+            "TAKE_SCREENSHOT" -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    takeScreenshot(
+                        android.view.Display.DEFAULT_DISPLAY,
+                        mainExecutor,
+                        object : TakeScreenshotCallback {
+                            override fun onSuccess(screenshot: ScreenshotResult) {
+                                screenshot.hardwareBuffer.close()
+                                callback(true)
+                            }
+                            override fun onFailure(errorCode: Int) {
+                                Log.w(TAG, "TAKE_SCREENSHOT failed with code $errorCode")
+                                callback(false)
+                            }
+                        }
+                    )
+                } else {
+                    callback(false)
+                }
+            }
+            "CLIPBOARD", "GET_SCREEN_INFO", "GET_NOTIFICATIONS", "GET_DEVICE_INFO", "GET_INSTALLED_APPS" -> {
+                Log.w(TAG, "Unsupported utility action: ${command.name}")
+                callback(false)
+            }
             "FAIL" -> callback(false)
-            else -> callback(true)
+            else -> callback(false)
         }
     }
 
