@@ -64,4 +64,19 @@ class WorkflowEntryTest {
         assertNotNull(parsed)
         assertEquals(WorkflowLimits.TEXT_BRIEF_MAX_BYTES, parsed?.text?.length)
     }
+
+    @Test
+    fun testHandleIncomingShareStagesDraftWithoutAutoExecution() {
+        val viewModel = com.aniob.app.ui.AniobViewModel(app)
+        val content = ParsedIncomingContent(
+            mimeType = "text/plain",
+            text = "Draft note content",
+            uris = emptyList(),
+            isMultiple = false
+        )
+        viewModel.handleIncomingShare(content)
+        val state = viewModel.uiState.value
+        assertEquals("Draft note content", state.pendingInputPrefill)
+        assertFalse("Shared content must not auto-execute", state.isRunning)
+    }
 }

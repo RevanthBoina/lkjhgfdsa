@@ -93,4 +93,36 @@ class ApprovalBindingTest {
         val decision2 = job2.await()
         assertEquals(ConfirmDecision.DENY, decision2)
     }
+
+    @Test
+    fun testWrongRequestIdDoesNotResolveAndRemainsPending() = runTest {
+        val controller = ApprovalController()
+        val identity = OperationIdentity(
+            taskId = "task_1",
+            actionId = "action_1",
+            generation = 1L,
+            destinationKey = "https://example.com"
+        )
+        val request = ConfirmRequest(
+            id = "req_1",
+            title = "Approval needed",
+            what = "Send data",
+            why = "Test",
+            risk = ConfirmRequest.Risk.MEDIUM,
+            details = "details",
+            timeoutSec = 5,
+            taskId = "task_1",
+            target = "https://example.com"
+        )
+
+        val approvalJob = async { controller.requestApproval(request, identity) }
+
+        val wrongReqResolved = controller.resolveConfirmation(ConfirmDecision.APPROVE_ONCE, taskId = "task_1", requestId = "wrong_req")
+        assertFalse(wrongReqResolved)
+        assertTrue(approvalJob.isActive)
+
+        controller.resolveConfirmation(ConfirmDecision.APPROVE_ONCE, taskId = "task_1", requestId = "req_1")
+        val decision = approvalJob.await()
+        assertEquals(ConfirmDecision.APPROVE_ONCE, decision)
+    }
 }

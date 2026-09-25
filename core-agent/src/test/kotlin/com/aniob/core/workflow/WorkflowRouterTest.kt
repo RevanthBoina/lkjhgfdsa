@@ -60,5 +60,35 @@ class WorkflowRouterTest {
         assertTrue(decision is WorkflowDecision.DirectAction)
         val action = (decision as WorkflowDecision.DirectAction).action as WorkflowAction.OpenApp
         assertEquals("com.google.android.keep", action.destination.handler)
+        assertNotNull(action.payload)
+        assertEquals("buy groceries", action.payload?.content)
+    }
+
+    @Test
+    fun testSummarizeUrlCarriesBriefText() {
+        val prompt = "Summarize https://example.com/report"
+        val decision = WorkflowRouter.route(prompt)
+        assertTrue(decision is WorkflowDecision.DirectAction)
+        val action = (decision as WorkflowDecision.DirectAction).action as WorkflowAction.OpenWebsite
+        assertEquals("https://example.com/report", action.destination.url)
+        assertEquals(prompt, action.briefText)
+    }
+
+    @Test
+    fun testCompareChatGPTDelegatesToExisting() {
+        val decision = WorkflowRouter.route("Compare ChatGPT and Gemini")
+        assertTrue(decision is WorkflowDecision.DelegateToExisting)
+    }
+
+    @Test
+    fun testOpenSpotifyDelegatesToExisting() {
+        val decision = WorkflowRouter.route("Open Spotify")
+        assertTrue(decision is WorkflowDecision.DelegateToExisting)
+    }
+
+    @Test
+    fun testFtpUrlRejected() {
+        val sanitized = WorkflowRouter.validateAndSanitizeUrl("ftp://example.com/file.txt")
+        org.junit.Assert.assertNull(sanitized)
     }
 }
