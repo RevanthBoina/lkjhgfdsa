@@ -1000,7 +1000,7 @@ class AniobViewModel(
                         steps = 1,
                         durationMs = System.currentTimeMillis() - startTime,
                         provider = "WORKFLOW",
-                        evidence = listOf(EvidenceItem(description = "Opened $destName", satisfied = true))
+                        evidence = listOf(EvidenceItem(label = "Opened $destName", met = true))
                     )
                     _uiState.update {
                         it.copy(
@@ -1119,7 +1119,7 @@ class AniobViewModel(
                 steps = 1,
                 durationMs = 0L,
                 provider = "WORKFLOW",
-                evidence = if (userNotes.isNotBlank()) listOf(EvidenceItem(description = userNotes, satisfied = true)) else emptyList()
+                evidence = if (userNotes.isNotBlank()) listOf(EvidenceItem(label = userNotes, met = true)) else emptyList()
             )
             kotlinx.coroutines.withContext(Dispatchers.Main) {
                 _uiState.update {
