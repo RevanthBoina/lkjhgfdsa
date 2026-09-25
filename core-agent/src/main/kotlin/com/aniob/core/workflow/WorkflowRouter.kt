@@ -81,14 +81,25 @@ object WorkflowRouter {
                     category = DestinationCategory.WEBSITE,
                     provenance = DestinationProvenance.USER_INPUT
                 )
+                val brief = if (trimmed.equals(extractedUrl, ignoreCase = true)) null else trimmed
                 val action = WorkflowAction.OpenWebsite(
                     actionId = "action_${System.currentTimeMillis()}",
                     destination = destination,
-                    briefText = null
+                    briefText = brief
                 )
                 return WorkflowDecision.DirectAction(action)
             } else {
                 return WorkflowDecision.NeedsClarification("The provided website link has an invalid or insecure address format.")
+            }
+        }
+
+        // 2b. Named app direct open/launch -> delegate to existing intent resolver
+        val openAppMatch = Regex("""^(?:open|launch|start)\s+([a-zA-Z0-9\s]+)$""", RegexOption.IGNORE_CASE)
+            .find(trimmed)
+        if (openAppMatch != null) {
+            val candidate = openAppMatch.groupValues[1].trim().lowercase()
+            if (candidate != "chatgpt" && candidate != "notes" && candidate != "website") {
+                return WorkflowDecision.DelegateToExisting(trimmed)
             }
         }
 
@@ -122,6 +133,14 @@ object WorkflowRouter {
 
         // 5. Note taking / editing requests
         if (isNoteCreationRequest(normalized)) {
+            val noteText = extractNoteContent(normalized, trimmed)
+            val notePayload = if (!noteText.isNullOrBlank()) {
+                PayloadReference(
+                    content = noteText,
+                    contentHash = sha256(noteText),
+                    isSensitive = false
+                )
+            } else null
             val noteDestination = Destination(
                 handler = "com.google.android.keep",
                 category = DestinationCategory.APP,
@@ -129,7 +148,8 @@ object WorkflowRouter {
             )
             val action = WorkflowAction.OpenApp(
                 actionId = "action_${System.currentTimeMillis()}",
-                destination = noteDestination
+                destination = noteDestination,
+                payload = notePayload
             )
             return WorkflowDecision.DirectAction(action)
         }
@@ -161,7 +181,12 @@ object WorkflowRouter {
     }
 
     private fun isHostedReasoningRequest(normalized: String): Boolean {
-        return normalized.contains("chatgpt") ||
+        if (normalized.startsWith("compare ") || normalized.startsWith("what is better") ||
+            normalized.contains(" vs ") || normalized.contains(" versus ") ||
+            normalized.contains(" or ")) {
+            return false
+        }
+        return (normalized.contains("chatgpt") && !normalized.contains("compare")) ||
             normalized.startsWith("ask reasoning") ||
             normalized.startsWith("use chatgpt") ||
             normalized.startsWith("open chatgpt")
@@ -174,6 +199,30 @@ object WorkflowRouter {
             normalized.startsWith("take note") ||
             normalized.startsWith("open notes") ||
             normalized.startsWith("write a note")
+    }
+
+    private fun extractNoteContent(normalized: String, original: String): String? {
+        val prefixes = listOf(
+            "create a note to ", "create note to ", "take a note to ",
+            "take note to ", "write a note to ", "create a note that ",
+            "create note that ", "take a note that ", "write a note that ",
+            "create a note: ", "create note: ", "take a note: ", "write a note: ",
+            "create a note ", "create note ", "take a note ", "take note ",
+            "write a note "
+        )
+        for (prefix in prefixes) {
+            if (normalized.startsWith(prefix)) {
+                val content = original.substring(prefix.length).trim()
+                if (content.isNotEmpty()) return content
+            }
+        }
+        return null
+    }
+
+    private fun sha256(input: String): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val hash = digest.digest(input.toByteArray(Charsets.UTF_8))
+        return hash.joinToString("") { "%02x".format(it) }
     }
 
     /**
@@ -201,13 +250,18 @@ object WorkflowRouter {
         val trimmed = url.trim()
         if (trimmed.isEmpty()) return null
 
+        val lower = trimmed.lowercase()
+        val hasAllowedScheme = lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("www.")
+        if (!hasAllowedScheme) {
+            return null
+        }
+
         // Check for control characters
         for (c in trimmed) {
             if (c.code in 0..31 || c.code == 127) return null
         }
 
         // Scheme check
-        val lower = trimmed.lowercase()
         if (lower.startsWith("javascript:") || lower.startsWith("file:") || lower.startsWith("content:") || lower.startsWith("data:")) {
             return null
         }
