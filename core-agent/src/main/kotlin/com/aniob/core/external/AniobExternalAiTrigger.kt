@@ -123,7 +123,7 @@ class AniobExternalAiTrigger(
                 onDelta(delta)
             }
         } else {
-            chosenProviderName = "BUILTIN_QA"
+            chosenProviderName = "NO_PROVIDER"
             fullAnswer = generateFallbackAnswer(prompt, intent)
             onDelta(fullAnswer)
         }
@@ -147,9 +147,7 @@ class AniobExternalAiTrigger(
         return when {
             lower.contains("capital of france") -> "The capital of France is Paris."
             lower.contains("capital of") -> "That is a great geography question. Paris is the capital of France, Tokyo of Japan, and Washington, D.C. of the United States."
-            lower.contains("who invented") || lower.contains("what is") ->
-                "Aniob is designed to answer your questions and automate on-device Android apps. For full online answers, ensure Omniroute API key is configured in Settings."
-            else -> "Here is the response to your request: '$prompt'. Aniob processed this directly without on-screen automation."
+            else -> "⚠️ No AI provider or on-device model is configured to answer this question. Download an on-device model in Models or configure an API key in Settings."
         }
     }
 }
