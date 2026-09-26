@@ -142,7 +142,7 @@ fun AniobSettingsScreen(
                     ) {
                         Icon(Icons.Default.BarChart, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Performance & Telemetry Audit")
+                        Text("Performance & Diagnostics Audit")
                     }
 
                     OutlinedButton(
@@ -156,21 +156,21 @@ fun AniobSettingsScreen(
                 }
             }
 
-            // Omniroute Cloud Settings Section
+            // Cloud Provider Settings Section
             Card(modifier = Modifier.fillMaxWidth().testTag("omniroute_config_card")) {
                 Column(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "Omniroute Cloud (Primary Cloud Provider)",
+                        text = "Cloud Provider (Remote Reasoning)",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
                     )
 
                     Text(
-                        text = "Base URL: https://api.omniroute.ai/v1/chat/completions",
+                        text = "Cloud Reasoner: OpenAI-compatible API",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -178,14 +178,14 @@ fun AniobSettingsScreen(
                     OutlinedTextField(
                         value = apiKeyInput,
                         onValueChange = { apiKeyInput = it },
-                        label = { Text("OMNIROUTE_API_KEY") },
-                        placeholder = { Text("sk-omniroute-...") },
+                        label = { Text("Cloud Access Key") },
+                        placeholder = { Text("sk-...") },
                         visualTransformation = if (apiKeyVisible) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
                         trailingIcon = {
                             IconButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
                                 Icon(
                                     imageVector = if (apiKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                    contentDescription = if (apiKeyVisible) "Hide API Key" else "Reveal API Key"
+                                    contentDescription = if (apiKeyVisible) "Hide secret key" else "Reveal secret key"
                                 )
                             }
                         },
@@ -224,7 +224,7 @@ fun AniobSettingsScreen(
                             onClick = { onSaveSettings(apiKeyInput, selectedModel) },
                             modifier = Modifier.testTag("save_settings_button")
                         ) {
-                            Text("Save Provider Config")
+                            Text("Save Provider Settings")
                         }
                     }
 
@@ -235,8 +235,8 @@ fun AniobSettingsScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text("Endpoint: https://api.omniroute.ai/v1/chat/completions", style = MaterialTheme.typography.labelSmall)
-                                Text("Protocol: OpenAI-compatible SSE / ChatCompletions", style = MaterialTheme.typography.labelSmall)
+                                Text("Network: OpenAI-compatible SSE / ChatCompletions", style = MaterialTheme.typography.labelSmall)
+                                Text("Protocol: HTTPS / JSON Streaming", style = MaterialTheme.typography.labelSmall)
                             }
                         }
                     }

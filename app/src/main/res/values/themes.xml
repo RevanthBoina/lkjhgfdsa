@@ -1,7 +1,98 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <style name="Theme.MyApplication" parent="android:Theme.Material.Light.NoActionBar">
+<!--
+  ANIOB LAUNCH THEME
+  ==================
+  What was here before:
+
+      <style name="Theme.MyApplication" parent="android:Theme.Material.Light.NoActionBar">
+
+  Three separate defects in one line:
+
+  1. "Theme.MyApplication" is the Android Studio template default. It was never renamed,
+     so the app's identity literally said "MyApplication" in every resource reference.
+
+  2. parent="android:Theme.Material.Light" is the FRAMEWORK Material 1 theme from
+     Android 5.0 (2014). Not AppCompat, not Material Components, not Material3.
+     It brings 2014 dialog styling, 2014 widget styling and a WHITE windowBackground.
+
+  3. ".Light" is hardcoded, not ".DayNight". Combined with (2), cold start on a phone in
+     dark mode goes:  WHITE FLASH  ->  near-black Compose UI.
+     That flash IS the "bad opening theme". It is not a perception issue; it is a
+     literal unstyled white window drawn before setContent() first composes.
+
+  The fix below:
+  - Renames to Theme.Aniob.
+  - Parents off Theme.SplashScreen so Android 12+ gets a real, system-managed splash
+    instead of an accidental one.
+  - Points windowSplashScreenBackground at a colour that has a values-night twin, so
+    the launch surface matches the app surface in BOTH modes. No flash.
+  - Sets postSplashScreenTheme so the handoff to the main theme is atomic.
+  - Sets windowLightStatusBar/NavigationBar via @bool so icon polarity flips with mode
+    (the old theme made the bars transparent but never flipped icon colour, which is
+    why status-bar icons were invisible in one of the two modes).
+-->
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- ===================================================================
+         MAIN APP THEME  (what the Activity runs under after splash)
+         =================================================================== -->
+    <style name="Theme.Aniob" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/aniob_window_background</item>
+
+        <!-- Edge-to-edge. MainActivity also calls enableEdgeToEdge(). -->
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="m">@bool/aniob_light_system_bars</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">@bool/aniob_light_system_bars</item>
+        <item name="android:navigationBarDividerColor" tools:targetApi="p">@android:color/transparent</item>
+
+        <!-- Android 15+ draws a contrast scrim behind the nav bar unless told not to. -->
+        <item name="android:enforceNavigationBarContrast" tools:targetApi="q">false</item>
+        <item name="android:enforceStatusBarContrast" tools:targetApi="q">false</item>
+
+        <!-- Predictive back. Aniob has a ViewModel-owned back stack, so opting in gives
+             users the peek-at-previous-screen gesture for free. -->
+        <item name="android:windowSwipeToDismiss">false</item>
+
+        <!-- Never let the OEM auto-dark-mode engine repaint Compose surfaces. -->
+        <item name="android:forceDarkAllowed" tools:targetApi="q">false</item>
     </style>
+
+    <!-- ===================================================================
+         LAUNCH THEME  (the ONLY theme in AndroidManifest's <activity>)
+         =================================================================== -->
+    <style name="Theme.Aniob.Splash" parent="Theme.SplashScreen">
+        <!-- Solid, mode-aware. Matches Theme.Aniob's window background exactly, so the
+             handoff is invisible. -->
+        <item name="windowSplashScreenBackground">@color/aniob_window_background</item>
+
+        <!-- The mark, not the launcher icon. Sized for the 240dp splash keyline. -->
+        <item name="windowSplashScreenAnimatedIcon">@drawable/aniob_splash_mark</item>
+        <item name="windowSplashScreenAnimationDuration">400</item>
+
+        <!-- Android 13+: the icon sits on a circular backdrop by default; suppress it
+             so the mark reads as a mark and not a sticker. -->
+        <item name="windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
+
+        <!-- REQUIRED. Without this the activity keeps the splash theme forever. -->
+        <item name="postSplashScreenTheme">@style/Theme.Aniob</item>
+    </style>
+
+    <!-- ===================================================================
+         TRANSPARENT THEME for the share-target / text-action trampoline.
+         TextActionActivity currently inherits the full app theme and therefore
+         flashes an opaque window before it finishes routing.
+         =================================================================== -->
+    <style name="Theme.Aniob.Transparent" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowIsFloating">false</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
+
+    <!-- Kept as an alias so any stale reference still resolves during migration.
+         Delete after AndroidManifest.xml is updated. -->
+    <style name="Theme.MyApplication" parent="Theme.Aniob" />
 </resources>

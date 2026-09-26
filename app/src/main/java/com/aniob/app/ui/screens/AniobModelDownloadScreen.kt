@@ -123,12 +123,12 @@ fun AniobModelDownloadScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "Device Capability (8GB Target)",
+                                text = "Device Performance",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
                             Badge(containerColor = MaterialTheme.colorScheme.primary) {
-                                Text("${deviceInfo.totalRamGb} GB RAM", color = MaterialTheme.colorScheme.onPrimary)
+                                Text("${deviceInfo.totalRamGb} GB Memory", color = MaterialTheme.colorScheme.onPrimary)
                             }
                         }
 
@@ -136,7 +136,7 @@ fun AniobModelDownloadScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text("Free RAM: ${deviceInfo.freeRamGb} GB", style = MaterialTheme.typography.bodySmall)
+                            Text("Available: ${deviceInfo.freeRamGb} GB", style = MaterialTheme.typography.bodySmall)
                             Text("Free Storage: ${"%.1f".format(deviceInfo.freeStorageGb)} GB", style = MaterialTheme.typography.bodySmall)
                         }
 
@@ -174,7 +174,7 @@ fun AniobModelDownloadScreen(
                                 style = MaterialTheme.typography.titleSmall
                             )
                             Text(
-                                text = "Optimal quality-to-RAM balance for your ${deviceInfo.totalRamGb}GB phone. Runs at 30-50 tok/s on CPU.",
+                                text = "Smart enough for most tasks and quick to respond. Recommended for your device.",
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
@@ -185,7 +185,7 @@ fun AniobModelDownloadScreen(
             // 3. Models List Header
             item {
                 Text(
-                    text = "Installable Models (Q4_K_M GGUF)",
+                    text = "Available Models",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
@@ -250,11 +250,11 @@ fun AniobModelDownloadScreen(
             val targetModel = warningModelToDownload!!
             AlertDialog(
                 onDismissRequest = { warningModelToDownload = null },
-                title = { Text("High RAM Requirement") },
+                title = { Text("High Memory Requirement") },
                 text = {
                     Text(
-                        "This model (${targetModel.name}) recommends at least ${targetModel.minDeviceRamGb} GB RAM. " +
-                        "Your device has ${deviceInfo.totalRamGb} GB RAM. Running this model may cause memory pressure or slower performance.\n\n" +
+                        "This model (${targetModel.name}) recommends at least ${targetModel.minDeviceRamGb} GB memory. " +
+                        "Your device has ${deviceInfo.totalRamGb} GB memory. Running this model may cause memory pressure or slower performance.\n\n" +
                         "Do you wish to proceed?"
                     )
                 },
@@ -350,8 +350,8 @@ fun ModelItemCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text("RAM: ${model.ramRequiredGb} GB", style = MaterialTheme.typography.labelSmall)
-                Text("Quant: Q4_K_M", style = MaterialTheme.typography.labelSmall)
+                Text("Memory: ${model.ramRequiredGb} GB", style = MaterialTheme.typography.labelSmall)
+                Text("Format: Standard", style = MaterialTheme.typography.labelSmall)
                 if (model.requiresCharging) {
                     Text("Needs charging", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                 }

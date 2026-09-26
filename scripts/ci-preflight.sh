@@ -4,15 +4,15 @@ set -e
 echo "=== Running Aniob CI Preflight Inspection ==="
 
 # 1. Billing & Payment Zero-Reference Guard
-echo "[Guard 1/5] Verifying zero billing or payment SDKs..."
+echo "[Guard 1/6] Verifying zero billing or payment SDKs..."
 bash scripts/check_no_billing.sh
 
 # 2. Skill YAML <-> Assets Sync Guard
-echo "[Guard 2/5] Verifying YAML skill library and assets sync..."
+echo "[Guard 2/6] Verifying YAML skill library and assets sync..."
 bash scripts/skill-assets-sync-check.sh
 
 # 3. Core Agent Purity Guard (zero android.* imports in core-agent)
-echo "[Guard 3/5] Verifying core-agent purity..."
+echo "[Guard 3/6] Verifying core-agent purity..."
 BAD_CORE_IMPORTS=$(grep -rn "import android\." core-agent/src/main/kotlin/ 2>/dev/null || true)
 if [ -n "$BAD_CORE_IMPORTS" ]; then
     echo "ERROR: core-agent purity violation detected:"
@@ -22,7 +22,7 @@ fi
 echo "Core-agent purity verified (0 android.* imports)."
 
 # 4. Check for empty catch blocks
-echo "[Guard 4/5] Checking for empty catch blocks..."
+echo "[Guard 4/6] Checking for empty catch blocks..."
 EMPTY_CATCHES=$(grep -rn "catch\\s*(.*)\\s*{\\s*}" app/src/ core-agent/src/ 2>/dev/null || true)
 if [ -n "$EMPTY_CATCHES" ]; then
     echo "WARNING: Empty catch blocks detected:"
@@ -30,7 +30,7 @@ if [ -n "$EMPTY_CATCHES" ]; then
 fi
 
 # 5. Prompt 4 Master-Spec smoke M0 (UI-TARS / Ferret-UI / CogAgent / SeeClick)
-echo "[Guard 5/5] Verifying Prompt-4 visual-perception smoke M0 pins..."
+echo "[Guard 5/6] Verifying Prompt-4 visual-perception smoke M0 pins..."
 SMOKE_FAIL=0
 
 # 5a. 60ms delta throttle + screenshot Base64 streaming in OmniRoute provider
@@ -97,6 +97,9 @@ if [ "$SMOKE_FAIL" -eq 1 ]; then
     exit 1
 fi
 echo "Prompt-4 smoke M0 pins verified (streaming vision, reflexes, watchdog, safety)."
+
+# 6. User-Facing Copy, Color, Touch Target, and Component Kit Guard (UX-7)
+bash scripts/ux-copy-guard.sh
 
 echo "=== ALL PREFLIGHT CI GUARDS PASSED SUCCESSFULLY ==="
 exit 0

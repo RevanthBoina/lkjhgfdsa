@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.aniob.app.ui.AniobUiState
+import com.aniob.app.ui.theme.AniobTheme
 import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.AniobStepRecord
 
@@ -198,9 +199,9 @@ fun SegmentedProgressBar(steps: List<AniobStepRecord>, isRunning: Boolean) {
         } else {
             steps.forEachIndexed { index, step ->
                 val color = if (step.verifiedSuccess) {
-                    Color(0xFF2E7D32) // green
+                    AniobTheme.state.verified.accent
                 } else {
-                    Color(0xFFC62828) // red
+                    AniobTheme.state.blocked.accent
                 }
                 Box(
                     modifier = Modifier
@@ -221,7 +222,7 @@ fun SegmentedProgressBar(steps: List<AniobStepRecord>, isRunning: Boolean) {
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
-                        .background(Color(0xFF1976D2).copy(alpha = alpha))
+                        .background(AniobTheme.state.working.accent.copy(alpha = alpha))
                 )
             }
         }

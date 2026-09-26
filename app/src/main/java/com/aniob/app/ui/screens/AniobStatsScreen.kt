@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.aniob.app.db.SessionScoreEntity
 import com.aniob.app.ui.AniobUiState
+import com.aniob.app.ui.theme.AniobTheme
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -179,7 +180,7 @@ fun AniobStatsScreen(
                         ) {
                             selectedMetricName = "Task Success Rate"
                             selectedMetricValue = "$taskSuccessRate%"
-                            selectedMetricDescription = "$successfulSessions successful executions out of $totalSessions recorded tasks across Intent, FastPath, Skill, and Omniroute cloud routes."
+                            selectedMetricDescription = "$successfulSessions successful executions out of $totalSessions recorded tasks across Direct, Cached, Skill, and Cloud routes."
                         }
 
                         MetricClickableCard(
@@ -265,7 +266,7 @@ fun AniobStatsScreen(
                         ) {
                             selectedMetricName = "Tail Latency (p95)"
                             selectedMetricValue = "${p95Latency}ms"
-                            selectedMetricDescription = "95th percentile step latency including remote vision inference via Omniroute Cloud when visual disambiguation is needed."
+                            selectedMetricDescription = "95th percentile step latency including remote vision inference via Cloud when visual disambiguation is needed."
                         }
                     }
                 }
@@ -283,6 +284,7 @@ fun AniobStatsScreen(
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold
                         )
+                        val chartColor = AniobTheme.state.working.accent
                         Canvas(modifier = Modifier.fillMaxWidth().height(90.dp)) {
                             val pts = if (steps.isNotEmpty()) steps.takeLast(15).map { it.latencyMs.toFloat() } else listOf(400f, 350f, 600f, 250f, 320f, 410f, 300f)
                             if (pts.size > 1) {
@@ -293,9 +295,9 @@ fun AniobStatsScreen(
                                     val x = i * stepX
                                     val y = size.height - (v / maxVal * size.height * 0.8f) - 10f
                                     if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-                                    drawCircle(Color(0xFF1976D2), radius = 4f, center = Offset(x, y))
+                                    drawCircle(chartColor, radius = 4f, center = Offset(x, y))
                                 }
-                                drawPath(path, color = Color(0xFF1976D2), style = Stroke(width = 3f))
+                                drawPath(path, color = chartColor, style = Stroke(width = 3f))
                             }
                         }
                     }
@@ -308,19 +310,22 @@ fun AniobStatsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
                 ) {
+                    val fastPathCount = scores.count { it.providerUsed == "FAST_PATH" || it.providerUsed == "INTENT" }
+                    val localCount = scores.count { it.providerUsed == "LOCAL_SLM" }
+                    val cloudCount = scores.count { it.providerUsed == "OMNIROUTE_CLOUD" }
                     Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Executions by Provider", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("FastPath / Intent (0 tok, <50ms)")
-                            Text("${scores.count { it.providerUsed == "FAST_PATH" || it.providerUsed == "INTENT" }}")
+                            Text("Instant Replay / Cached Intent (<50ms)")
+                            Text("$fastPathCount")
                         }
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("On-Device Local SLM (Phi-4 / Gemma)")
-                            Text("${scores.count { it.providerUsed == "LOCAL_SLM" }}")
+                            Text("On-Device Local Model (Phi-4 / Gemma)")
+                            Text("$localCount")
                         }
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Omniroute Cloud (GPT-4o)")
-                            Text("${scores.count { it.providerUsed == "OMNIROUTE_CLOUD" }}")
+                            Text("Cloud Model (GPT-4o)")
+                            Text("$cloudCount")
                         }
                     }
                 }

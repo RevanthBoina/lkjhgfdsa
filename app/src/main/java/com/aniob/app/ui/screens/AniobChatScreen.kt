@@ -38,6 +38,9 @@ import androidx.compose.ui.unit.dp
 import com.aniob.app.model.AniobModelDownloader
 import com.aniob.app.service.AniobAccessibilityService
 import com.aniob.app.system.SystemState
+import com.aniob.app.ui.components.BannerKind
+import com.aniob.app.ui.components.StatusBanner
+import com.aniob.app.ui.theme.AniobTheme
 import com.aniob.app.ui.AniobUiState
 import com.aniob.app.ui.chat.ChatMessage
 import com.aniob.app.ui.model.*
@@ -139,7 +142,7 @@ fun AniobChatScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Execution Steps (Local Zero-Capture)",
+                        text = "Execution Steps",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -167,85 +170,37 @@ fun AniobChatScreen(
     ) {
         // 1. Permission Health Banner (Blocking card only when disconnected, not shown everyday)
         if (!isConnected && !bannerDismissed) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("service_status_card")
-            ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Warning,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.error
-                    )
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Accessibility Service Disabled",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onErrorContainer
-                        )
-                        Text(
-                            text = "Enable Aniob in Android Settings to automate apps.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer
-                        )
+            StatusBanner(
+                kind = BannerKind.ERROR,
+                title = "Accessibility Service Disabled",
+                body = "Enable Aniob in Android Settings to automate apps.",
+                actionLabel = "Enable",
+                onAction = {
+                    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
                     }
-                    Button(
-                        onClick = {
-                            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
-                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                            }
-                            context.startActivity(intent)
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        modifier = Modifier.testTag("enable_a11y_button")
-                    ) {
-                        Text("Enable")
-                    }
-                    IconButton(onClick = { bannerDismissed = true }) {
-                        Icon(Icons.Default.Close, contentDescription = "Dismiss", modifier = Modifier.size(18.dp))
-                    }
-                }
-            }
+                    context.startActivity(intent)
+                },
+                onDismiss = { bannerDismissed = true },
+                modifier = Modifier.testTag("service_status_card")
+            )
         }
 
         // 2. Interrupted recovery banner (UX-6)
         if (uiState.interruptedSummary != null) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
-                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Task was interrupted", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
-                        Text("\"${uiState.interruptedSummary.prompt}\" stopped when Aniob restarted.", style = MaterialTheme.typography.bodySmall)
-                    }
-                    Button(
-                        onClick = {
-                            val p = uiState.interruptedSummary.prompt
-                            onDismissInterrupted()
-                            onSubmitTask(p)
-                        },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                    ) {
-                        Text("Resume")
-                    }
-                    IconButton(onClick = onDismissInterrupted) {
-                        Icon(Icons.Default.Close, contentDescription = "Dismiss", modifier = Modifier.size(18.dp))
-                    }
-                }
-            }
+            StatusBanner(
+                kind = BannerKind.WARNING,
+                title = "Task was interrupted",
+                body = "\"${uiState.interruptedSummary.prompt}\" stopped when Aniob restarted.",
+                actionLabel = "Resume",
+                onAction = {
+                    val p = uiState.interruptedSummary.prompt
+                    onDismissInterrupted()
+                    onSubmitTask(p)
+                },
+                onDismiss = onDismissInterrupted,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
         }
 
         // 3. Setup reminder banner if skipped (PROMPT 4)
@@ -330,12 +285,11 @@ fun AniobChatScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         IconButton(
                             onClick = onPauseToggle,
-                            modifier = Modifier.size(32.dp).testTag("ticker_pause_btn")
+                            modifier = Modifier.size(48.dp).testTag("ticker_pause_btn")
                         ) {
                             Icon(
                                 if (uiState.isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
-                                contentDescription = if (uiState.isPaused) "Resume" else "Pause",
-                                modifier = Modifier.size(18.dp)
+                                contentDescription = if (uiState.isPaused) "Resume" else "Pause"
                             )
                         }
                         TextButton(
@@ -471,9 +425,9 @@ fun AniobChatScreen(
                     )
                     IconButton(
                         onClick = onCancelQueuedTask,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(48.dp)
                     ) {
-                        Icon(Icons.Default.Close, contentDescription = "Cancel queued task", modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.Close, contentDescription = "Cancel queued task")
                     }
                 }
             }
@@ -849,7 +803,7 @@ fun PulsingDot() {
         modifier = Modifier
             .size(8.dp)
             .clip(CircleShape)
-            .background(Color(0xFF00C853).copy(alpha = alpha))
+            .background(AniobTheme.state.working.accent.copy(alpha = alpha))
     )
 }
 

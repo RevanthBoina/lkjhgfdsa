@@ -6,6 +6,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.aniob.app.background.AniobBackgroundController
 import com.aniob.app.ui.AniobMainScreen
 import com.aniob.app.ui.AniobViewModel
@@ -17,7 +18,10 @@ class MainActivity : ComponentActivity() {
     private val viewModel: AniobViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
+        splashScreen.setKeepOnScreenCondition { !viewModel.isReadyToRender.value }
+
         val app = application as AniobApplication
         AniobBackgroundController.registerActivity(this)
         app.workflowActionHost.attach(this)

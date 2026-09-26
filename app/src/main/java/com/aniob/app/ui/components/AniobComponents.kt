@@ -87,7 +87,7 @@ fun StatusBanner(
             }
             if (onDismiss != null) {
                 IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) {
-                    Icon(Icons.Default.Close, contentDescription = "Dismiss", modifier = Modifier.size(18.dp), tint = onContainer)
+                    Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = onContainer)
                 }
             }
         }

@@ -149,6 +149,9 @@ class AniobViewModel(
     private val _navBackStack = MutableStateFlow(restoreNavBackStack())
     val navBackStack: StateFlow<List<AniobRoute>> = _navBackStack.asStateFlow()
 
+    private val _isReadyToRender = MutableStateFlow(false)
+    val isReadyToRender: StateFlow<Boolean> = _isReadyToRender.asStateFlow()
+
     val currentRoute: AniobRoute get() = _navBackStack.value.lastOrNull() ?: AniobRoute.CHAT
 
     private fun restoreNavBackStack(): List<AniobRoute> {
@@ -360,6 +363,8 @@ class AniobViewModel(
         if (_uiState.value.safetyLevel == SafetyLevel.OFF) {
             setSafetyLevel(SafetyLevel.STANDARD)
         }
+
+        _isReadyToRender.value = true
 
         // UX-2: load remembered answers so "Remember this answer" survives process death.
         viewModelScope.launch {
@@ -1383,14 +1388,14 @@ class AniobViewModel(
                             "or switch to Auto mode.$tierInfo Checks: $failedChecksSummary"
                     else -> "Cannot start task: ${doctorResult.failReason}.$tierInfo Checks: $failedChecksSummary"
                 },
-                badge = "⚠️ Pre-flight Failed",
+                badge = "⚠️ Check Failed",
                 provider = "DOCTOR",
                 retryPrompt = prompt
             )
             _uiState.update {
                 it.copy(
                     isRunning = false,
-                    statusMessage = "Pre-flight check failed",
+                    statusMessage = "System check failed",
                     chatMessages = it.chatMessages + doctorErrorMsg,
                     lastRoutingReason = doctorResult.failReason ?: "Doctor pre-flight failed"
                 )
