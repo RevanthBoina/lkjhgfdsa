@@ -324,7 +324,7 @@ fun AniobStatsScreen(
                             Text("$localCount")
                         }
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Cloud Model (GPT-4o)")
+                            Text("Cloud Model (Auto / Cloud)")
                             Text("$cloudCount")
                         }
                     }

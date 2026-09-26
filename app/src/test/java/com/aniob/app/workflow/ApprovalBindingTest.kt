@@ -42,6 +42,7 @@ class ApprovalBindingTest {
         val approvalJob = async {
             controller.requestApproval(request, identity)
         }
+        kotlinx.coroutines.yield()
 
         // Resolving with wrong task ID must be rejected
         val wrongIdResolved = controller.resolveConfirmation(ConfirmDecision.APPROVE_ONCE, taskId = "wrong_task", requestId = "req_1")
@@ -79,6 +80,7 @@ class ApprovalBindingTest {
 
         // Approve for task with hash_old
         val job1 = async { controller.requestApproval(request, identity1) }
+        kotlinx.coroutines.yield()
         controller.resolveConfirmation(ConfirmDecision.APPROVE_FOR_TASK, "task_1", "req_1")
         val decision1 = job1.await()
         assertEquals(ConfirmDecision.APPROVE_FOR_TASK, decision1)
@@ -86,6 +88,7 @@ class ApprovalBindingTest {
         // Now payload changes -> hash_new
         val identity2 = identity1.copy(approvedPayloadHash = "hash_new")
         val job2 = async { controller.requestApproval(request, identity2) }
+        kotlinx.coroutines.yield()
 
         // Must NOT be auto-approved because payload hash changed!
         assertNotNull("Pending request must exist for modified payload", controller.confirmRequest.value)
@@ -116,6 +119,7 @@ class ApprovalBindingTest {
         )
 
         val approvalJob = async { controller.requestApproval(request, identity) }
+        kotlinx.coroutines.yield()
 
         val wrongReqResolved = controller.resolveConfirmation(ConfirmDecision.APPROVE_ONCE, taskId = "task_1", requestId = "wrong_req")
         assertFalse(wrongReqResolved)

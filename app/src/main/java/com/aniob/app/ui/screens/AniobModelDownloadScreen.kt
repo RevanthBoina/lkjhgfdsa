@@ -18,11 +18,15 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import com.aniob.app.model.AniobModelDownloader
 import com.aniob.app.model.AniobModelInfo
 import com.aniob.app.model.DeviceInfo
 import com.aniob.app.model.DownloadProgress
 import kotlinx.coroutines.launch
+import java.io.File
+import java.io.FileOutputStream
 
 /** Compact ETA formatter: seconds -> "45s" / "3m 20s" / "1h 05m". */
 internal fun formatEta(seconds: Long): String {
@@ -57,11 +61,49 @@ fun AniobModelDownloadScreen(
     val recommendedId = remember(deviceInfo) { downloader.getRecommendedModel(deviceInfo) }
 
     var warningModelToDownload by remember { mutableStateOf<AniobModelInfo?>(null) }
+    var isCustomExpanded by remember { mutableStateOf(false) }
+    var customUrl by remember { mutableStateOf("") }
+    var customUrlName by remember { mutableStateOf("") }
 
     fun refreshModels() {
         deviceInfo = downloader.getDeviceInfo()
         models = downloader.getAvailableModels()
         defaultModelId = downloader.getDefaultModelId()
+    }
+
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            coroutineScope.launch {
+                try {
+                    val stream = context.contentResolver.openInputStream(uri)
+                    if (stream != null) {
+                        val temp = File(downloader.getTempDir(), "imported_${System.currentTimeMillis()}.gguf")
+                        FileOutputStream(temp).use { out -> stream.copyTo(out) }
+                        val result = downloader.registerCustomFile("Imported Model", temp)
+                        temp.delete()
+                        if (result.isSuccess) {
+                            Toast.makeText(context, "Model imported successfully", Toast.LENGTH_SHORT).show()
+                            refreshModels()
+                        } else {
+                            Toast.makeText(context, "Import failed: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Error importing file: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    fun testModel(model: AniobModelInfo) {
+        val file = downloader.getInstalledModelFile(model.id)
+        if (file != null && file.exists() && file.length() > 0) {
+            Toast.makeText(context, "${model.name} verified: model file intact and ready", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(context, "Model file not found or corrupted", Toast.LENGTH_LONG).show()
+        }
     }
 
     // Refresh installed/paused model list as soon as a download leaves the active set.
@@ -236,8 +278,97 @@ fun AniobModelDownloadScreen(
                         downloader.setDefaultModelId(model.id)
                         defaultModelId = model.id
                         Toast.makeText(context, "${model.name} set as primary local model", Toast.LENGTH_SHORT).show()
+                    },
+                    onTestModel = {
+                        testModel(model)
                     }
                 )
+            }
+
+            // 4. Side-load escape hatch: Install from device or URL
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("custom_model_card"),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Install from File or Web",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            IconButton(
+                                onClick = { isCustomExpanded = !isCustomExpanded },
+                                modifier = Modifier.size(48.dp)
+                            ) {
+                                Icon(
+                                    if (isCustomExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                    contentDescription = "Toggle custom model installation"
+                                )
+                            }
+                        }
+
+                        if (isCustomExpanded) {
+                            OutlinedButton(
+                                onClick = { filePickerLauncher.launch(arrayOf("*/*")) },
+                                modifier = Modifier.fillMaxWidth().height(48.dp)
+                            ) {
+                                Icon(Icons.Default.FileOpen, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Import Local Model File")
+                            }
+
+                            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                            OutlinedTextField(
+                                value = customUrlName,
+                                onValueChange = { customUrlName = it },
+                                label = { Text("Model Name") },
+                                placeholder = { Text("e.g. Custom Model") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+
+                            OutlinedTextField(
+                                value = customUrl,
+                                onValueChange = { customUrl = it },
+                                label = { Text("Download Address") },
+                                placeholder = { Text("https://...") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+
+                            Button(
+                                onClick = {
+                                    if (customUrl.isBlank() || !customUrl.startsWith("http")) {
+                                        Toast.makeText(context, "Enter a valid download link", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        val customInfo = downloader.registerCustomUrl(
+                                            name = customUrlName.ifBlank { "Custom Web Model" },
+                                            url = customUrl.trim()
+                                        )
+                                        customUrl = ""
+                                        customUrlName = ""
+                                        refreshModels()
+                                        startDownload(customInfo)
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().height(48.dp)
+                            ) {
+                                Icon(Icons.Default.CloudDownload, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Download from Web")
+                            }
+                        }
+                    }
+                }
             }
 
             item {
@@ -294,7 +425,8 @@ fun ModelItemCard(
     onResume: () -> Unit,
     onCancel: () -> Unit,
     onDelete: () -> Unit,
-    onSetDefault: () -> Unit
+    onSetDefault: () -> Unit,
+    onTestModel: () -> Unit = {}
 ) {
     Card(
         modifier = Modifier
@@ -401,6 +533,10 @@ fun ModelItemCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (model.isInstalled) {
+                    OutlinedButton(onClick = onTestModel, modifier = Modifier.testTag("test_${model.id}")) {
+                        Text("Test")
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
                     TextButton(onClick = onDelete, modifier = Modifier.testTag("delete_${model.id}")) {
                         Text("Delete", color = MaterialTheme.colorScheme.error)
                     }

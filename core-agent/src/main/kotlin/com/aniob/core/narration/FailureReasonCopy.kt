@@ -50,4 +50,15 @@ object FailureReasonCopy {
         "NONE" -> "None"
         else -> code.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
     }
+
+    /** Human-readable explanation for HTTP download failures (UX legible failure). */
+    fun downloadError(code: Int, modelName: String = "model"): String = when (code) {
+        401 -> "This model requires a sign-in. Try a different model."
+        403 -> "Access to this model is restricted. Choose an alternative below."
+        404 -> "The model file wasn't found at the source. The catalog may be out of date."
+        416 -> "The partial download got out of sync. Starting fresh."
+        429 -> "Too many requests \u2014 waiting a moment before retrying."
+        in 500..599 -> "The model host is having trouble right now. Try again later."
+        else -> "Download stopped (code $code). Check your connection and try again."
+    }
 }

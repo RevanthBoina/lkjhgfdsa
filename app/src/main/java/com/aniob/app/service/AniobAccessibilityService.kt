@@ -74,6 +74,7 @@ class AniobAccessibilityService : AccessibilityService() {
     }
 
     private val spotlightOverlay by lazy { com.aniob.app.overlay.AniobSpotlightOverlay(this) }
+    private var bridgeServer: com.aniob.app.bridge.AniobBridgeServer? = null
     private var contentChangedSinceLastStep: Boolean = true
     private var lastScreenState: AniobScreenState? = null
 
@@ -100,6 +101,13 @@ class AniobAccessibilityService : AccessibilityService() {
             Log.i(TAG, "AppCatalog built ${catalog.getAll().size} apps")
         } catch (e: Exception) {
             Log.e(TAG, "Catalog build failed", e)
+        }
+        try {
+            bridgeServer = com.aniob.app.bridge.AniobBridgeServer()
+            bridgeServer?.start()
+            Log.i(TAG, "AniobBridgeServer started on port 8765")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to start AniobBridgeServer", e)
         }
         Log.i(TAG, "AniobAccessibilityService successfully connected and ready.")
     }
@@ -174,6 +182,10 @@ class AniobAccessibilityService : AccessibilityService() {
         // A11y dies mid-task: surface the loss so UX-6's recovery flow can react.
         AniobAccessibilityService.onServiceLost?.invoke(AniobAccessibilityService.isTaskActive)
         AniobAccessibilityService.isTaskActive = false
+        try {
+            bridgeServer?.stop()
+            bridgeServer = null
+        } catch (_: Exception) {}
         notifySystemState()
     }
 

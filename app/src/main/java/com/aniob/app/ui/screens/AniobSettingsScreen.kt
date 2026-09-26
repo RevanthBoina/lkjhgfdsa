@@ -199,9 +199,15 @@ fun AniobSettingsScreen(
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(
+                            selected = selectedModel == "auto" || selectedModel.isBlank(),
+                            onClick = { selectedModel = "auto" },
+                            label = { Text("Auto") },
+                            modifier = Modifier.testTag("chip_auto")
+                        )
+                        FilterChip(
                             selected = selectedModel == "gpt-4o",
                             onClick = { selectedModel = "gpt-4o" },
-                            label = { Text("gpt-4o (Vision)") },
+                            label = { Text("gpt-4o") },
                             modifier = Modifier.testTag("chip_gpt4o")
                         )
                         FilterChip(

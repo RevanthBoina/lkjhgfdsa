@@ -128,6 +128,54 @@ fun AniobTrustCenterScreen(
                     ConfirmHistoryRow(record)
                 }
             }
+
+            // Stored Memory / Vault items (Workstream B / Finding F3)
+            item {
+                Text(
+                    "Stored Preferences & Secrets",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            val entries = vaultEntries()
+            if (entries.isEmpty()) {
+                item {
+                    Text(
+                        "No saved credentials or answers stored",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                items(entries.entries.toList(), key = { it.key }) { (key, value) ->
+                    Card(modifier = Modifier.fillMaxWidth().testTag("vault_row_$key")) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    key.removePrefix("grill.").removePrefix("vault.").replace('_', ' ').replaceFirstChar { it.uppercase() },
+                                    fontWeight = FontWeight.SemiBold,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Text(
+                                    if (key.contains("key") || key.contains("secret") || key.contains("token")) "••••••••" else value,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            TextButton(
+                                onClick = { onForgetVault(key) },
+                                modifier = Modifier.testTag("vault_forget_$key")
+                            ) {
+                                Text("Forget", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

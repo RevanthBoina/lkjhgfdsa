@@ -26,16 +26,35 @@ class AniobWatchdog(
     }
 
     /**
-     * Checks if a loop is detected: the same actionKey has been repeated N times
-     * (regardless of screen — e.g. tapping the same element on a screen that keeps
-     * re-rendering, which is indistinguishable from a stuck loop).
-     * Triggers reflection: remedial BACK + failure reason loop_detected.
+     * Checks if a loop is detected: either the same actionKey has been repeated N times
+     * (takeLast(loopThreshold)), or an oscillating cycle (e.g. A->B->A->B) is detected.
      */
     fun isLoopDetected(): Boolean {
         if (history.size < loopThreshold) return false
         val last = history.last()
         val recent = history.takeLast(loopThreshold)
-        return recent.all { it.actionKey == last.actionKey }
+        if (recent.all { it.actionKey == last.actionKey }) return true
+        return isOscillating()
+    }
+
+    /**
+     * Detects sub-sequence oscillation (e.g. A->B->A->B or A->B->C->A->B->C).
+     */
+    fun isOscillating(): Boolean {
+        if (history.size < 4) return false
+        val keys = history.map { it.actionKey }
+        for (cycleLen in 2..3) {
+            val windowSize = cycleLen * 2
+            if (keys.size >= windowSize) {
+                val window = keys.takeLast(windowSize)
+                val firstHalf = window.take(cycleLen)
+                val secondHalf = window.takeLast(cycleLen)
+                if (firstHalf == secondHalf) {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     fun reset() {

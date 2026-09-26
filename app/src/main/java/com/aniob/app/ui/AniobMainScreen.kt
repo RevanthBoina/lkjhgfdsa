@@ -121,6 +121,13 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                             )
 
                             IconButton(
+                                onClick = { viewModel.navigateTo(AniobRoute.HISTORY) },
+                                modifier = Modifier.testTag("history_button")
+                            ) {
+                                Icon(Icons.Default.History, contentDescription = "Previous chats")
+                            }
+
+                            IconButton(
                                 onClick = { viewModel.clearChat() },
                                 modifier = Modifier.testTag("clear_chat_button")
                             ) {
@@ -207,6 +214,9 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                 onMakeSkill = { prompt ->
                     viewModel.startTeachFlow(prompt)
                     viewModel.navigateTo(AniobRoute.SKILLS)
+                },
+                onSelectSession = { session ->
+                    viewModel.setPromptPrefill(session.userPrompt)
                 }
             )
 

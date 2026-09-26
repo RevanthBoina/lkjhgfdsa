@@ -100,7 +100,7 @@ data class AniobUiState(
     val stepEvents: List<StepEvent> = emptyList(),
     val chatMessages: List<ChatMessage> = emptyList(),
     val omnirouteApiKey: String = "",
-    val omnirouteModel: String = "gpt-4o",
+    val omnirouteModel: String = "auto",
     val autoRouterMode: String = "auto", // auto, local-first, local-only, cloud-only, balanced
     val statusMessage: String = "Ready",
     val lastRoutingReason: String = "Ready",
@@ -334,7 +334,7 @@ class AniobViewModel(
     init {
         val prefs = app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
         val savedApiKey = prefs.getString("omniroute_api_key", "") ?: ""
-        val savedModel = prefs.getString("omniroute_model", "gpt-4o") ?: "gpt-4o"
+        val savedModel = prefs.getString("omniroute_model", "auto") ?: "auto"
         val savedMode = prefs.getString("autorouter_mode", "auto") ?: "auto"
         val savedQueued = prefs.getString("queued_prompt", null)
         localFailCount = prefs.getInt("local_fail_count", 0)
@@ -412,9 +412,8 @@ class AniobViewModel(
         AniobAccessibilityService.onServiceLost = { wasTaskActive ->
             if (wasTaskActive) {
                 AniobBackgroundController.onAccessibilityLost(app)
-                _uiState.update {
+                updateToIdle {
                     it.copy(
-                        isRunning = false,
                         statusMessage = "Aniob lost accessibility access",
                         accessibilityRecoveryNeeded = true
                     )
@@ -537,6 +536,18 @@ class AniobViewModel(
         }
     }
 
+    /**
+     * Foundation Finding F5: Consolidate state transitions so task termination
+     * always flows through a central state updater rather than manual scattered resets.
+     */
+    internal fun updateToIdle(transform: (AniobUiState) -> AniobUiState = { it }) {
+        clearRunningMarker()
+        AniobAccessibilityService.isTaskActive = false
+        _uiState.update { current ->
+            transform(current).copy(isRunning = false)
+        }
+    }
+
     /** Reads the persisted marker on cold start and surfaces it as an Interrupted card. */
     private fun restoreInterruptedSummary() {
         viewModelScope.launch(Dispatchers.IO) {
@@ -557,7 +568,7 @@ class AniobViewModel(
                     reason = "Interrupted during dispatch. Outcome in external app is unverified."
                 )
                 kotlinx.coroutines.withContext(Dispatchers.Main) {
-                    _uiState.update { it.copy(interruptedSummary = summary, isRunning = false) }
+                    updateToIdle { it.copy(interruptedSummary = summary) }
                 }
             }
 
@@ -606,9 +617,8 @@ class AniobViewModel(
                     "Interrupted at step $step. Review external effects before retrying."
                 }
             )
-            clearRunningMarker()
             kotlinx.coroutines.withContext(Dispatchers.Main) {
-                _uiState.update { it.copy(interruptedSummary = summary, isRunning = false) }
+                updateToIdle { it.copy(interruptedSummary = summary) }
             }
         }
     }
@@ -960,6 +970,10 @@ class AniobViewModel(
         return prefill
     }
 
+    fun setPromptPrefill(text: String) {
+        _uiState.update { it.copy(pendingInputPrefill = text) }
+    }
+
     internal fun executeOwnedWorkflowAction(
         taskId: String,
         leaseGen: Long,
@@ -989,9 +1003,8 @@ class AniobViewModel(
             when (result) {
                 is com.aniob.core.workflow.WorkflowResult.WaitingForUser -> {
                     AniobForegroundService.notifyWaitingForUser(app, destName)
-                    _uiState.update {
+                    updateToIdle {
                         it.copy(
-                            isRunning = false,
                             statusMessage = "Task waiting on $destName",
                             lastProviderUsed = "WORKFLOW"
                         )
@@ -1007,9 +1020,8 @@ class AniobViewModel(
                         provider = "WORKFLOW",
                         evidence = listOf(EvidenceItem(label = "Opened $destName", met = true))
                     )
-                    _uiState.update {
+                    updateToIdle {
                         it.copy(
-                            isRunning = false,
                             lastSummary = summary,
                             statusMessage = "Action launched: $destName",
                             lastProviderUsed = "WORKFLOW"
@@ -1027,9 +1039,8 @@ class AniobViewModel(
                         evidence = emptyList(),
                         reason = result.errorReason
                     )
-                    _uiState.update {
+                    updateToIdle {
                         it.copy(
-                            isRunning = false,
                             lastSummary = summary,
                             statusMessage = "Action failed: ${result.errorReason}",
                             lastProviderUsed = "WORKFLOW"
@@ -1046,9 +1057,8 @@ class AniobViewModel(
                         evidence = emptyList(),
                         reason = result.reason
                     )
-                    _uiState.update {
+                    updateToIdle {
                         it.copy(
-                            isRunning = false,
                             lastSummary = summary,
                             statusMessage = "Cancelled by user",
                             lastProviderUsed = "WORKFLOW"
@@ -1056,7 +1066,7 @@ class AniobViewModel(
                     }
                 }
                 else -> {
-                    _uiState.update { it.copy(isRunning = false) }
+                    updateToIdle()
                 }
             }
         }
@@ -1127,9 +1137,8 @@ class AniobViewModel(
                 evidence = if (userNotes.isNotBlank()) listOf(EvidenceItem(label = userNotes, met = true)) else emptyList()
             )
             kotlinx.coroutines.withContext(Dispatchers.Main) {
-                _uiState.update {
+                updateToIdle {
                     it.copy(
-                        isRunning = false,
                         lastSummary = summary,
                         statusMessage = "Workflow marked complete",
                         lastProviderUsed = "WORKFLOW"
@@ -1152,9 +1161,8 @@ class AniobViewModel(
                 reason = "Cancelled by user"
             )
             kotlinx.coroutines.withContext(Dispatchers.Main) {
-                _uiState.update {
+                updateToIdle {
                     it.copy(
-                        isRunning = false,
                         lastSummary = summary,
                         statusMessage = "Workflow cancelled",
                         lastProviderUsed = "WORKFLOW"
@@ -1228,9 +1236,8 @@ class AniobViewModel(
                     app.workflowCoordinator.updateState(
                         com.aniob.core.workflow.WorkflowState.NeedsChoice(workflowDecision.candidates, workflowDecision.prompt)
                     )
-                    _uiState.update {
+                    updateToIdle {
                         it.copy(
-                            isRunning = false,
                             statusMessage = "Please choose a destination service"
                         )
                     }
@@ -1243,9 +1250,8 @@ class AniobViewModel(
                         content = workflowDecision.question,
                         provider = "WORKFLOW"
                     )
-                    _uiState.update {
+                    updateToIdle {
                         it.copy(
-                            isRunning = false,
                             chatMessages = it.chatMessages + asstMsg,
                             statusMessage = "Clarification needed"
                         )
@@ -1297,9 +1303,8 @@ class AniobViewModel(
                     badge = "💬 AI Answer",
                     provider = result.provider
                 )
-                _uiState.update {
+                updateToIdle {
                     it.copy(
-                        isRunning = false,
                         isStreaming = false,
                         streamingBubbleText = "",
                         statusMessage = "Ready",
@@ -1392,9 +1397,8 @@ class AniobViewModel(
                 provider = "DOCTOR",
                 retryPrompt = prompt
             )
-            _uiState.update {
+            updateToIdle {
                 it.copy(
-                    isRunning = false,
                     statusMessage = "System check failed",
                     chatMessages = it.chatMessages + doctorErrorMsg,
                     lastRoutingReason = doctorResult.failReason ?: "Doctor pre-flight failed"
@@ -1453,7 +1457,7 @@ class AniobViewModel(
 
     /** Explicit cancel from the Grill sheet ("Cancel task"), not a silent dismiss. */
     fun cancelGrillMe() {
-        _uiState.update { it.copy(showGrillMeSheet = false, isRunning = false, statusMessage = "Task cancelled") }
+        updateToIdle { it.copy(showGrillMeSheet = false, statusMessage = "Task cancelled") }
     }
 
     fun dismissGrillMe() = cancelGrillMe()
@@ -2150,9 +2154,8 @@ class AniobViewModel(
             }
         }
 
-        _uiState.update {
+        updateToIdle {
             it.copy(
-                isRunning = false,
                 statusMessage = resultSummary,
                 lastProviderUsed = primaryProvider,
                 chatMessages = it.chatMessages + assistantMessage
@@ -2381,10 +2384,8 @@ class AniobViewModel(
             reason = "Stopped. Earlier changes were not undone."
         )
         postSummaryCard(stoppedSummary)
-        clearRunningMarker()
-
         AniobBackgroundController.onTaskFinished(app, "Stopped by user", isSuccess = false)
-        _uiState.update { it.copy(isRunning = false, statusMessage = "Stopped. Earlier changes were not undone.") }
+        updateToIdle { it.copy(statusMessage = "Stopped. Earlier changes were not undone.") }
     }
 
     companion object {

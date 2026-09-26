@@ -22,6 +22,16 @@ class WorkflowCoordinatorTest {
     fun setUp() {
         app = ApplicationProvider.getApplicationContext()
         coordinator = app.workflowCoordinator
+        val activity = org.robolectric.Robolectric.buildActivity(android.app.Activity::class.java).setup().get()
+        app.workflowActionHost.attach(activity)
+
+        val resolveInfo = android.content.pm.ResolveInfo().apply {
+            serviceInfo = android.content.pm.ServiceInfo().apply {
+                packageName = "com.android.chrome"
+            }
+        }
+        val customTabsIntent = android.content.Intent(androidx.browser.customtabs.CustomTabsService.ACTION_CUSTOM_TABS_CONNECTION)
+        org.robolectric.Shadows.shadowOf(app.packageManager).addResolveInfoForIntent(customTabsIntent, resolveInfo)
     }
 
     @Test
@@ -29,7 +39,8 @@ class WorkflowCoordinatorTest {
         val destination = Destination(
             handler = "lovable.dev",
             url = "https://lovable.dev/",
-            category = DestinationCategory.BUILDER_SERVICE
+            category = DestinationCategory.BUILDER_SERVICE,
+            isApproved = true
         )
         val action = WorkflowAction.OpenWebsite(
             actionId = "test_action_1",
@@ -44,7 +55,7 @@ class WorkflowCoordinatorTest {
         )
 
         // Web handoff must produce WaitingForUser result
-        assertTrue(result is WorkflowResult.WaitingForUser)
+        assertTrue("Expected WaitingForUser but got $result", result is WorkflowResult.WaitingForUser)
 
         val persisted = app.workflowRepository.getWorkflow("test_task_1")
         assertNotNull(persisted)

@@ -91,6 +91,39 @@ fun AniobSkillsScreen(
                     )
                 }
             }
+
+            val entries = vaultEntries()
+            if (entries.isNotEmpty()) {
+                item { SectionHeader("Learned Preferences") }
+                items(entries.entries.toList(), key = { "skill_vault_${it.key}" }) { (key, value) ->
+                    Card(modifier = Modifier.fillMaxWidth().testTag("skill_vault_row_$key")) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    key.removePrefix("grill.").removePrefix("vault.").replace('_', ' ').replaceFirstChar { it.uppercase() },
+                                    fontWeight = FontWeight.SemiBold,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Text(
+                                    if (key.contains("key") || key.contains("secret") || key.contains("token")) "••••••••" else value,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            TextButton(
+                                onClick = { onForgetVault(key) },
+                                modifier = Modifier.testTag("skill_vault_forget_$key")
+                            ) {
+                                Text("Forget", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

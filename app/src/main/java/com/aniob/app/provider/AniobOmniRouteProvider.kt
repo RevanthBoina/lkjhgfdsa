@@ -32,8 +32,8 @@ import kotlin.coroutines.resume
  */
 class AniobOmniRouteProvider(
     private val apiKey: String,
-    private val baseUrl: String = "https://api.omniroute.ai/v1/chat/completions",
-    private val model: String = "gpt-4o",
+    private val baseUrl: String = AniobProviderConfig.OMNIROUTE_ONLINE,
+    private val model: String = "auto",
     private val jsonMode: Boolean = false
 ) : AniobCloudLlmProvider {
     override val name: String = "OMNIROUTE_CLOUD"
@@ -44,6 +44,7 @@ class AniobOmniRouteProvider(
             .build()
 
     override suspend fun generate(prompt: String, systemPrompt: String): String = withContext(Dispatchers.IO) {
+        val startTime = System.currentTimeMillis()
         if (apiKey.isBlank()) {
             return@withContext "Omniroute API key is not configured. Please add it in Settings."
         }
@@ -80,7 +81,9 @@ class AniobOmniRouteProvider(
                 return@withContext "Error from Omniroute Cloud (${response.code}): $body"
             }
             val rootJson = JSONObject(body)
-            rootJson.getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content")
+            val fullContent = rootJson.getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content")
+            AniobEgressLedger.record(name, model, prompt.length + systemPrompt.length, fullContent.length, System.currentTimeMillis() - startTime)
+            fullContent
         } catch (e: Exception) {
             "Request failed: ${e.message}"
         }
@@ -121,6 +124,7 @@ class AniobOmniRouteProvider(
             onDelta(msg)
             return@withContext msg
         }
+        val startTime = System.currentTimeMillis()
         var call: okhttp3.Call? = null
         try {
             val messages = buildMessages(systemPrompt, prompt, screenshotBase64)
@@ -150,6 +154,7 @@ class AniobOmniRouteProvider(
                 }
                 val rootJson = JSONObject(body)
                 val full = rootJson.getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content")
+                AniobEgressLedger.record(name, model, prompt.length + systemPrompt.length, full.length, System.currentTimeMillis() - startTime)
                 // Immediate emission: zero simulated streaming delay
                 onDelta(full)
                 full
@@ -263,6 +268,7 @@ class AniobOmniRouteProvider(
                                 .getJSONObject(0)
                                 .getJSONObject("message")
                                 .getString("content")
+                            AniobEgressLedger.record(name, model, userPrompt.length + systemPrompt.length, rawContent.length, 0L)
                             if (continuation.isActive) {
                                 continuation.resume(Result.success(rawContent))
                             }

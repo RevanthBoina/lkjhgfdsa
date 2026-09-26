@@ -59,19 +59,16 @@ object AniobSafetyInterceptor {
             return InterceptResult(isAllowed = false, reason = "UPI payment protocol blocked", riskTier = "HIGH")
         }
 
-        val billingTerm = "com.android.vending." + "BILLING"
-        if (actionStr.contains(billingTerm)) {
+        if (BLOCKED_PERMISSIONS.any { actionStr.contains(it.lowercase()) }) {
             blockedFingerprints.add(screenFingerprint)
             blockedTimestamps[screenFingerprint] = System.currentTimeMillis()
             return InterceptResult(isAllowed = false, reason = "Billing permission blocked", riskTier = "HIGH")
         }
 
         // Destructive wipe actions blocked
-        val destructiveMatch = destructiveBlocklist.any { block ->
-            actionStr.contains(block) ||
-                targetNode?.text?.contains(block, ignoreCase = true) == true ||
-                targetNode?.contentDescription?.contains(block, ignoreCase = true) == true
-        }
+        val destructiveMatch = DESTRUCTIVE_KEYWORDS.containsMatchIn(actionStr) ||
+            targetNode?.text?.let { DESTRUCTIVE_KEYWORDS.containsMatchIn(it) } == true ||
+            targetNode?.contentDescription?.let { DESTRUCTIVE_KEYWORDS.containsMatchIn(it) } == true
         if (destructiveMatch) {
             blockedFingerprints.add(screenFingerprint)
             blockedTimestamps[screenFingerprint] = System.currentTimeMillis()
@@ -107,8 +104,7 @@ object AniobSafetyInterceptor {
         // Inspect both node text and action thought: visible Send/Payment controls cannot evade policy
         // through an innocuous model explanation.
         val nodeAndActionText = "$targetText ${action.thought} ${action.describeAction()}".lowercase()
-        val paymentRegex = Regex("(?i)\\b(?:pay|purchase|checkout|payment|transaction|credit\\s*card|debit\\s*card|cvv|wallet|bank\\s*transfer|upi://)\\b")
-        val paymentMatch = paymentRegex.containsMatchIn(nodeAndActionText)
+        val paymentMatch = FINANCIAL_KEYWORDS.containsMatchIn(nodeAndActionText)
 
         if (paymentMatch && !isReadOnlyHistory) {
             blockedFingerprints.add(screenFingerprint)

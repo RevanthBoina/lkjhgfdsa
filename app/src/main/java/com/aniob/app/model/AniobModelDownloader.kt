@@ -6,15 +6,21 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
 import com.aniob.app.network.AniobHttpClientSingleton
+import com.aniob.core.narration.FailureReasonCopy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -27,17 +33,64 @@ data class AniobModelInfo(
     val name: String,
     val displayName: String,
     val params: String,
-    val sizeGb: Double,
+    val sizeBytes: Long,
     val ramRequiredGb: Double,
     val minDeviceRamGb: Int,
-    val url: String,
+    val repoId: String,
+    val fileName: String,
     val bestFor: String,
     val description: String,
     val requiresCharging: Boolean,
+    val sha256: String = "",
+    val isCustom: Boolean = false,
+    val customUrl: String? = null,
     val isInstalled: Boolean = false,
     val downloadProgress: Int = 0,
     val isDownloading: Boolean = false
-)
+) {
+    val url: String
+        get() = customUrl ?: "https://huggingface.co/$repoId/resolve/main/$fileName"
+
+    val sizeGb: Double
+        get() = sizeBytes / (1024.0 * 1024.0 * 1024.0)
+
+    // Backward-compatibility constructor
+    constructor(
+        id: String,
+        name: String,
+        displayName: String,
+        params: String,
+        sizeGb: Double,
+        ramRequiredGb: Double,
+        minDeviceRamGb: Int,
+        url: String,
+        bestFor: String,
+        description: String,
+        requiresCharging: Boolean,
+        isInstalled: Boolean = false,
+        downloadProgress: Int = 0,
+        isDownloading: Boolean = false
+    ) : this(
+        id = id,
+        name = name,
+        displayName = displayName,
+        params = params,
+        sizeBytes = (sizeGb * 1024 * 1024 * 1024).toLong(),
+        ramRequiredGb = ramRequiredGb,
+        minDeviceRamGb = minDeviceRamGb,
+        repoId = "",
+        fileName = "$id.gguf",
+        bestFor = bestFor,
+        description = description,
+        requiresCharging = requiresCharging,
+        sha256 = "",
+        isCustom = true,
+        customUrl = url,
+        isInstalled = isInstalled,
+        downloadProgress = downloadProgress,
+        isDownloading = isDownloading
+    )
+}
 
 data class DeviceInfo(
     val totalRamGb: Int,
@@ -81,8 +134,8 @@ class AniobModelDownloader(private val context: Context) {
     companion object {
         const val MODELS_DIR = "models"
         const val TEMP_DIR = "models_tmp"
-        const val MIN_FREE_SPACE_MULTIPLIER = 2.0
         const val PREF_DEFAULT_MODEL = "default_model_id"
+        const val PREF_CUSTOM_MODELS = "aniob_custom_models"
 
         val ALL_MODELS = listOf(
             AniobModelInfo(
@@ -90,90 +143,97 @@ class AniobModelDownloader(private val context: Context) {
                 name = "Nomic Embed Text v1.5",
                 displayName = "Nomic Embed - Semantic Search",
                 params = "0.137B",
-                sizeGb = 0.3,
+                sizeBytes = 83_886_080L,
                 ramRequiredGb = 2.0,
                 minDeviceRamGb = 4,
-                url = "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf",
-                bestFor = "embeddings, semantic skill matching, memory RAG, +30% accuracy",
-                description = "Nomic 137M, 0.3GB, 2GB RAM, 8K context, best small embedding, Apache 2.0, for skill matching",
+                repoId = "nomic-ai/nomic-embed-text-v1.5-GGUF",
+                fileName = "nomic-embed-text-v1.5.Q4_K_M.gguf",
+                bestFor = "embeddings, semantic skill matching, memory search",
+                description = "Nomic 137M, fast embedding model for semantic matching",
                 requiresCharging = false
             ),
             AniobModelInfo(
                 id = "phi4-mini-3.8b-q4",
                 name = "Phi-4 Mini 3.8B",
-                displayName = "Phi-4 Mini (Recommended for 8GB+)",
+                displayName = "Phi-4 Mini (Recommended)",
                 params = "3.8B",
-                sizeGb = 2.1,
+                sizeBytes = 2_254_438_400L,
                 ramRequiredGb = 2.7,
                 minDeviceRamGb = 8,
-                url = "https://huggingface.co/microsoft/Phi-4-mini-instruct-gguf/resolve/main/phi-4-mini-instruct-q4_k_m.gguf",
-                bestFor = "Reasoning, coding, general chat, smartest small model",
-                description = "Microsoft 3.8B, MMLU 68% HumanEval 70%, 30-50 tok/s CPU, smartest on 8GB+ phones",
+                repoId = "unsloth/Phi-4-mini-instruct-GGUF",
+                fileName = "Phi-4-mini-instruct-Q4_K_M.gguf",
+                bestFor = "Reasoning, coding, general tasks",
+                description = "Microsoft 3.8B, high quality reasoning on capable devices",
                 requiresCharging = false
             ),
             AniobModelInfo(
                 id = "gemma3-4b-q4",
                 name = "Gemma 3 4B",
-                displayName = "Gemma 3 4B (Balanced Default)",
+                displayName = "Gemma 3 4B (Balanced)",
                 params = "4B",
-                sizeGb = 2.2,
+                sizeBytes = 2_362_232_832L,
                 ramRequiredGb = 2.9,
                 minDeviceRamGb = 8,
-                url = "https://huggingface.co/google/gemma-3-4b-it-qat-q4_0-gguf/resolve/main/model.gguf",
-                bestFor = "Balanced, efficient, Google, chat",
-                description = "Google 4B, 2.9GB RAM at Q4, fits 8GB+ phones, tight on 6GB use Phi-4 Mini instead",
+                repoId = "ggml-org/gemma-3-4b-it-GGUF",
+                fileName = "gemma-3-4b-it-Q4_K_M.gguf",
+                bestFor = "Balanced, efficient, everyday tasks",
+                description = "Google 4B, balanced efficiency and reasoning",
                 requiresCharging = false
             ),
             AniobModelInfo(
                 id = "llama3.2-3b-q4",
                 name = "Llama 3.2 3B",
-                displayName = "Llama 3.2 3B (Tool Calling Workhorse)",
+                displayName = "Llama 3.2 3B (Fast Tasks)",
                 params = "3.2B",
-                sizeGb = 1.8,
+                sizeBytes = 1_932_735_283L,
                 ramRequiredGb = 2.2,
                 minDeviceRamGb = 6,
-                url = "https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-                bestFor = "Tool calling, function calling, general, fastest 3B",
-                description = "Meta 3.2B, 2.2GB RAM, 25-45 tok/s, best for tool calling, workhorse",
+                repoId = "unsloth/Llama-3.2-3B-Instruct-GGUF",
+                fileName = "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+                bestFor = "Tool calling, quick actions, responsive general tasks",
+                description = "Meta 3.2B, fast and reliable execution",
                 requiresCharging = false
             ),
             AniobModelInfo(
                 id = "qwen3-4b-q4",
                 name = "Qwen 3 4B",
-                displayName = "Qwen 3 4B (Multilingual Coding)",
+                displayName = "Qwen 3 4B (Multilingual)",
                 params = "4B",
-                sizeGb = 2.2,
+                sizeBytes = 2_362_232_832L,
                 ramRequiredGb = 2.85,
                 minDeviceRamGb = 8,
-                url = "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/qwen3-4b-q4_k_m.gguf",
-                bestFor = "Multilingual, coding, 29+ languages, newest",
-                description = "Alibaba Qwen3 4B, 2.85GB RAM at Q4, 20-28 tok/s, mid-range 6-8GB",
+                repoId = "Qwen/Qwen3-4B-GGUF",
+                fileName = "Qwen3-4B-Q4_K_M.gguf",
+                bestFor = "Multilingual understanding and instructions",
+                description = "Alibaba Qwen3 4B, comprehensive language coverage",
                 requiresCharging = false
             ),
             AniobModelInfo(
                 id = "qwen2.5-coder-7b-q4",
                 name = "Qwen 2.5 Coder 7B",
-                displayName = "Qwen 2.5 Coder 7B (Coding Specialist)",
+                displayName = "Qwen 2.5 Coder 7B (Code Specialist)",
                 params = "7B",
-                sizeGb = 4.7,
+                sizeBytes = 4_681_359_360L,
                 ramRequiredGb = 4.7,
                 minDeviceRamGb = 8,
-                url = "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m.gguf",
-                bestFor = "Coding, debugging, HumanEval 88%",
-                description = "Alibaba Coder 7B, 4.7GB RAM, 50 tok/s, gold standard for 8GB laptops, tight on 8GB phones, use plugged in",
+                repoId = "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+                fileName = "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
+                bestFor = "Complex coding and script execution",
+                description = "Alibaba Coder 7B, specialized code generation",
                 requiresCharging = true
             ),
             AniobModelInfo(
                 id = "mistral-7b-q4",
                 name = "Mistral 7B",
-                displayName = "Mistral 7B (Fastest 7B)",
+                displayName = "Mistral 7B (Fast Performance)",
                 params = "7.2B",
-                sizeGb = 4.0,
+                sizeBytes = 4_294_967_296L,
                 ramRequiredGb = 4.5,
                 minDeviceRamGb = 8,
-                url = "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/mistral-7b-instruct-v0.3.Q4_K_M.gguf",
-                bestFor = "Speed, lowest memory 7B, fast chat, Apache 2.0",
-                description = "Mistral AI 7B, 4.5GB RAM, 52 tok/s, lowest memory of 7B class, most context headroom on 8GB",
+                repoId = "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
+                fileName = "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+                bestFor = "Fast throughput, general tasks",
+                description = "Mistral AI 7B, fast and versatile",
                 requiresCharging = true
             ),
             AniobModelInfo(
@@ -181,23 +241,26 @@ class AniobModelDownloader(private val context: Context) {
                 name = "Gemma 3 1B",
                 displayName = "Gemma 3 1B (Lightweight)",
                 params = "1B",
-                sizeGb = 0.6,
+                sizeBytes = 629_145_600L,
                 ramRequiredGb = 0.72,
                 minDeviceRamGb = 4,
-                url = "https://huggingface.co/google/gemma-3-1b-it-qat-q4_0-gguf/resolve/main/model.gguf",
-                bestFor = "Old phones 4GB RAM, lightweight, fast",
-                description = "Google 1B, 720MB RAM at Q4, runs on 4GB RAM minimum, ideal for budget devices",
+                repoId = "ggml-org/gemma-3-1b-it-GGUF",
+                fileName = "gemma-3-1b-it-Q4_K_M.gguf",
+                bestFor = "Compact footprint, standard phones",
+                description = "Google 1B, runs smoothly on smaller devices",
                 requiresCharging = false
             )
         )
     }
 
+    /** Persistent storage for installed models (non-evictable). */
     fun getModelsDir(): File {
         return File(context.filesDir, MODELS_DIR).apply { mkdirs() }
     }
 
+    /** Temporary download folder on the SAME partition as modelsDir to support atomic move. */
     fun getTempDir(): File {
-        return File(context.cacheDir, TEMP_DIR).apply { mkdirs() }
+        return File(context.filesDir, TEMP_DIR).apply { mkdirs() }
     }
 
     fun getDeviceInfo(): DeviceInfo {
@@ -231,10 +294,15 @@ class AniobModelDownloader(private val context: Context) {
 
     fun getRecommendedModel(deviceInfo: DeviceInfo): String {
         return when {
-            deviceInfo.totalRamGb >= 8 -> "phi4-mini-3.8b-q4" // Recommended for 8GB+
-            deviceInfo.totalRamGb >= 6 -> "llama3.2-3b-q4"    // Tool calling workhorse for 6GB
-            else -> "gemma3-1b-q4"                            // Lightweight for 4GB
+            deviceInfo.totalRamGb >= 8 -> "phi4-mini-3.8b-q4"
+            deviceInfo.totalRamGb >= 6 -> "llama3.2-3b-q4"
+            else -> "gemma3-1b-q4"
         }
+    }
+
+    fun getAllCatalogModels(): List<AniobModelInfo> {
+        val custom = getCustomModels()
+        return ALL_MODELS + custom
     }
 
     fun getAvailableModels(): List<AniobModelInfo> {
@@ -243,10 +311,9 @@ class AniobModelDownloader(private val context: Context) {
         val active = _activeDownloads.value
         val progressMap = _downloadStates.value
 
-        return ALL_MODELS.mapNotNull { model ->
-            val isInstalled = File(modelsDir, "${model.id}.gguf").exists()
-            // On devices with <6GB RAM, hide 7B models. On 6GB-7GB RAM devices, show warning
-            if (deviceInfo.totalRamGb < 6 && model.minDeviceRamGb >= 8 && model.sizeGb > 3.0) {
+        return getAllCatalogModels().mapNotNull { model ->
+            val isInstalled = isModelInstalled(model.id)
+            if (!model.isCustom && deviceInfo.totalRamGb < 6 && model.minDeviceRamGb >= 8 && model.sizeGb > 3.0) {
                 null
             } else {
                 model.copy(
@@ -272,26 +339,50 @@ class AniobModelDownloader(private val context: Context) {
     }
 
     fun isModelInstalled(modelId: String): Boolean {
-        return File(getModelsDir(), "$modelId.gguf").exists()
+        val model = getAllCatalogModels().find { it.id == modelId }
+        val byId = File(getModelsDir(), "$modelId.gguf")
+        if (byId.exists() && byId.length() > 0) return true
+        if (model != null) {
+            val byFile = File(getModelsDir(), model.fileName)
+            if (byFile.exists() && byFile.length() > 0) return true
+        }
+        return false
     }
 
     fun getInstalledModelFile(modelId: String): File? {
-        val file = File(getModelsDir(), "$modelId.gguf")
-        return if (file.exists()) file else null
+        val model = getAllCatalogModels().find { it.id == modelId }
+        if (model != null) {
+            val byFile = File(getModelsDir(), model.fileName)
+            if (byFile.exists() && byFile.length() > 0) return byFile
+        }
+        val byId = File(getModelsDir(), "$modelId.gguf")
+        return if (byId.exists() && byId.length() > 0) byId else null
     }
 
     suspend fun downloadModelWithProgress(modelId: String, onProgress: (DownloadProgress) -> Unit): Result<Unit> = withContext(Dispatchers.IO) {
-        val model = ALL_MODELS.find { it.id == modelId } ?: return@withContext Result.failure(Exception("Model not found"))
+        val model = getAllCatalogModels().find { it.id == modelId }
+            ?: return@withContext Result.failure(IllegalArgumentException("Model not found: $modelId"))
+
         val deviceInfo = getDeviceInfo()
-        if (deviceInfo.freeStorageGb < model.sizeGb * 2.0) return@withContext Result.failure(Exception("Need ${model.sizeGb * 2} GB free"))
-        if (model.requiresCharging && !deviceInfo.isCharging) return@withContext Result.failure(Exception("Plug in charging for 7B model"))
+        // Storage check: require model size + 512MB headroom (single gate, no double-counting)
+        val requiredBytes = model.sizeBytes + (512L * 1024 * 1024)
+        val freeBytes = context.filesDir.freeSpace
+        if (freeBytes < requiredBytes) {
+            val reqGb = String.format("%.2f", requiredBytes / (1024.0 * 1024 * 1024))
+            val availGb = String.format("%.2f", freeBytes / (1024.0 * 1024 * 1024))
+            return@withContext Result.failure(IllegalStateException("Insufficient storage. Need $reqGb GB free, only $availGb GB available."))
+        }
+
+        if (model.requiresCharging && !deviceInfo.isCharging && deviceInfo.batteryPct < 50) {
+            return@withContext Result.failure(IllegalStateException("${model.name} requires device to be charging or >50% battery."))
+        }
 
         val modelsDir = getModelsDir()
         val tmpDir = getTempDir()
-        val finalFile = File(modelsDir, "$modelId.gguf")
-        val tmpFile = File(tmpDir, "$modelId.gguf.tmp")
+        val finalFile = File(modelsDir, model.fileName)
+        val tmpFile = File(tmpDir, "${model.id}.gguf.tmp")
         val downloaded = if (tmpFile.exists()) tmpFile.length() else 0L
-        val total = (model.sizeGb * 1024 * 1024 * 1024).toLong()
+
         val startTime = System.currentTimeMillis()
         _activeDownloads.value = _activeDownloads.value + modelId
         _pausedDownloads.value = _pausedDownloads.value - modelId
@@ -299,67 +390,104 @@ class AniobModelDownloader(private val context: Context) {
         pauseRequested.remove(modelId)
 
         try {
-            val request = Request.Builder().url(model.url).apply {
-                if (downloaded > 0) addHeader("Range", "bytes=$downloaded-")
-            }.build()
+            val requestBuilder = Request.Builder().url(model.url)
+            if (downloaded > 0) {
+                requestBuilder.addHeader("Range", "bytes=$downloaded-")
+            }
             val client = AniobHttpClientSingleton.client
-            val response = client.newCall(request).execute()
+            val response = client.newCall(requestBuilder.build()).execute()
+
             if (!response.isSuccessful && response.code != 206) {
-                // Real, honest failure: never fabricate a placeholder .gguf that the native engine
-                // cannot actually load (that silently reports "installed" while every inference fails).
-                val reason = if (response.code == 416) {
-                    "Partial download out of sync (HTTP 416) - retry from scratch"
-                } else {
-                    "Download failed (HTTP ${response.code})"
-                }
+                val reason = FailureReasonCopy.downloadError(response.code, model.name)
                 return@withContext Result.failure(IllegalStateException(reason))
             }
-            val input = response.body?.byteStream() ?: return@withContext Result.failure(Exception("Empty body"))
-            val output = FileOutputStream(tmpFile, downloaded > 0)
-            val buffer = ByteArray(8192)
-            var bytesRead: Int
-            var totalRead = downloaded
-            while (input.read(buffer).also { bytesRead = it } != -1) {
-                if (cancelRequested[modelId]?.get() == true) {
-                    output.close()
-                    input.close()
-                    tmpFile.delete()
-                    _downloadProgressFlow.value = _downloadProgressFlow.value - modelId
-                    _downloadStates.value = _downloadStates.value - modelId
-                    return@withContext Result.failure(IllegalStateException("Download cancelled"))
-                }
-                if (pauseRequested[modelId]?.get() == true) {
-                    output.close()
-                    input.close()
-                    // Keep the .tmp file so a later resume picks up via the Range header.
-                    val resumeSize = tmpFile.length()
-                    val paused = DownloadProgress(modelId, progressOf(resumeSize, total), 0L, 0L, isPaused = true, downloadedBytes = resumeSize, totalBytes = total)
-                    _downloadProgressFlow.value = _downloadProgressFlow.value + (modelId to paused)
-                    _activeDownloads.value = _activeDownloads.value - modelId
-                    _pausedDownloads.value = _pausedDownloads.value + modelId
-                    onProgress(paused)
-                    return@withContext Result.failure(IllegalStateException("Download paused"))
-                }
-                output.write(buffer, 0, bytesRead)
-                totalRead += bytesRead
-                val elapsed = (System.currentTimeMillis() - startTime) / 1000L
-                val bps = if (elapsed > 0) (totalRead - downloaded) / elapsed else 0L
-                val remaining = (total - totalRead).coerceAtLeast(0L)
-                val eta = if (bps > 0) remaining / bps else 0L
-                val prog = DownloadProgress(modelId, progressOf(totalRead, total), bps, eta, downloadedBytes = totalRead, totalBytes = total)
-                _downloadProgressFlow.value = _downloadProgressFlow.value + (modelId to prog)
-                _downloadStates.value = _downloadStates.value + (modelId to prog.progress)
-                onProgress(prog)
+
+            val isPartial = response.code == 206
+            val actualStart = if (isPartial) downloaded else 0L
+            val body = response.body ?: return@withContext Result.failure(IllegalStateException("Empty response body"))
+            val remoteContentLen = body.contentLength()
+            val totalBytes = if (isPartial && remoteContentLen > 0) {
+                actualStart + remoteContentLen
+            } else if (remoteContentLen > 0) {
+                remoteContentLen
+            } else {
+                model.sizeBytes
             }
-            output.close()
-            input.close()
-            if (tmpFile.exists()) {
+
+            val output = FileOutputStream(tmpFile, isPartial && downloaded > 0)
+            val input = body.byteStream()
+            val buffer = ByteArray(32768)
+            var bytesRead: Int
+            var totalRead = actualStart
+
+            try {
+                while (input.read(buffer).also { bytesRead = it } != -1) {
+                    if (cancelRequested[modelId]?.get() == true) {
+                        output.close()
+                        input.close()
+                        tmpFile.delete()
+                        _downloadProgressFlow.value = _downloadProgressFlow.value - modelId
+                        _downloadStates.value = _downloadStates.value - modelId
+                        return@withContext Result.failure(IllegalStateException("Download cancelled"))
+                    }
+                    if (pauseRequested[modelId]?.get() == true) {
+                        output.close()
+                        input.close()
+                        val resumeSize = tmpFile.length()
+                        val paused = DownloadProgress(modelId, progressOf(resumeSize, totalBytes), 0L, 0L, isPaused = true, downloadedBytes = resumeSize, totalBytes = totalBytes)
+                        _downloadProgressFlow.value = _downloadProgressFlow.value + (modelId to paused)
+                        _activeDownloads.value = _activeDownloads.value - modelId
+                        _pausedDownloads.value = _pausedDownloads.value + modelId
+                        onProgress(paused)
+                        return@withContext Result.failure(IllegalStateException("Download paused"))
+                    }
+
+                    output.write(buffer, 0, bytesRead)
+                    totalRead += bytesRead
+                    val elapsed = (System.currentTimeMillis() - startTime) / 1000L
+                    val bps = if (elapsed > 0) (totalRead - actualStart) / elapsed else 0L
+                    val remaining = (totalBytes - totalRead).coerceAtLeast(0L)
+                    val eta = if (bps > 0) remaining / bps else 0L
+                    val prog = DownloadProgress(modelId, progressOf(totalRead, totalBytes), bps, eta, downloadedBytes = totalRead, totalBytes = totalBytes)
+
+                    _downloadProgressFlow.value = _downloadProgressFlow.value + (modelId to prog)
+                    _downloadStates.value = _downloadStates.value + (modelId to prog.progress)
+                    onProgress(prog)
+                }
+            } finally {
+                output.close()
+                input.close()
+            }
+
+            if (!tmpFile.exists() || tmpFile.length() == 0L) {
+                return@withContext Result.failure(IllegalStateException("Temporary file was empty or missing"))
+            }
+
+            // Move temporary file to final location safely
+            if (finalFile.exists()) finalFile.delete()
+            val moveSuccess = try {
+                Files.move(tmpFile.toPath(), finalFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                true
+            } catch (_: Exception) {
                 tmpFile.renameTo(finalFile)
             }
+
+            if (!moveSuccess || !finalFile.exists()) {
+                return@withContext Result.failure(IllegalStateException("Failed to move temporary download to final file"))
+            }
+
+            // Optional SHA-256 verification
+            if (model.sha256.isNotBlank()) {
+                val computedHash = computeSha256(finalFile)
+                if (!computedHash.equals(model.sha256, ignoreCase = true)) {
+                    finalFile.delete()
+                    return@withContext Result.failure(IllegalStateException("Integrity check failed: SHA-256 mismatch"))
+                }
+            }
+
+            _downloadStates.value = _downloadStates.value + (modelId to 100)
             Result.success(Unit)
         } catch (e: Exception) {
-            // Surface the real error. Previously this wrote a fake placeholder .gguf and returned
-            // success, which made a failed 2GB download look installed and then break every inference.
             _downloadProgressFlow.value = _downloadProgressFlow.value - modelId
             _downloadStates.value = _downloadStates.value - modelId
             Result.failure(e)
@@ -370,7 +498,150 @@ class AniobModelDownloader(private val context: Context) {
         }
     }
 
-    /** Requests cooperative pause for an in-flight download. The .tmp file is kept for resume. */
+    /** Direct download function delegating to progress-enabled implementation. */
+    suspend fun downloadModel(modelId: String, onProgress: (Int) -> Unit): Result<File> = withContext(Dispatchers.IO) {
+        val result = downloadModelWithProgress(modelId) { prog ->
+            onProgress(prog.progress)
+        }
+        if (result.isSuccess) {
+            val file = getInstalledModelFile(modelId) ?: File(getModelsDir(), "$modelId.gguf")
+            Result.success(file)
+        } else {
+            Result.failure(result.exceptionOrNull() ?: IllegalStateException("Download failed"))
+        }
+    }
+
+    /** Side-load escape hatch: import a local .gguf file from device. */
+    suspend fun registerCustomFile(displayName: String, sourceFile: File): Result<AniobModelInfo> = withContext(Dispatchers.IO) {
+        try {
+            if (!sourceFile.exists() || sourceFile.length() == 0L) {
+                return@withContext Result.failure(IllegalArgumentException("Source file does not exist or is empty"))
+            }
+            val safeId = "custom-" + System.currentTimeMillis()
+            val targetFile = File(getModelsDir(), "$safeId.gguf")
+            sourceFile.inputStream().use { input ->
+                FileOutputStream(targetFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            val info = AniobModelInfo(
+                id = safeId,
+                name = displayName.ifBlank { "Custom Model" },
+                displayName = displayName.ifBlank { "Custom Model" },
+                params = "Custom",
+                sizeBytes = targetFile.length(),
+                ramRequiredGb = 2.0,
+                minDeviceRamGb = 4,
+                repoId = "",
+                fileName = targetFile.name,
+                bestFor = "User imported model",
+                description = "Imported from local file",
+                requiresCharging = false,
+                isCustom = true,
+                isInstalled = true
+            )
+            saveCustomModel(info)
+            Result.success(info)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /** Side-load escape hatch: register a custom URL for download. */
+    fun registerCustomUrl(name: String, url: String, estimatedSizeBytes: Long = 1_000_000_000L): AniobModelInfo {
+        val safeId = "custom-url-" + System.currentTimeMillis()
+        val info = AniobModelInfo(
+            id = safeId,
+            name = name.ifBlank { "Custom Web Model" },
+            displayName = name.ifBlank { "Custom Web Model" },
+            params = "Custom",
+            sizeBytes = estimatedSizeBytes,
+            ramRequiredGb = 2.0,
+            minDeviceRamGb = 4,
+            repoId = "",
+            fileName = "$safeId.gguf",
+            bestFor = "Custom user URL",
+            description = "Downloaded from $url",
+            requiresCharging = false,
+            isCustom = true,
+            customUrl = url,
+            isInstalled = false
+        )
+        saveCustomModel(info)
+        return info
+    }
+
+    fun getCustomModels(): List<AniobModelInfo> {
+        val jsonStr = prefs.getString(PREF_CUSTOM_MODELS, null) ?: return emptyList()
+        return try {
+            val arr = JSONArray(jsonStr)
+            val list = mutableListOf<AniobModelInfo>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                list.add(
+                    AniobModelInfo(
+                        id = obj.getString("id"),
+                        name = obj.getString("name"),
+                        displayName = obj.getString("displayName"),
+                        params = obj.optString("params", "Custom"),
+                        sizeBytes = obj.optLong("sizeBytes", 0L),
+                        ramRequiredGb = obj.optDouble("ramRequiredGb", 2.0),
+                        minDeviceRamGb = obj.optInt("minDeviceRamGb", 4),
+                        repoId = obj.optString("repoId", ""),
+                        fileName = obj.getString("fileName"),
+                        bestFor = obj.optString("bestFor", "Custom model"),
+                        description = obj.optString("description", ""),
+                        requiresCharging = obj.optBoolean("requiresCharging", false),
+                        isCustom = true,
+                        customUrl = if (obj.isNull("customUrl")) null else obj.optString("customUrl")
+                    )
+                )
+            }
+            list
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun saveCustomModel(model: AniobModelInfo) {
+        val existing = getCustomModels().toMutableList()
+        existing.removeAll { it.id == model.id }
+        existing.add(model)
+        val arr = JSONArray()
+        for (m in existing) {
+            val obj = JSONObject().apply {
+                put("id", m.id)
+                put("name", m.name)
+                put("displayName", m.displayName)
+                put("params", m.params)
+                put("sizeBytes", m.sizeBytes)
+                put("ramRequiredGb", m.ramRequiredGb)
+                put("minDeviceRamGb", m.minDeviceRamGb)
+                put("repoId", m.repoId)
+                put("fileName", m.fileName)
+                put("bestFor", m.bestFor)
+                put("description", m.description)
+                put("requiresCharging", m.requiresCharging)
+                put("customUrl", m.customUrl)
+            }
+            arr.put(obj)
+        }
+        prefs.edit().putString(PREF_CUSTOM_MODELS, arr.toString()).apply()
+    }
+
+    private fun computeSha256(file: File): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        FileInputStream(file).use { fis ->
+            val buf = ByteArray(65536)
+            var read: Int
+            while (fis.read(buf).also { read = it } != -1) {
+                md.update(buf, 0, read)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    /** Requests cooperative pause for an in-flight download. */
     fun pauseDownload(modelId: String) {
         if (!_activeDownloads.value.contains(modelId)) return
         pauseRequested.getOrPut(modelId) { AtomicBoolean() }.set(true)
@@ -386,7 +657,7 @@ class AniobModelDownloader(private val context: Context) {
     /** Requests cooperative cancel and drops the partial .tmp file. */
     fun cancelDownload(modelId: String) {
         if (!_activeDownloads.value.contains(modelId)) {
-            File(getTempDir(), "$modelId.gguf.tmp").delete()
+            File(getTempDir(), "${modelId}.gguf.tmp").delete()
             _pausedDownloads.value = _pausedDownloads.value - modelId
             return
         }
@@ -398,88 +669,30 @@ class AniobModelDownloader(private val context: Context) {
     private fun progressOf(downloadedBytes: Long, totalBytes: Long): Int =
         if (totalBytes <= 0) 0 else ((downloadedBytes.toDouble() / totalBytes.toDouble()) * 100).toInt().coerceIn(0, 100)
 
-    suspend fun downloadModel(modelId: String, onProgress: (Int) -> Unit): Result<File> = withContext(Dispatchers.IO) {
-        val model = ALL_MODELS.find { it.id == modelId }
-            ?: return@withContext Result.failure(IllegalArgumentException("Unknown model: $modelId"))
-
-        val deviceInfo = getDeviceInfo()
-        if (deviceInfo.freeStorageGb < model.sizeGb * MIN_FREE_SPACE_MULTIPLIER) {
-            return@withContext Result.failure(
-                IllegalStateException("Insufficient storage. Need ${model.sizeGb * MIN_FREE_SPACE_MULTIPLIER} GB free, only ${deviceInfo.freeStorageGb} GB available.")
-            )
-        }
-
-        if (model.requiresCharging && !deviceInfo.isCharging && deviceInfo.batteryPct < 50) {
-            return@withContext Result.failure(
-                IllegalStateException("${model.name} requires device to be charging or >50% battery to download.")
-            )
-        }
-
-        val modelsDir = getModelsDir()
-        val tempFile = File(getTempDir(), "${model.id}.gguf.tmp")
-        val finalFile = File(modelsDir, "${model.id}.gguf")
-
-        _activeDownloads.value = _activeDownloads.value + modelId
-
-        try {
-            val existingLen = if (tempFile.exists()) tempFile.length() else 0L
-
-            val requestBuilder = Request.Builder().url(model.url)
-            if (existingLen > 0) {
-                requestBuilder.header("Range", "bytes=$existingLen-")
-            }
-
-            val client = AniobHttpClientSingleton.client
-            val response = client.newCall(requestBuilder.build()).execute()
-
-            if (!response.isSuccessful && response.code != 206) {
-                return@withContext Result.failure(
-                    IllegalStateException("Download failed (HTTP ${response.code})")
-                )
-            }
-
-            val body = response.body
-            val totalBytes = (body?.contentLength() ?: 0L) + existingLen
-            val effectiveTotal = if (totalBytes > 0) totalBytes else (model.sizeGb * 1024 * 1024 * 1024).toLong()
-
-            body?.byteStream()?.use { input ->
-                FileOutputStream(tempFile, existingLen > 0).use { output ->
-                    val buffer = ByteArray(32768)
-                    var bytesRead: Int
-                    var currentDownloaded = existingLen
-
-                    while (input.read(buffer).also { bytesRead = it } != -1) {
-                        output.write(buffer, 0, bytesRead)
-                        currentDownloaded += bytesRead
-
-                        val progress = ((currentDownloaded.toDouble() / effectiveTotal.toDouble()) * 100).toInt().coerceIn(0, 99)
-                        _downloadStates.value = _downloadStates.value + (modelId to progress)
-                        onProgress(progress)
-                    }
-                }
-            }
-
-            if (tempFile.exists()) {
-                tempFile.renameTo(finalFile)
-            }
-            _downloadStates.value = _downloadStates.value + (modelId to 100)
-            onProgress(100)
-            Result.success(finalFile)
-        } catch (e: Exception) {
-            // Surface the real error rather than writing a placeholder model file.
-            Result.failure(e)
-        } finally {
-            _activeDownloads.value = _activeDownloads.value - modelId
-        }
-    }
-
     fun deleteModel(modelId: String): Boolean {
-        val file = File(getModelsDir(), "$modelId.gguf")
+        val file = getInstalledModelFile(modelId) ?: File(getModelsDir(), "$modelId.gguf")
         val deleted = file.delete()
         if (deleted) {
             _downloadStates.value = _downloadStates.value - modelId
             if (prefs.getString(PREF_DEFAULT_MODEL, "") == modelId) {
                 prefs.edit().remove(PREF_DEFAULT_MODEL).apply()
+            }
+            // If custom model, remove from custom list
+            val custom = getCustomModels()
+            if (custom.any { it.id == modelId }) {
+                val remaining = custom.filter { it.id != modelId }
+                val arr = JSONArray()
+                for (m in remaining) {
+                    val obj = JSONObject().apply {
+                        put("id", m.id)
+                        put("name", m.name)
+                        put("displayName", m.displayName)
+                        put("fileName", m.fileName)
+                        put("sizeBytes", m.sizeBytes)
+                    }
+                    arr.put(obj)
+                }
+                prefs.edit().putString(PREF_CUSTOM_MODELS, arr.toString()).apply()
             }
         }
         return deleted
