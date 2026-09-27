@@ -7,6 +7,7 @@ import com.aniob.core.domain.AniobRect
 import com.aniob.core.domain.AniobScreenState
 import com.aniob.core.domain.TaskContext
 import com.aniob.core.learning.LearningPipeline
+import com.aniob.core.memory.history.NeutralWordingContract
 import com.aniob.core.safety.AniobSafetyInterceptor
 import com.aniob.core.verifier.AniobReflectionAgent
 import com.aniob.core.verifier.DeterministicVerifier
@@ -116,10 +117,10 @@ class StepPipeline(
 
         // OBSERVE: always a fresh capture. Failed capture must not silently reuse stale planning data!
         val observed = runCatching { capture() }.getOrElse {
-            val nextCtx = ctx.withStep(ctx.stepIndex + 1, planningScreen, "capture failed: ${it.message}").withFailure()
+            val nextCtx = ctx.withStep(ctx.stepIndex + 1, planningScreen, NeutralWordingContract.neutralize("capture did not return a screen: ${it.message}")).withFailure()
             return finish(
                 action, proposal, nextCtx, planningScreen, null,
-                StepResult.TerminalState.FAIL, "capture failed: ${it.message}",
+                StepResult.TerminalState.FAIL, NeutralWordingContract.neutralize("capture did not return a screen: ${it.message}"),
                 start, verification = null, dispatched = false
             )
         }
@@ -135,7 +136,7 @@ class StepPipeline(
             screenFingerprint = observed.treeHash
         )
         if (!intercept.isAllowed) {
-            val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, "blocked: ${intercept.reason}")
+            val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, NeutralWordingContract.neutralize("blocked before execution: ${intercept.reason}"))
                 .withFailure()
             return finish(
                 action, proposal, nextCtx, observed, resolvedNode,
@@ -144,12 +145,34 @@ class StepPipeline(
             )
         }
 
+        // Plan-6.4: Pre-Execution Physical Safety Net Gate (Gate B)
+        if (resolvedNode != null) {
+            val gateB = com.aniob.core.gates.AniobPhysicalSafetyNetGate.evaluate(
+                targetNode = resolvedNode,
+                targetX = resolvedNode.centerX,
+                targetY = resolvedNode.centerY,
+                liveScreen = observed
+            )
+            if (!gateB.allowed) {
+                val nextCtx = ctx.withStep(
+                    ctx.stepIndex + 1,
+                    observed,
+                    NeutralWordingContract.neutralize("blocked by physical safety gate: ${gateB.reason}")
+                ).withFailure()
+                return finish(
+                    action, proposal, nextCtx, observed, resolvedNode,
+                    StepResult.TerminalState.FAIL, gateB.reason, start,
+                    verification = null, dispatched = false
+                )
+            }
+        }
+
         if (intercept.requiresConfirmation) {
             currentCoroutineContext().ensureActive()
             val approved = confirm(action.describeAction())
             currentCoroutineContext().ensureActive()
             if (!approved) {
-                val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, "declined: ${action.describeAction()}")
+                val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, "the user declined: ${action.describeAction()}")
                     .withFailure()
                 return finish(
                     action, proposal, nextCtx, observed, resolvedNode,
@@ -168,7 +191,7 @@ class StepPipeline(
 
         // DispatchOutcome.dispatched=false must prevent a verified action
         if (!outcome.dispatched) {
-            val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, "dispatch failed: ${outcome.reason}").withFailure()
+            val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, NeutralWordingContract.neutralize("dispatch did not complete: ${outcome.reason}")).withFailure()
             return finish(
                 action, proposal, nextCtx, observed, resolvedNode,
                 StepResult.TerminalState.FAIL, outcome.reason.ifBlank { "Action not dispatched" },
@@ -260,6 +283,7 @@ class StepPipeline(
         dispatched: Boolean = true
     ): StepResult {
         val verified = verification?.isExpected == true && terminal != StepResult.TerminalState.FAIL && dispatched
+        val computedTokens = (action.describeAction().length + screen.treeHash.length) / 4 + 50
         val record = StepRecord(
             stepIndex = nextCtx.stepIndex,
             action = action,
@@ -269,7 +293,7 @@ class StepPipeline(
             failureReason = if (verified) null else reason,
             resolvedNode = resolvedNode,
             latencyMs = System.currentTimeMillis() - start,
-            tokensUsed = 0,
+            tokensUsed = computedTokens,
             textEvidence = verification?.textEvidence,
             targetBounds = resolvedNode?.bounds
         )
@@ -286,9 +310,10 @@ class StepPipeline(
             dispatch = dispatch ?: DispatchCommand.NoOp("pipeline"),
             verification = verification,
             reflection = reflection,
-            nextCtx = nextCtx,
+            nextCtx = nextCtx.addTokens(computedTokens),
             terminalState = terminal,
             resolvedNode = resolvedNode,
+            tokensUsed = computedTokens,
             latencyMs = record.latencyMs
         )
     }
@@ -298,7 +323,9 @@ class StepPipeline(
         verification: DeterministicVerifier.VerificationResult,
         proposal: Proposal
     ): String = "${proposal.providerLabel}: ${action.describeAction()} -> " +
-        if (verification.isExpected) "ok" else "FAILED(${verification.reason})"
+        if (verification.isExpected) "the expected change was observed"
+        else "the expected change was not observed (" +
+            NeutralWordingContract.neutralize(verification.reason) + ")"
 
     companion object {
         /** A Finish rejected this many times becomes a hard failure (no infinite retry, no fake SUCCESS). */

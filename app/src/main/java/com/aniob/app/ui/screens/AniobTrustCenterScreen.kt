@@ -35,7 +35,8 @@ fun AniobTrustCenterScreen(
     onClearBlocked: (String) -> Unit,
     confirmationHistory: List<ConfirmationRecord>,
     vaultEntries: () -> Map<String, String>,
-    onForgetVault: (String) -> Unit
+    onForgetVault: (String) -> Unit,
+    onEditVault: ((key: String, newAnswer: String) -> Unit)? = null
 ) {
     Scaffold(
         topBar = {

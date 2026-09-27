@@ -100,6 +100,15 @@ object AniobStructuredOutput {
         AniobDecodeConfig.Role.REFLECTOR,
         AniobDecodeConfig.Role.GRILL,
         AniobDecodeConfig.Role.EXPLORER -> AniobAction.Wait(durationMs = 1000)
+
+        // Plan-5.6 advisory roles never drive the device. An unparseable answer from one of them
+        // is a fact about the answer, not a reason to touch the screen, so it fails loudly instead
+        // of degrading into a Wait that would look like progress.
+        AniobDecodeConfig.Role.VERIFIER,
+        AniobDecodeConfig.Role.CONSISTENCY,
+        AniobDecodeConfig.Role.SUMMARIZER,
+        AniobDecodeConfig.Role.EXTRACTOR ->
+            AniobAction.Fail("${role.name.lowercase()} returned an unparseable response")
     }
 
     private val COORDINATE_HINTS = listOf("x", "y", "startx", "endx", "bounds", "target_node_id")

@@ -277,7 +277,8 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                 onClearBlocked = { fp -> viewModel.clearBlockedFingerprint(fp) },
                 confirmationHistory = uiState.confirmationHistory,
                 vaultEntries = { viewModel.vaultEntries() },
-                onForgetVault = { key -> viewModel.forgetVaultEntry(key) }
+                onForgetVault = { key -> viewModel.forgetVaultEntry(key) },
+                onEditVault = { key, newAnswer -> viewModel.editVaultEntry(key, newAnswer) }
             )
         }
     }

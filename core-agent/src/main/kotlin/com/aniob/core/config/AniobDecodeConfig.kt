@@ -18,7 +18,19 @@ data class AniobDecodeConfig(
     val jsonMode: Boolean
 ) {
     enum class Role {
-        PLANNER, EXECUTOR, REFLECTOR, GRILL, EXPLORER;
+        PLANNER, EXECUTOR, REFLECTOR, GRILL, EXPLORER,
+
+        /** Plan-6 checker: weighs evidence, may answer INCONCLUSIVE. */
+        VERIFIER,
+
+        /** Plan-2.2 Gate A: binary thought/action consistency. Smallest model, no reasoning. */
+        CONSISTENCY,
+
+        /** Plan-4.1 step summarizer: off the critical path, never needs to be smart. */
+        SUMMARIZER,
+
+        /** Plan-5.6 bulk extraction, e.g. one package name out of hundreds. */
+        EXTRACTOR;
 
         companion object {
             /** Maps a loose config-file key (`grill_me`, `explore`, ...) onto a role. */
@@ -28,6 +40,10 @@ data class AniobDecodeConfig(
                 "reflector", "reflect", "reflection" -> REFLECTOR
                 "grill", "grill_me", "grillme" -> GRILL
                 "explorer", "explore", "exploration" -> EXPLORER
+                "verifier", "verify", "checker" -> VERIFIER
+                "consistency", "gate_a", "consistency_check" -> CONSISTENCY
+                "summarizer", "summary", "step_summarizer" -> SUMMARIZER
+                "extractor", "extract", "bulk_extraction" -> EXTRACTOR
                 else -> null
             }
         }
@@ -41,7 +57,12 @@ data class AniobDecodeConfig(
             Role.EXECUTOR to AniobDecodeConfig(Role.EXECUTOR, temperature = 0.0, maxTokens = 128, jsonMode = true),
             Role.REFLECTOR to AniobDecodeConfig(Role.REFLECTOR, temperature = 0.2, maxTokens = 256, jsonMode = true),
             Role.GRILL to AniobDecodeConfig(Role.GRILL, temperature = 0.3, maxTokens = 512, jsonMode = true),
-            Role.EXPLORER to AniobDecodeConfig(Role.EXPLORER, temperature = 0.4, maxTokens = 256, jsonMode = true)
+            Role.EXPLORER to AniobDecodeConfig(Role.EXPLORER, temperature = 0.4, maxTokens = 256, jsonMode = true),
+            // Plan-5.6: right-sized roles. Deterministic and tiny, because they answer, not reason.
+            Role.VERIFIER to AniobDecodeConfig(Role.VERIFIER, temperature = 0.0, maxTokens = 384, jsonMode = true),
+            Role.CONSISTENCY to AniobDecodeConfig(Role.CONSISTENCY, temperature = 0.0, maxTokens = 64, jsonMode = true),
+            Role.SUMMARIZER to AniobDecodeConfig(Role.SUMMARIZER, temperature = 0.1, maxTokens = 192, jsonMode = false),
+            Role.EXTRACTOR to AniobDecodeConfig(Role.EXTRACTOR, temperature = 0.0, maxTokens = 96, jsonMode = true)
         )
 
         /**

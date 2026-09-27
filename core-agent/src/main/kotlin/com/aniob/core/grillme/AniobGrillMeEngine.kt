@@ -22,7 +22,8 @@ interface GrillMeLlmClient {
 }
 
 class AniobGrillMeEngine(
-    private val llmClient: GrillMeLlmClient? = null
+    private val llmClient: GrillMeLlmClient? = null,
+    private val calibratedAsking: AniobCalibratedAsking? = null
 ) {
     /**
      * Checks if task is ambiguous and generates structured questions + options + free text.
@@ -76,6 +77,112 @@ class AniobGrillMeEngine(
     ): AniobGrillMeResult {
         val lower = taskPrompt.lowercase().trim()
         val questions = mutableListOf<GrillQuestion>()
+
+        // Plan-7.7: Calibrated Asking ladder (extract -> vault -> device -> default -> ask)
+        if (calibratedAsking != null) {
+            val relevantSlots = mutableListOf<AniobCalibratedAsking.Slot>()
+            if (lower.contains("cab") || lower.contains("ride") || lower.contains("taxi")) {
+                relevantSlots += listOf(
+                    AniobCalibratedAsking.Slot(
+                        id = "destination",
+                        questionAsAsked = "What is your destination?",
+                        options = listOf("Home", "Office", "Airport", "Downtown"),
+                        changesBehaviour = true,
+                        default = null,
+                        consequential = true,
+                        extractor = { prompt ->
+                            val destMatch = Regex("\\b(?:to|destination\\s+is)\\s+([a-zA-Z0-9\\s]+?)(?:\\s+(?:via|using|by|with)|$)").find(prompt.lowercase())
+                            destMatch?.groupValues?.get(1)?.trim()?.takeIf { !it.startsWith("a ") && !it.startsWith("the ") }
+                        }
+                    ),
+                    AniobCalibratedAsking.Slot(
+                        id = "ride_type",
+                        questionAsAsked = "Which ride tier do you prefer?",
+                        options = listOf("Cheapest", "Standard Comfort", "XL / 6 Seats", "Fastest Arrival"),
+                        changesBehaviour = true,
+                        default = "Cheapest",
+                        consequential = false
+                    ),
+                    AniobCalibratedAsking.Slot(
+                        id = "provider_app",
+                        questionAsAsked = "Preferred provider app?",
+                        options = listOf("Uber", "Lyft", "Auto-select cheapest"),
+                        changesBehaviour = true,
+                        default = "Auto-select cheapest",
+                        consequential = false
+                    )
+                )
+            } else if (lower.contains("message") || lower.contains("text") || lower.contains("send")) {
+                relevantSlots += listOf(
+                    AniobCalibratedAsking.Slot(
+                        id = "recipient",
+                        questionAsAsked = "Who would you like to message?",
+                        options = listOf("Mom", "Work Group", "Recent Contact"),
+                        changesBehaviour = true,
+                        default = null,
+                        consequential = true,
+                        extractor = { prompt ->
+                            val toMatch = Regex("(?:message|text|send(?:\\s+a)?\\s+message\\s+to|send\\s+to)\\s+([a-zA-Z0-9_]+)").find(prompt.lowercase())
+                            toMatch?.groupValues?.get(1)?.trim()?.takeIf { it !in listOf("a", "the", "me", "my", "app") }
+                        }
+                    ),
+                    AniobCalibratedAsking.Slot(
+                        id = "message_content",
+                        questionAsAsked = "What message would you like to send?",
+                        changesBehaviour = true,
+                        default = null,
+                        consequential = true,
+                        extractor = { prompt ->
+                            Regex("(?:text|message)\\s+[a-zA-Z0-9_]+\\s+(?:that\\s+)?(.+)").find(prompt.lowercase())?.groupValues?.get(1)
+                        }
+                    ),
+                    AniobCalibratedAsking.Slot(
+                        id = "app",
+                        questionAsAsked = "Which messaging app?",
+                        options = listOf("SMS / Messages", "WhatsApp", "Telegram"),
+                        changesBehaviour = true,
+                        default = "SMS / Messages",
+                        consequential = false,
+                        deviceFact = AniobCalibratedAsking.DeviceFact.DEFAULT_MESSAGING_APP
+                    )
+                )
+            } else if (lower.contains("alarm") || lower.contains("timer")) {
+                relevantSlots += listOf(
+                    AniobCalibratedAsking.Slot(
+                        id = "time",
+                        questionAsAsked = "What time should the alarm be set for?",
+                        options = listOf("7:00 AM", "8:00 AM", "In 15 minutes"),
+                        changesBehaviour = true,
+                        default = null,
+                        consequential = true,
+                        extractor = { prompt ->
+                            Regex("\\b(\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?|in\\s+\\d+\\s+minutes?)\\b").find(prompt.lowercase())?.value
+                        }
+                    )
+                )
+            }
+
+            if (relevantSlots.isNotEmpty()) {
+                val plan = calibratedAsking.plan(relevantSlots, taskPrompt)
+                val upfront = plan.upfront
+                return if (upfront != null) {
+                    AniobGrillMeResult(
+                        needsClarification = true,
+                        questions = listOf(
+                            GrillQuestion(
+                                id = upfront.id,
+                                question = upfront.questionAsAsked,
+                                options = upfront.options,
+                                allowFreeText = true,
+                                defaultOption = upfront.default
+                            )
+                        )
+                    )
+                } else {
+                    AniobGrillMeResult(needsClarification = false)
+                }
+            }
+        }
 
         fun isRemembered(id: String): Boolean =
             rememberedAnswers.containsKey(id) || rememberedAnswers.containsKey("grill.$id")

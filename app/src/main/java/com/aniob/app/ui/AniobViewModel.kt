@@ -539,10 +539,24 @@ class AniobViewModel(
     /**
      * Foundation Finding F5: Consolidate state transitions so task termination
      * always flows through a central state updater rather than manual scattered resets.
+     * Plan-7.1: TerminationStage is the single owner of terminal exits.
      */
+    internal val terminationStage = com.aniob.core.termination.TerminationStage()
+
     internal fun updateToIdle(transform: (AniobUiState) -> AniobUiState = { it }) {
         clearRunningMarker()
         AniobAccessibilityService.isTaskActive = false
+        if (!terminationStage.isTerminated) {
+            runCatching {
+                terminationStage.terminate(
+                    goal = _uiState.value.activeTask?.clarifiedGoal ?: _uiState.value.activeTask?.rawPrompt ?: "",
+                    residue = com.aniob.core.termination.TerminationStage.DeviceResidue(),
+                    didDo = emptyList(),
+                    didNotDo = emptyList(),
+                    userStopped = false
+                )
+            }
+        }
         _uiState.update { current ->
             transform(current).copy(isRunning = false)
         }
@@ -669,6 +683,12 @@ class AniobViewModel(
 
     fun forgetVaultEntry(key: String) {
         persistentKnowledgeStore.remove(key)
+    }
+
+    /** Plan-7.3: Support editing remembered preferences in the Trust Center. */
+    fun editVaultEntry(key: String, newAnswer: String) {
+        sharedKnowledgeStore.put(key, newAnswer)
+        persistentKnowledgeStore.put(key, newAnswer)
     }
 
     private fun postMomentChip(label: String, kind: MomentChip.Kind) {
@@ -1815,10 +1835,19 @@ class AniobViewModel(
                             "$baseSystemPrompt\n\nSchema:\n${com.aniob.core.domain.AniobActionSchema.ACTION_JSON_SCHEMA}"
                         }
 
+                        // Plan-5.1: Route prompt generation through PromptAssembler for prefix caching
+                        val promptAssembler = com.aniob.core.speed.PromptAssembler(systemPrompt)
+                        val assembledPrompt = promptAssembler.assemble(
+                            com.aniob.core.speed.PromptAssembler.Tail(
+                                observation = executorPrompt
+                            )
+                        )
+                        val activePrompt = assembledPrompt.text
+
                         val plannedAction = if (localCanDrive) {
                             val gen = localLlmClient.generateStepResult(
                                 systemPrompt,
-                                executorPrompt
+                                activePrompt
                             )
                             totalTokens += 80
                             val structured = AniobLocalActionResolver.resolveStructured(gen, currentScreen)
@@ -1845,7 +1874,7 @@ class AniobViewModel(
                                     android.util.Base64.encodeToString(stream.toByteArray(), android.util.Base64.NO_WRAP)
                                 }
                             } else null
-                            val raw = omniroute.getNextActionRaw(systemPrompt, executorPrompt, screenshotBase64)
+                            val raw = omniroute.getNextActionRaw(systemPrompt, activePrompt, screenshotBase64)
                             totalTokens += 150
                             raw.fold(
                                 onSuccess = { text ->

@@ -47,7 +47,8 @@ data class TaskContext(
 
     fun withRejectedFinish(feedback: String): TaskContext = copy(
         rejectedFinishCount = rejectedFinishCount + 1,
-        condensedHistory = condensedHistory + "REJECTED FINISH: $feedback"
+        condensedHistory = condensedHistory +
+            ("the finish claim was not accepted: " + com.aniob.core.memory.history.NeutralWordingContract.neutralize(feedback))
     )
 
     fun addTokens(estimate: Int): TaskContext =
