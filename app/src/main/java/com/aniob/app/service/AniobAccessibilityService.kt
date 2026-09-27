@@ -11,6 +11,11 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.aniob.core.diff.AniobScreenDiff
 import com.aniob.core.domain.*
+import com.aniob.core.perception.AniobScreenCaptureSource
+import com.aniob.core.perception.AniobFusedIndex
+import com.aniob.core.perception.AniobPerceptionTier
+import android.view.accessibility.AccessibilityWindowInfo
+
 import com.aniob.core.execution.AniobActionExecutor
 import com.aniob.core.execution.DispatchCommand
 import com.aniob.core.optimizer.AniobTokenOptimizer
@@ -35,7 +40,7 @@ enum class ScreenshotStatus {
  * High-performance Accessibility Service for Aniob UI Automation.
  * References ARTEMIS (https://github.com/google/artemis) & PrivateAgent (https://github.com/deepakraj-18/mobileappagent).
  */
-class AniobAccessibilityService : AccessibilityService() {
+class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSource {
 
     companion object {
         private const val TAG = "AniobA11yService"
@@ -213,19 +218,57 @@ class AniobAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Extracts optimized screen state using TokenOptimizer and ScreenDiff waterfall.
+     * Plan-1 implementation: multi-window traversal, batched IPC, rich semantics,
+     * visibility parity with bounds clipping, and hard caps (75 depth / 8000 nodes).
      */
-    fun captureCurrentScreenState(): AniobScreenState {
-        val root = rootInActiveWindow
+    override fun captureScreen(includeInvisible: Boolean): AniobScreenState {
         val rawNodes = mutableListOf<AniobNode>()
+        var primaryPackage = ""
+        val displayMetrics = resources.displayMetrics
+        val screenBounds = AniobRect(0, 0, displayMetrics.widthPixels, displayMetrics.heightPixels)
 
-        if (root != null) {
-            traverseNode(root, rawNodes)
+        val windowList = try {
+            windows
+        } catch (_: Exception) {
+            emptyList<AccessibilityWindowInfo>()
+        }
+
+        if (windowList.isNotEmpty()) {
+            for (w in windowList) {
+                val root = w.root ?: continue
+                if (primaryPackage.isEmpty() && root.packageName != null) {
+                    primaryPackage = root.packageName.toString()
+                }
+                val winRect = Rect()
+                w.getBoundsInScreen(winRect)
+                val windowClip = AniobRect(winRect.left, winRect.top, winRect.right, winRect.bottom).intersect(screenBounds)
+                traverseNodeBounded(
+                    node = root,
+                    list = rawNodes,
+                    depth = 0,
+                    clipBounds = windowClip,
+                    includeInvisible = includeInvisible
+                )
+                root.recycle()
+            }
+        } else {
+            val root = rootInActiveWindow
+            if (root != null) {
+                primaryPackage = root.packageName?.toString().orEmpty()
+                traverseNodeBounded(
+                    node = root,
+                    list = rawNodes,
+                    depth = 0,
+                    clipBounds = screenBounds,
+                    includeInvisible = includeInvisible
+                )
+                root.recycle()
+            }
         }
 
         // Apply TokenOptimizer rule: Max 60 actionable nodes with Set-of-Mark tags
         val optimizedNodes = AniobTokenOptimizer.optimize(rawNodes)
-        val packageName = root?.packageName?.toString().orEmpty()
+        val fusedIndex = AniobFusedIndex(optimizedNodes)
 
         val waterfall = AniobScreenDiff.evaluateWaterfall(
             hasAccessibilityContentChanged = contentChangedSinceLastStep,
@@ -236,9 +279,11 @@ class AniobAccessibilityService : AccessibilityService() {
         contentChangedSinceLastStep = false
 
         val screenState = AniobScreenState(
-            packageName = packageName,
+            packageName = primaryPackage,
             activityName = "",
             nodes = optimizedNodes,
+            fusedIndex = fusedIndex,
+            perceptionTier = AniobPerceptionTier.FAST,
             treeHash = waterfall.treeHash,
             screenshotBase64 = null,
             changedRegion = waterfall.changedRegion,
@@ -248,33 +293,71 @@ class AniobAccessibilityService : AccessibilityService() {
         return screenState
     }
 
-    private fun traverseNode(node: AccessibilityNodeInfo, list: MutableList<AniobNode>) {
+    fun captureCurrentScreenState(): AniobScreenState = captureScreen(includeInvisible = false)
+
+    private fun traverseNodeBounded(
+        node: AccessibilityNodeInfo,
+        list: MutableList<AniobNode>,
+        depth: Int,
+        clipBounds: AniobRect,
+        includeInvisible: Boolean
+    ) {
+        if (depth > 75 || list.size >= 8000) return
+
+        val isVisible = node.isVisibleToUser
+        if (!isVisible && !includeInvisible) return
+
         val rect = Rect()
         node.getBoundsInScreen(rect)
+        val rawBounds = AniobRect(rect.left, rect.top, rect.right, rect.bottom)
+        val clippedBounds = rawBounds.intersect(clipBounds)
+
+        // Extract rich semantics (Plan-1.6)
+        val errorText = node.error?.toString().orEmpty().sanitizeForXml()
+        val tooltip = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) node.tooltipText?.toString().orEmpty().sanitizeForXml() else ""
+        val paneTitle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) node.paneTitle?.toString().orEmpty().sanitizeForXml() else ""
+        val isHeading = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) node.isHeading else false
+
+        val sanitizedText = node.text?.toString().orEmpty().sanitizeForXml()
+        val sanitizedDesc = node.contentDescription?.toString().orEmpty().sanitizeForXml()
+
+        val nextClip = if (node.isScrollable) clippedBounds else clipBounds
 
         val aniobNode = AniobNode(
             id = list.size + 1,
             className = node.className?.toString().orEmpty(),
-            text = node.text?.toString().orEmpty(),
-            contentDescription = node.contentDescription?.toString().orEmpty(),
+            text = sanitizedText,
+            contentDescription = sanitizedDesc,
             viewId = node.viewIdResourceName.orEmpty(),
-            bounds = AniobRect(rect.left, rect.top, rect.right, rect.bottom),
+            bounds = clippedBounds,
             isClickable = node.isClickable,
             isEditable = node.isEditable,
             isScrollable = node.isScrollable,
             isSelected = node.isSelected,
             isEnabled = node.isEnabled,
-            isVisibleToUser = node.isVisibleToUser,
-            isPassword = node.isPassword
+            isVisibleToUser = isVisible,
+            isPassword = node.isPassword,
+            errorText = errorText,
+            isHeading = isHeading,
+            paneTitle = paneTitle,
+            tooltip = tooltip
         )
         list.add(aniobNode)
 
         for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            traverseNode(child, list)
+            // Batched IPC hint: on API 33+ descendants can be prefetched
+            val child = if (Build.VERSION.SDK_INT >= 33) {
+                node.getChild(i, 4) ?: node.getChild(i)
+            } else {
+                node.getChild(i)
+            } ?: continue
+            traverseNodeBounded(child, list, depth + 1, nextClip, includeInvisible)
             child.recycle()
         }
     }
+
+    private fun String.sanitizeForXml(): String =
+        replace(Regex("[^\u0009\u000A\u000D\u0020-\uD7FF\uE000-\uFFFD]|"), "").trim()
 
     /**
      * Real screenshot capture on Android 30+ using AccessibilityService.takeScreenshot.

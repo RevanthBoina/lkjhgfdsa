@@ -17,22 +17,27 @@ data class AniobNode(
     val isSelected: Boolean = false,
     val isEnabled: Boolean = true,
     val isVisibleToUser: Boolean = true,
-    val isPassword: Boolean = false
+    val isPassword: Boolean = false,
+    val errorText: String = "",
+    val isHeading: Boolean = false,
+    val paneTitle: String = "",
+    val tooltip: String = "",
+    val source: GroundingSource = GroundingSource.ACCESSIBILITY
 ) {
     val centerX: Int get() = (bounds.left + bounds.right) / 2
     val centerY: Int get() = (bounds.top + bounds.bottom) / 2
     val width: Int get() = bounds.right - bounds.left
     val height: Int get() = bounds.bottom - bounds.top
 
-    /**
-     * Compact single-line Set-of-Mark representation formatted for LLM token efficiency
-     * (Skyvern fovea/SoM pattern). id is a clean 1-based sequential index post-optimize.
-     * Example: [1] android.widget.Button text='Search' contentDesc='' bounds=[100,200,300,250] clickable=true
-     */
     fun toOptimizedTokenString(): String {
         val viewIdPart = if (viewId.isNotBlank()) " viewId='$viewId'" else ""
         val enabledPart = if (!isEnabled) " enabled=false" else ""
-        return "[$id] $className$viewIdPart text='$text' contentDesc='$contentDescription' bounds=[${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}] clickable=$isClickable$enabledPart"
+        val errorPart = if (errorText.isNotBlank()) " error='$errorText'" else ""
+        val headingPart = if (isHeading) " heading=true" else ""
+        val panePart = if (paneTitle.isNotBlank()) " pane='$paneTitle'" else ""
+        val tooltipPart = if (tooltip.isNotBlank()) " tooltip='$tooltip'" else ""
+        val sourcePart = if (source != GroundingSource.ACCESSIBILITY) " source=$source" else ""
+        return "[$id] $className$viewIdPart text='$text' contentDesc='$contentDescription'$errorPart$headingPart$panePart$tooltipPart bounds=[${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}] clickable=$isClickable$enabledPart$sourcePart"
     }
 }
 
@@ -44,4 +49,14 @@ data class AniobRect(
 ) {
     val isEmpty: Boolean get() = left >= right || top >= bottom
     val area: Int get() = if (isEmpty) 0 else (right - left) * (bottom - top)
+
+    fun contains(x: Int, y: Int): Boolean = x in left..right && y in top..bottom
+
+    fun intersect(other: AniobRect): AniobRect {
+        val l = maxOf(left, other.left)
+        val t = maxOf(top, other.top)
+        val r = minOf(right, other.right)
+        val b = minOf(bottom, other.bottom)
+        return if (l < r && t < b) AniobRect(l, t, r, b) else AniobRect(0, 0, 0, 0)
+    }
 }

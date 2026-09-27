@@ -289,3 +289,51 @@ class AniobOmniRouteProvider(
         const val DEFAULT_THROTTLE_MS = 60L
     }
 }
+
+enum class OmniRouteConnectionStatus {
+    SUCCESS,
+    BAD_KEY,
+    UNREACHABLE
+}
+
+suspend fun testOmniRouteConnection(apiKey: String, baseUrl: String): OmniRouteConnectionStatus = withContext(Dispatchers.IO) {
+    if (apiKey.isBlank()) return@withContext OmniRouteConnectionStatus.BAD_KEY
+    val client = OkHttpClient.Builder()
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS)
+        .build()
+
+    val payload = JSONObject().apply {
+        put("model", "auto")
+        put("messages", JSONArray().apply {
+            put(JSONObject().apply {
+                put("role", "user")
+                put("content", "ping")
+            })
+        })
+        put("max_tokens", 1)
+    }
+
+    val request = Request.Builder()
+        .url(baseUrl)
+        .addHeader("Authorization", "Bearer $apiKey")
+        .addHeader("Content-Type", "application/json")
+        .post(payload.toString().toRequestBody("application/json".toMediaType()))
+        .build()
+
+    try {
+        client.newCall(request).execute().use { response ->
+            when (response.code) {
+                in 200..299 -> OmniRouteConnectionStatus.SUCCESS
+                401, 403 -> OmniRouteConnectionStatus.BAD_KEY
+                else -> OmniRouteConnectionStatus.UNREACHABLE
+            }
+        }
+    } catch (_: java.net.UnknownHostException) {
+        OmniRouteConnectionStatus.UNREACHABLE
+    } catch (_: java.io.IOException) {
+        OmniRouteConnectionStatus.UNREACHABLE
+    } catch (_: Exception) {
+        OmniRouteConnectionStatus.UNREACHABLE
+    }
+}

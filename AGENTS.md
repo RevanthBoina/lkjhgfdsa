@@ -41,3 +41,8 @@ core-agent purity, empty-catch scan, Prompt-4 pins). Run it before proposing cha
   deduplicates repeated action signatures to catch in-flight animations.
 - The Tracker screen is a pure view over Room/EventLogger state: opening it must perform zero screen
   captures and zero model calls (`TrackerZeroCaptureTest`).
+## On-Device Inference Runtime Decision (Plan-0.3)
+- **Decision: Option (a) — Prebuilt Maven Runtime**
+  - Adopt prebuilt Google AI Edge LiteRT (`com.google.ai.edge.litert`) runtime dependencies in `:app`.
+  - `:core-agent` remains a pure Kotlin/JVM module with 0 `android.*` dependencies. All native runtime drivers live in `:app` behind domain contracts.
+  - Model catalog entries are strictly aligned with unauthenticated range-request HTTP 206 endpoints and verifiable SHA-256 hashes.
