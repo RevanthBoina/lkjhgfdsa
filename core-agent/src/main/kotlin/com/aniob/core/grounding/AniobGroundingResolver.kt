@@ -2,31 +2,28 @@ package com.aniob.core.grounding
 
 import com.aniob.core.domain.AniobNode
 import com.aniob.core.domain.AniobScreenState
+import com.aniob.core.domain.GroundingSource
 import com.aniob.core.domain.SemanticTarget
 
 /**
- * Turns a [SemanticTarget] into concrete pixels against a **live** screen capture.
- *
- * This is the only place a coordinate is ever produced. It returns `null` on a miss rather than
- * throwing or guessing, so a stale or hallucinated target can never become a blind tap — the
- * caller records a grounding miss and lets the loop recover.
+ * Turns a [SemanticTarget] into concrete pixels against a **live** screen capture using the fused element index.
+ * Records the resolving perception source (accessibility node, OCR, or visual model).
  */
 object AniobGroundingResolver {
 
-    /** A successfully grounded element plus the exact pixels to gesture at. */
+    /** A successfully grounded element plus the exact pixels and resolving source. */
     data class Resolved(
         val node: AniobNode,
         val x: Int,
-        val y: Int
+        val y: Int,
+        val source: GroundingSource = node.source
     )
 
     /**
-     * Resolution priority:
-     * 1. SoM index → node with that id (already post-optimizer, so it is the model's index)
-     * 2. resource id → exact view-id match
-     * 3. text / content description → exact match, then contains
-     *
-     * @return the resolved element and its centre, or `null` when nothing matches.
+     * Fused resolution priority:
+     * 1. SoM index -> node with that id in the fused index
+     * 2. resource id -> exact view-id match
+     * 3. text / content description -> exact match over fused index, then fuzzy text match
      */
     fun resolve(target: SemanticTarget, liveScreen: AniobScreenState): Resolved? = when (target) {
         is SemanticTarget.SomIndex -> {
@@ -36,7 +33,7 @@ object AniobGroundingResolver {
         }
 
         is SemanticTarget.ResourceId -> {
-            val matches = liveScreen.nodes.filter {
+            val matches = liveScreen.fusedIndex.elements.filter {
                 it.isVisibleToUser && it.isEnabled && it.viewId.equals(target.id, ignoreCase = false)
             }
             if (matches.size == 1) matches.first().toResolved()
@@ -52,48 +49,47 @@ object AniobGroundingResolver {
     }
 
     private fun resolveText(target: SemanticTarget.Text, screen: AniobScreenState): Resolved? {
-        val eligible = screen.nodes.filter { it.isVisibleToUser && it.isEnabled }
+        val eligible = screen.fusedIndex.elements.filter { it.isVisibleToUser && it.isEnabled }
         val exactHits = eligible.filter { it.text.equals(target.text, ignoreCase = true) }
         if (exactHits.size == 1) return exactHits.first().toResolved()
         if (exactHits.size > 1) {
             val clickables = exactHits.filter { it.isClickable }
             if (clickables.size == 1) return clickables.first().toResolved()
-            return null // Reject ambiguous
+            return null
         }
         if (target.exact) return null
-        val partialHits = eligible.filter { it.text.contains(target.text, ignoreCase = true) }
-        if (partialHits.size == 1) return partialHits.first().toResolved()
-        if (partialHits.size > 1) {
-            val clickables = partialHits.filter { it.isClickable }
-            if (clickables.size == 1) return clickables.first().toResolved()
-            return null // Reject ambiguous
+
+        val fuzzyHits = screen.fusedIndex.fuzzyTextSearch(target.text, minSimilarity = 0.70)
+            .filter { it.first.isVisibleToUser && it.first.isEnabled }
+        if (fuzzyHits.isNotEmpty()) {
+            return fuzzyHits.first().first.toResolved()
         }
         return null
     }
 
     private fun resolveContentDesc(target: SemanticTarget.ContentDesc, screen: AniobScreenState): Resolved? {
-        val eligible = screen.nodes.filter { it.isVisibleToUser && it.isEnabled }
+        val eligible = screen.fusedIndex.elements.filter { it.isVisibleToUser && it.isEnabled }
         val exactHits = eligible.filter { it.contentDescription.equals(target.desc, ignoreCase = true) }
         if (exactHits.size == 1) return exactHits.first().toResolved()
         if (exactHits.size > 1) {
             val clickables = exactHits.filter { it.isClickable }
             if (clickables.size == 1) return clickables.first().toResolved()
-            return null // Reject ambiguous
+            return null
         }
         if (target.exact) return null
+
         val partialHits = eligible.filter { it.contentDescription.contains(target.desc, ignoreCase = true) }
         if (partialHits.size == 1) return partialHits.first().toResolved()
         if (partialHits.size > 1) {
             val clickables = partialHits.filter { it.isClickable }
             if (clickables.size == 1) return clickables.first().toResolved()
-            return null // Reject ambiguous
+            return null
         }
         return null
     }
 
-    private fun AniobNode.toResolved(): Resolved = Resolved(node = this, x = centerX, y = centerY)
+    private fun AniobNode.toResolved(): Resolved = Resolved(node = this, x = centerX, y = centerY, source = source)
 
-    /** Resolves the scrollable container nearest [target], or the largest scrollable node. */
     fun resolveContainer(target: SemanticTarget?, liveScreen: AniobScreenState): AniobNode? {
         val scrollables = liveScreen.nodes.filter { it.isScrollable }
         if (scrollables.isEmpty()) return null
