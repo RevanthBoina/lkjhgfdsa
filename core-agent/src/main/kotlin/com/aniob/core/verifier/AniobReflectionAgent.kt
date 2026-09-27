@@ -2,11 +2,19 @@ package com.aniob.core.verifier
 
 import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.AniobScreenState
-import com.aniob.core.domain.SwipeDirection
 import com.aniob.core.exec.AniobErrorClass
 import com.aniob.core.exec.AniobErrorTaxonomy
 
 data class ReflectionResult(val isExpected: Boolean, val reason: String, val remedialAction: AniobAction? = null)
+
+/**
+ * Plan-3.6: Outcome of an on-demand reflection comparing declared expectations with actual screen transitions.
+ */
+data class OnDemandReflection(
+    val matchedExpectation: Boolean,
+    val explanation: String,
+    val strategicHint: String? = null
+)
 
 class AniobReflectionAgent {
     fun reflect(
@@ -42,11 +50,48 @@ class AniobReflectionAgent {
     }
 
     /**
+     * Plan-3.6: On-demand post-execution reflection against declared expectation.
+     * Evaluated when requested or when an anomaly is suspected, avoiding always-on token and latency overhead.
+     */
+    fun reflectOnDemand(
+        expectedProofOfSuccess: String,
+        screenBefore: AniobScreenState,
+        screenAfter: AniobScreenState,
+        action: AniobAction
+    ): OnDemandReflection {
+        val screenChanged = screenBefore.treeHash != screenAfter.treeHash
+
+        // Check if expected screen change is visible or indicated in the post-action screen state
+        val expectedClean = expectedProofOfSuccess.lowercase().trim()
+        val textMatches = screenAfter.nodes.any { node ->
+            node.text.lowercase().contains(expectedClean) ||
+            node.contentDescription.lowercase().contains(expectedClean)
+        }
+
+        if (!screenChanged) {
+            return OnDemandReflection(
+                matchedExpectation = false,
+                explanation = "Action '${action.describeAction()}' produced no detectable screen change.",
+                strategicHint = "The previous action did not alter the screen. Verify if the element was responsive or requires an alternative input mode (e.g. scroll or keyboard enter)."
+            )
+        }
+
+        if (expectedClean.isNotBlank() && !textMatches && expectedClean.length > 3) {
+            return OnDemandReflection(
+                matchedExpectation = false,
+                explanation = "Expected proof '$expectedProofOfSuccess' was not found on the post-action screen.",
+                strategicHint = "The screen changed, but expected evidence ('$expectedProofOfSuccess') is missing. Check if a loading state, modal, or unexpected view is displayed before continuing."
+            )
+        }
+
+        return OnDemandReflection(
+            matchedExpectation = true,
+            explanation = "Outcome matched expected screen transition."
+        )
+    }
+
+    /**
      * Judges a provisional `Finish`.
-     *
-     * Ordering matters for token cost: a deterministic pass is accepted immediately, a
-     * fully-checkable deterministic failure is rejected *without* spending an LLM call, and only
-     * a partially checkable case reaches [llmJudge] — exactly one call.
      */
     fun reflectFinish(
         criteria: com.aniob.core.domain.SuccessCriteria,
@@ -60,7 +105,6 @@ class AniobReflectionAgent {
         if (deterministic.isExpected) {
             return com.aniob.core.execution.ReflectionOutcome.confirmed(deterministic.reason)
         }
-        // Fully checkable -> deterministic verdict is authoritative, no LLM needed.
         if (criteria.isFullyCheckable) {
             return com.aniob.core.execution.ReflectionOutcome.rejected(
                 deterministic.reason,
@@ -70,4 +114,3 @@ class AniobReflectionAgent {
         return llmJudge(deterministic.reason)
     }
 }
-
