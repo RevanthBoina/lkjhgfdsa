@@ -104,6 +104,69 @@ object AniobConfigParser {
         return result
     }
 
+    data class CatalogValidationResult(
+        val isValid: Boolean,
+        val errors: List<String>
+    )
+
+    /**
+     * Validates that the model catalog YAML defines non-empty models and that all
+     * expected default keys are present, non-empty, and reference declared model IDs.
+     */
+    fun validateCatalogDefaults(
+        yaml: String,
+        requiredDefaultKeys: Set<String> = setOf("ram_4gb", "ram_6gb", "ram_8gb", "ram_8gb_coding", "ram_8gb_balanced")
+    ): CatalogValidationResult {
+        val declaredIds = parseDeclaredModelIds(yaml)
+        val defaults = parseDefaults(yaml)
+        val errors = mutableListOf<String>()
+
+        if (declaredIds.isEmpty()) {
+            errors.add("Catalog contains no declared model IDs under 'models:'")
+        }
+
+        if (defaults.isEmpty()) {
+            errors.add("Catalog contains no 'defaults:' block or defaults are empty")
+        }
+
+        for (key in requiredDefaultKeys) {
+            val defaultId = defaults[key]
+            if (defaultId.isNullOrBlank()) {
+                errors.add("Missing or empty default for key '$key'")
+            } else if (!declaredIds.contains(defaultId)) {
+                errors.add("Default '$key' references undeclared model ID '$defaultId' (declared: $declaredIds)")
+            }
+        }
+
+        return CatalogValidationResult(isValid = errors.isEmpty(), errors = errors)
+    }
+
+    /** Extracts the set of model IDs declared under `models:` in models.yaml. */
+    fun parseDeclaredModelIds(yaml: String): Set<String> {
+        val ids = mutableSetOf<String>()
+        var inModels = false
+        yaml.lineSequence().forEach { rawLine ->
+            val line = rawLine.substringBefore('#')
+            if (line.isBlank()) return@forEach
+            val indent = line.length - line.trimStart().length
+            val trimmed = line.trim()
+            if (indent == 0) {
+                inModels = trimmed.equals("models:", ignoreCase = true)
+                return@forEach
+            }
+            if (inModels) {
+                if (trimmed.startsWith("- id:") || trimmed.startsWith("id:")) {
+                    val idVal = unquote(trimmed.substringAfter("id:").trim())
+                    if (idVal.isNotBlank()) ids.add(idVal)
+                }
+            }
+        }
+        return ids
+    }
+
+    /** Extracts the map of key-value pairs declared under `defaults:` in models.yaml. */
+    fun parseDefaults(yaml: String): Map<String, String> = flatBlock(yaml, "defaults")
+
     private fun splitPair(line: String): Pair<String, String>? {
         val idx = line.indexOf(':')
         if (idx <= 0) return null

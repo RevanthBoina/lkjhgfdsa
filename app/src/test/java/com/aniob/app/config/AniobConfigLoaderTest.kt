@@ -53,4 +53,32 @@ class AniobConfigLoaderTest {
     fun missingAssetFallsBackWithoutThrowing() {
         assertEquals(null, loader.prompt("does_not_exist.txt"))
     }
+
+    @Test
+    fun bundledModelsYamlDefaultsAreValidAndMatchKotlinCatalog() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val yaml = context.assets.open("aniob_config/models.yaml").bufferedReader().use { it.readText() }
+
+        // 1. Core YAML validation passes
+        val validation = com.aniob.core.config.AniobConfigParser.validateCatalogDefaults(yaml)
+        assertTrue(validation.errors.joinToString("; "), validation.isValid)
+
+        // 2. Cross-consistency with live Kotlin catalog (AniobModelDownloader.ALL_MODELS)
+        val declaredYamlIds = com.aniob.core.config.AniobConfigParser.parseDeclaredModelIds(yaml)
+        val kotlinCatalogIds = com.aniob.app.model.AniobModelDownloader.ALL_MODELS.map { it.id }.toSet()
+        assertEquals(
+            "Declared YAML model IDs must exactly match live Kotlin catalog IDs",
+            kotlinCatalogIds,
+            declaredYamlIds
+        )
+
+        // 3. Every default in YAML exists in the live Kotlin catalog
+        val defaults = com.aniob.core.config.AniobConfigParser.parseDefaults(yaml)
+        for ((key, modelId) in defaults) {
+            assertTrue(
+                "Default key '$key' maps to '$modelId', which must exist in live Kotlin catalog",
+                kotlinCatalogIds.contains(modelId)
+            )
+        }
+    }
 }

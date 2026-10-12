@@ -83,4 +83,83 @@ class AniobConfigParserTest {
     fun `missing agent block yields compiled default limits`() {
         assertEquals(AgentLimits.DEFAULT, AniobConfigParser.parseAgentLimits("nothing: here"))
     }
+
+    @Test
+    fun `validateCatalogDefaults passes on current valid models YAML`() {
+        val candidates = listOf(
+            java.io.File("../configs/models.yaml"),
+            java.io.File("configs/models.yaml")
+        )
+        val fileContent = candidates.firstOrNull { it.exists() }?.readText()
+            ?: """
+                models:
+                  - id: qwen2.5-1.5b-q8
+                  - id: gemma4-e2b
+                  - id: gemma4-e4b
+                  - id: phi4-mini-q8
+                defaults:
+                  ram_4gb: "qwen2.5-1.5b-q8"
+                  ram_6gb: "gemma4-e2b"
+                  ram_8gb: "phi4-mini-q8"
+                  ram_8gb_coding: "qwen2.5-1.5b-q8"
+                  ram_8gb_balanced: "gemma4-e4b"
+            """.trimIndent()
+        val result = AniobConfigParser.validateCatalogDefaults(fileContent)
+        assertTrue(result.errors.joinToString(), result.isValid)
+        assertTrue(result.errors.isEmpty())
+    }
+
+    @Test
+    fun `validateCatalogDefaults fails when default references undeclared model ID`() {
+        val yamlWithUnknownDefault = """
+            models:
+              - id: qwen2.5-1.5b-q8
+              - id: gemma4-e2b
+            defaults:
+              ram_4gb: "qwen2.5-1.5b-q8"
+              ram_6gb: "non-existent-model-id"
+              ram_8gb: "qwen2.5-1.5b-q8"
+              ram_8gb_coding: "qwen2.5-1.5b-q8"
+              ram_8gb_balanced: "gemma4-e2b"
+        """.trimIndent()
+        val result = AniobConfigParser.validateCatalogDefaults(yamlWithUnknownDefault)
+        assertEquals(false, result.isValid)
+        assertTrue(result.errors.any { it.contains("non-existent-model-id") })
+    }
+
+    @Test
+    fun `validateCatalogDefaults fails when defaults block is missing or empty`() {
+        val missingDefaults = """
+            models:
+              - id: qwen2.5-1.5b-q8
+        """.trimIndent()
+        val resultMissing = AniobConfigParser.validateCatalogDefaults(missingDefaults)
+        assertEquals(false, resultMissing.isValid)
+        assertTrue(resultMissing.errors.any { it.contains("no 'defaults:' block") })
+
+        val emptyDefaults = """
+            models:
+              - id: qwen2.5-1.5b-q8
+            defaults:
+        """.trimIndent()
+        val resultEmpty = AniobConfigParser.validateCatalogDefaults(emptyDefaults)
+        assertEquals(false, resultEmpty.isValid)
+    }
+
+    @Test
+    fun `validateCatalogDefaults fails when required default key is missing or blank`() {
+        val missingKey = """
+            models:
+              - id: qwen2.5-1.5b-q8
+              - id: gemma4-e2b
+            defaults:
+              ram_4gb: "qwen2.5-1.5b-q8"
+              ram_6gb: "gemma4-e2b"
+              ram_8gb: "qwen2.5-1.5b-q8"
+              ram_8gb_balanced: "gemma4-e2b"
+        """.trimIndent()
+        val result = AniobConfigParser.validateCatalogDefaults(missingKey)
+        assertEquals(false, result.isValid)
+        assertTrue(result.errors.any { it.contains("ram_8gb_coding") })
+    }
 }

@@ -15,6 +15,28 @@ URLS=(
   "https://huggingface.co/litert-community/Phi-4-mini-instruct/resolve/main/Phi-4-mini-instruct_multi-prefill-seq_q8_ekv4096.litertlm"
 )
 
+echo "=== Verifying Catalog Models Consistency & Defaults ==="
+if ! diff -q configs/models.yaml app/src/main/assets/aniob_config/models.yaml >/dev/null 2>&1 || \
+   ! diff -q configs/models.yaml android-agent/configs/models.yaml >/dev/null 2>&1; then
+  echo "ERROR: Catalog models.yaml files drift across mirrored locations."
+  exit 1
+fi
+echo "OK: All 3 catalog copies agree."
+
+DECLARED_IDS=$(grep -E '^[[:space:]]*-[[:space:]]*id:' configs/models.yaml | sed -E 's/.*id:[[:space:]]*"?([^"]*)"?/\1/')
+for key in ram_4gb ram_6gb ram_8gb ram_8gb_coding ram_8gb_balanced; do
+  val=$(grep -E "^[[:space:]]*${key}:" configs/models.yaml | sed -E "s/.*${key}:[[:space:]]*\"?([^\"]*)\"?/\1/")
+  if [ -z "$val" ]; then
+    echo "ERROR: Missing default mapping for key: $key"
+    exit 1
+  fi
+  if ! echo "$DECLARED_IDS" | grep -qx "$val"; then
+    echo "ERROR: Default '$key' points to undeclared model ID '$val'"
+    exit 1
+  fi
+  echo "OK: Default '$key' -> '$val' (verified declared)"
+done
+
 echo "=== Verifying Catalog Model URLs (Unauthenticated HTTP 206 Range Check) ==="
 FAILED=0
 

@@ -77,13 +77,13 @@ models:
     supports_tool_calling: true
     supports_vision: false
 
-# Default model selection logic based on device RAM
+# Default model selection mapping across supported RAM tiers
 defaults:
-  ram_4gb: "gemma3-1b-q4"
-  ram_6gb: "llama3.2-3b-q4"
-  ram_8gb: "phi4-mini-3.8b-q4"
-  ram_8gb_coding: "qwen2.5-coder-7b-q4"
-  ram_8gb_balanced: "gemma3-4b-q4"
+  ram_4gb: "qwen2.5-1.5b-q8"
+  ram_6gb: "gemma4-e2b"
+  ram_8gb: "phi4-mini-q8"
+  ram_8gb_coding: "qwen2.5-1.5b-q8"
+  ram_8gb_balanced: "gemma4-e4b"
 
 # Download settings
 download:
