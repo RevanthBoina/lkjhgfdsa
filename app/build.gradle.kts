@@ -142,6 +142,12 @@ dependencies {
   implementation(libs.androidx.browser)
   implementation(libs.moshi.kotlin)
   implementation(libs.okhttp)
+  // On-device LLM inference runtime (Google AI Edge LiteRT-LM). RUNTIME_DECISION.md Option A:
+  // prebuilt Maven artifact, so no NDK/CMake toolchain and no hand-written JNI. This is what
+  // supplies liblitertlm*.so for arm64-v8a.
+  implementation(libs.litertlm.android)
+  // Tink-backed encrypted storage for the OmniRoute API key (was plaintext SharedPreferences).
+  implementation(libs.androidx.security.crypto)
   // implementation(libs.play.services.location)
   implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)

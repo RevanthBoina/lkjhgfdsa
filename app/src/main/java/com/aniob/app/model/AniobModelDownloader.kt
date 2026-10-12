@@ -1,5 +1,7 @@
 package com.aniob.app.model
 
+import com.aniob.core.providers.AniobModelFiles
+
 import android.app.ActivityManager
 import android.content.Context
 import android.net.ConnectivityManager
@@ -79,7 +81,7 @@ data class AniobModelInfo(
         ramRequiredGb = ramRequiredGb,
         minDeviceRamGb = minDeviceRamGb,
         repoId = "",
-        fileName = "$id.gguf",
+        fileName = AniobModelFiles.fileName(id),
         bestFor = bestFor,
         description = description,
         requiresCharging = requiresCharging,
@@ -137,118 +139,80 @@ class AniobModelDownloader(private val context: Context) {
         const val PREF_DEFAULT_MODEL = "default_model_id"
         const val PREF_CUSTOM_MODELS = "aniob_custom_models"
 
+        /**
+         * On-device catalog. Every entry is a `.litertlm` file for the LiteRT-LM runtime and carries
+         * a real SHA-256, because [downloadModelWithProgress] only verifies integrity when
+         * `sha256.isNotBlank()` — with the previous all-empty values the check silently never ran.
+         *
+         * `sizeBytes` and `sha256` are taken from the publisher's LFS metadata and each `url` was
+         * confirmed reachable unauthenticated (HTTP 206 on a ranged GET), which is the standard
+         * `scripts/check-catalog-urls.sh` enforces. Gated repos are excluded on purpose:
+         * `litert-community/Gemma3-1B-IT` and `Gemma3-4B-IT` return HTTP 401 without a token, so a
+         * first-run user could never download them.
+         *
+         * The installed file is stored as `<id>.litertlm` via AniobModelFiles, not as [fileName];
+         * [fileName] only names what is fetched.
+         */
         val ALL_MODELS = listOf(
             AniobModelInfo(
-                id = "nomic-embed-text-v1.5-q4",
-                name = "Nomic Embed Text v1.5",
-                displayName = "Nomic Embed - Semantic Search",
-                params = "0.137B",
-                sizeBytes = 83_886_080L,
-                ramRequiredGb = 2.0,
+                id = "qwen2.5-1.5b-q8",
+                name = "Qwen2.5 1.5B Instruct",
+                displayName = "Qwen2.5 1.5B (Fast / Low RAM)",
+                params = "1.5B",
+                sizeBytes = 1_597_922_856L,
+                ramRequiredGb = 2.5,
                 minDeviceRamGb = 4,
-                repoId = "nomic-ai/nomic-embed-text-v1.5-GGUF",
-                fileName = "nomic-embed-text-v1.5.Q4_K_M.gguf",
-                bestFor = "embeddings, semantic skill matching, memory search",
-                description = "Nomic 137M, fast embedding model for semantic matching",
-                requiresCharging = false
+                repoId = "litert-community/Qwen2.5-1.5B-Instruct",
+                fileName = "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm",
+                bestFor = "fast on-device planning on 4GB devices",
+                description = "Smallest viable agent model; q8, 4096-token context",
+                requiresCharging = false,
+                sha256 = "c4a9b7289365ab80fe599b844b77ad253eb3c53fb0e5d963d699146a6f01255e"
             ),
             AniobModelInfo(
-                id = "phi4-mini-3.8b-q4",
-                name = "Phi-4 Mini 3.8B",
-                displayName = "Phi-4 Mini (Recommended)",
-                params = "3.8B",
-                sizeBytes = 2_254_438_400L,
-                ramRequiredGb = 2.7,
-                minDeviceRamGb = 8,
-                repoId = "unsloth/Phi-4-mini-instruct-GGUF",
-                fileName = "Phi-4-mini-instruct-Q4_K_M.gguf",
-                bestFor = "Reasoning, coding, general tasks",
-                description = "Microsoft 3.8B, high quality reasoning on capable devices",
-                requiresCharging = false
-            ),
-            AniobModelInfo(
-                id = "gemma3-4b-q4",
-                name = "Gemma 3 4B",
-                displayName = "Gemma 3 4B (Balanced)",
-                params = "4B",
-                sizeBytes = 2_362_232_832L,
-                ramRequiredGb = 2.9,
-                minDeviceRamGb = 8,
-                repoId = "ggml-org/gemma-3-4b-it-GGUF",
-                fileName = "gemma-3-4b-it-Q4_K_M.gguf",
-                bestFor = "Balanced, efficient, everyday tasks",
-                description = "Google 4B, balanced efficiency and reasoning",
-                requiresCharging = false
-            ),
-            AniobModelInfo(
-                id = "llama3.2-3b-q4",
-                name = "Llama 3.2 3B",
-                displayName = "Llama 3.2 3B (Fast Tasks)",
-                params = "3.2B",
-                sizeBytes = 1_932_735_283L,
-                ramRequiredGb = 2.2,
+                id = "gemma4-e2b",
+                name = "Gemma 4 E2B Instruct",
+                displayName = "Gemma 4 E2B (Balanced)",
+                params = "E2B",
+                sizeBytes = 2_588_147_712L,
+                ramRequiredGb = 3.5,
                 minDeviceRamGb = 6,
-                repoId = "unsloth/Llama-3.2-3B-Instruct-GGUF",
-                fileName = "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-                bestFor = "Tool calling, quick actions, responsive general tasks",
-                description = "Meta 3.2B, fast and reliable execution",
-                requiresCharging = false
+                repoId = "litert-community/gemma-4-E2B-it-litert-lm",
+                fileName = "gemma-4-E2B-it.litertlm",
+                bestFor = "balanced instruction following and tool calling",
+                description = "Same artifact and version proven in the reference implementation",
+                requiresCharging = false,
+                sha256 = "181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c"
             ),
             AniobModelInfo(
-                id = "qwen3-4b-q4",
-                name = "Qwen 3 4B",
-                displayName = "Qwen 3 4B (Multilingual)",
-                params = "4B",
-                sizeBytes = 2_362_232_832L,
-                ramRequiredGb = 2.85,
+                id = "gemma4-e4b",
+                name = "Gemma 4 E4B Instruct",
+                displayName = "Gemma 4 E4B (Capable)",
+                params = "E4B",
+                sizeBytes = 3_659_530_240L,
+                ramRequiredGb = 5.0,
                 minDeviceRamGb = 8,
-                repoId = "Qwen/Qwen3-4B-GGUF",
-                fileName = "Qwen3-4B-Q4_K_M.gguf",
-                bestFor = "Multilingual understanding and instructions",
-                description = "Alibaba Qwen3 4B, comprehensive language coverage",
-                requiresCharging = false
+                repoId = "litert-community/gemma-4-E4B-it-litert-lm",
+                fileName = "gemma-4-E4B-it.litertlm",
+                bestFor = "multi-step plans and harder reasoning on 8GB+ devices",
+                description = "Larger Gemma 4 variant for higher-RAM devices",
+                requiresCharging = false,
+                sha256 = "0b2a8980ce155fd97673d8e820b4d29d9c7d99b8fa6806f425d969b145bd52e0"
             ),
             AniobModelInfo(
-                id = "qwen2.5-coder-7b-q4",
-                name = "Qwen 2.5 Coder 7B",
-                displayName = "Qwen 2.5 Coder 7B (Code Specialist)",
-                params = "7B",
-                sizeBytes = 4_681_359_360L,
-                ramRequiredGb = 4.7,
+                id = "phi4-mini-q8",
+                name = "Phi-4 Mini Instruct",
+                displayName = "Phi-4 Mini (Reasoning)",
+                params = "3.8B",
+                sizeBytes = 3_910_090_752L,
+                ramRequiredGb = 5.5,
                 minDeviceRamGb = 8,
-                repoId = "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
-                fileName = "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
-                bestFor = "Complex coding and script execution",
-                description = "Alibaba Coder 7B, specialized code generation",
-                requiresCharging = true
-            ),
-            AniobModelInfo(
-                id = "mistral-7b-q4",
-                name = "Mistral 7B",
-                displayName = "Mistral 7B (Fast Performance)",
-                params = "7.2B",
-                sizeBytes = 4_294_967_296L,
-                ramRequiredGb = 4.5,
-                minDeviceRamGb = 8,
-                repoId = "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
-                fileName = "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
-                bestFor = "Fast throughput, general tasks",
-                description = "Mistral AI 7B, fast and versatile",
-                requiresCharging = true
-            ),
-            AniobModelInfo(
-                id = "gemma3-1b-q4",
-                name = "Gemma 3 1B",
-                displayName = "Gemma 3 1B (Lightweight)",
-                params = "1B",
-                sizeBytes = 629_145_600L,
-                ramRequiredGb = 0.72,
-                minDeviceRamGb = 4,
-                repoId = "ggml-org/gemma-3-1b-it-GGUF",
-                fileName = "gemma-3-1b-it-Q4_K_M.gguf",
-                bestFor = "Compact footprint, standard phones",
-                description = "Google 1B, runs smoothly on smaller devices",
-                requiresCharging = false
+                repoId = "litert-community/Phi-4-mini-instruct",
+                fileName = "Phi-4-mini-instruct_multi-prefill-seq_q8_ekv4096.litertlm",
+                bestFor = "strongest on-device reasoning; q8 keeps tool-call fidelity",
+                description = "Microsoft Phi-4 Mini, q8, 4096-token context",
+                requiresCharging = false,
+                sha256 = "7764d4deb53800578307be33039476b38a6c370fff71bedb3c0552563e23ab02"
             )
         )
     }
@@ -294,10 +258,27 @@ class AniobModelDownloader(private val context: Context) {
 
     fun getRecommendedModel(deviceInfo: DeviceInfo): String {
         return when {
-            deviceInfo.totalRamGb >= 8 -> "phi4-mini-3.8b-q4"
-            deviceInfo.totalRamGb >= 6 -> "llama3.2-3b-q4"
-            else -> "gemma3-1b-q4"
+            deviceInfo.totalRamGb >= 8 -> "phi4-mini-q8"
+            deviceInfo.totalRamGb >= 6 -> "gemma4-e2b"
+            else -> "qwen2.5-1.5b-q8"
         }
+    }
+
+    /**
+     * Absolute path of the model file the on-device engine should load: the user's selection when a
+     * model is installed, otherwise the recommendation for this device's RAM tier.
+     *
+     * Returns the canonical `<id>.litertlm` path even when the file is absent, so
+     * `AniobLiteRtProvider.readiness()` reports FILE_MISSING instead of pointing at a stale path.
+     */
+    fun resolveInstalledModelPath(): String {
+        val selected = getDefaultModelId()
+        val installedId = when {
+            selected != null && isModelInstalled(selected) -> selected
+            else -> getAllCatalogModels().firstOrNull { isModelInstalled(it.id) }?.id
+                ?: getRecommendedModel(getDeviceInfo())
+        }
+        return AniobModelFiles.absolutePath(getModelsDir(), installedId)
     }
 
     fun getAllCatalogModels(): List<AniobModelInfo> {
@@ -340,7 +321,7 @@ class AniobModelDownloader(private val context: Context) {
 
     fun isModelInstalled(modelId: String): Boolean {
         val model = getAllCatalogModels().find { it.id == modelId }
-        val byId = File(getModelsDir(), "$modelId.gguf")
+        val byId = AniobModelFiles.file(getModelsDir(), modelId)
         if (byId.exists() && byId.length() > 0) return true
         if (model != null) {
             val byFile = File(getModelsDir(), model.fileName)
@@ -355,7 +336,7 @@ class AniobModelDownloader(private val context: Context) {
             val byFile = File(getModelsDir(), model.fileName)
             if (byFile.exists() && byFile.length() > 0) return byFile
         }
-        val byId = File(getModelsDir(), "$modelId.gguf")
+        val byId = AniobModelFiles.file(getModelsDir(), modelId)
         return if (byId.exists() && byId.length() > 0) byId else null
     }
 
@@ -379,8 +360,11 @@ class AniobModelDownloader(private val context: Context) {
 
         val modelsDir = getModelsDir()
         val tmpDir = getTempDir()
-        val finalFile = File(modelsDir, model.fileName)
-        val tmpFile = File(tmpDir, "${model.id}.gguf.tmp")
+        // Stored under the canonical `<id>.litertlm` name rather than the upstream `model.fileName`,
+        // so core-agent's routers (AniobHybridEngineRouter / AniobDoctor / AniobAutoRouter) can
+        // resolve the same path from the model id alone. `model.fileName` still names what we fetch.
+        val finalFile = AniobModelFiles.file(modelsDir, model.id)
+        val tmpFile = File(tmpDir, "${AniobModelFiles.fileName(model.id)}.tmp")
         val downloaded = if (tmpFile.exists()) tmpFile.length() else 0L
 
         val startTime = System.currentTimeMillis()
@@ -504,21 +488,21 @@ class AniobModelDownloader(private val context: Context) {
             onProgress(prog.progress)
         }
         if (result.isSuccess) {
-            val file = getInstalledModelFile(modelId) ?: File(getModelsDir(), "$modelId.gguf")
+            val file = getInstalledModelFile(modelId) ?: AniobModelFiles.file(getModelsDir(), modelId)
             Result.success(file)
         } else {
             Result.failure(result.exceptionOrNull() ?: IllegalStateException("Download failed"))
         }
     }
 
-    /** Side-load escape hatch: import a local .gguf file from device. */
+    /** Side-load escape hatch: import a local model file from device. */
     suspend fun registerCustomFile(displayName: String, sourceFile: File): Result<AniobModelInfo> = withContext(Dispatchers.IO) {
         try {
             if (!sourceFile.exists() || sourceFile.length() == 0L) {
                 return@withContext Result.failure(IllegalArgumentException("Source file does not exist or is empty"))
             }
             val safeId = "custom-" + System.currentTimeMillis()
-            val targetFile = File(getModelsDir(), "$safeId.gguf")
+            val targetFile = AniobModelFiles.file(getModelsDir(), safeId)
             sourceFile.inputStream().use { input ->
                 FileOutputStream(targetFile).use { output ->
                     input.copyTo(output)
@@ -559,7 +543,7 @@ class AniobModelDownloader(private val context: Context) {
             ramRequiredGb = 2.0,
             minDeviceRamGb = 4,
             repoId = "",
-            fileName = "$safeId.gguf",
+            fileName = AniobModelFiles.fileName(safeId),
             bestFor = "Custom user URL",
             description = "Downloaded from $url",
             requiresCharging = false,
@@ -657,7 +641,7 @@ class AniobModelDownloader(private val context: Context) {
     /** Requests cooperative cancel and drops the partial .tmp file. */
     fun cancelDownload(modelId: String) {
         if (!_activeDownloads.value.contains(modelId)) {
-            File(getTempDir(), "${modelId}.gguf.tmp").delete()
+            File(getTempDir(), "${AniobModelFiles.fileName(modelId)}.tmp").delete()
             _pausedDownloads.value = _pausedDownloads.value - modelId
             return
         }
@@ -670,7 +654,7 @@ class AniobModelDownloader(private val context: Context) {
         if (totalBytes <= 0) 0 else ((downloadedBytes.toDouble() / totalBytes.toDouble()) * 100).toInt().coerceIn(0, 100)
 
     fun deleteModel(modelId: String): Boolean {
-        val file = getInstalledModelFile(modelId) ?: File(getModelsDir(), "$modelId.gguf")
+        val file = getInstalledModelFile(modelId) ?: AniobModelFiles.file(getModelsDir(), modelId)
         val deleted = file.delete()
         if (deleted) {
             _downloadStates.value = _downloadStates.value - modelId
@@ -699,6 +683,6 @@ class AniobModelDownloader(private val context: Context) {
     }
 
     fun getInstalledModels(): List<File> {
-        return getModelsDir().listFiles { f -> f.extension == "gguf" }?.toList() ?: emptyList()
+        return getModelsDir().listFiles { f -> f.extension == AniobModelFiles.EXTENSION }?.toList() ?: emptyList()
     }
 }

@@ -32,7 +32,7 @@ import kotlin.coroutines.resume
  */
 class AniobOmniRouteProvider(
     private val apiKey: String,
-    private val baseUrl: String = AniobProviderConfig.OMNIROUTE_ONLINE,
+    private val baseUrl: String = AniobProviderConfig.OMNIROUTE_DEFAULT_BASE_URL,
     private val model: String = "auto",
     private val jsonMode: Boolean = false
 ) : AniobCloudLlmProvider {
@@ -69,7 +69,7 @@ class AniobOmniRouteProvider(
                 }
             }
             val request = Request.Builder()
-                .url(baseUrl)
+                .url(AniobProviderConfig.resolveEndpoint(baseUrl))
                 .addHeader("Authorization", "Bearer $apiKey")
                 .addHeader("Content-Type", "application/json")
                 .post(payload.toString().toRequestBody("application/json".toMediaType()))
@@ -138,7 +138,7 @@ class AniobOmniRouteProvider(
                 }
             }
             val request = Request.Builder()
-                .url(baseUrl)
+                .url(AniobProviderConfig.resolveEndpoint(baseUrl))
                 .addHeader("Authorization", "Bearer $apiKey")
                 .addHeader("Content-Type", "application/json")
                 .post(payload.toString().toRequestBody("application/json".toMediaType()))
@@ -239,7 +239,7 @@ class AniobOmniRouteProvider(
             }
 
             val request = Request.Builder()
-                .url(baseUrl)
+                .url(AniobProviderConfig.resolveEndpoint(baseUrl))
                 .addHeader("Authorization", "Bearer $apiKey")
                 .addHeader("Content-Type", "application/json")
                 .post(payload.toString().toRequestBody("application/json".toMediaType()))
@@ -315,7 +315,7 @@ suspend fun testOmniRouteConnection(apiKey: String, baseUrl: String): OmniRouteC
     }
 
     val request = Request.Builder()
-        .url(baseUrl)
+        .url(AniobProviderConfig.resolveEndpoint(baseUrl))
         .addHeader("Authorization", "Bearer $apiKey")
         .addHeader("Content-Type", "application/json")
         .post(payload.toString().toRequestBody("application/json".toMediaType()))

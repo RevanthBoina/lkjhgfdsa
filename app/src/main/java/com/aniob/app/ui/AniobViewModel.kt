@@ -1,5 +1,7 @@
 package com.aniob.app.ui
 
+import com.aniob.core.providers.AniobModelFiles
+
 import android.app.Application
 import android.content.Context
 import android.content.Intent
@@ -282,7 +284,9 @@ class AniobViewModel(
         app.onMemoryTrimListener = { _ ->
             try {
                 this.release()
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                android.util.Log.w("AniobViewModel", "Failed to release LiteRT engine on memory trim", e)
+            }
         }
     }
 
@@ -524,7 +528,9 @@ class AniobViewModel(
                         updatedAt = System.currentTimeMillis()
                     )
                 )
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                android.util.Log.w("AniobViewModel", "Failed to update running marker in database", e)
+            }
         }
     }
 
@@ -532,7 +538,9 @@ class AniobViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 app.database.activeTaskDao().clearActiveTasks()
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                android.util.Log.w("AniobViewModel", "Failed to clear active tasks from database", e)
+            }
         }
     }
 

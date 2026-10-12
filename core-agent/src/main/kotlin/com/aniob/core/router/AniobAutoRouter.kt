@@ -1,5 +1,7 @@
 package com.aniob.core.router
 
+import com.aniob.core.providers.AniobModelFiles
+
 import com.aniob.core.domain.AniobScreenState
 import com.aniob.core.tools.AniobBatteryHealth
 import com.aniob.core.tools.DevicePowerState
@@ -73,7 +75,7 @@ object AniobAutoRouter {
 
         // Strict user policy: local-only forbids cloud under ALL circumstances
         if (mode == "local-only") {
-            val modelMissing = isModelFileMissing || (modelsDir != null && installedModelId != null && !File(modelsDir, "$installedModelId.gguf").exists())
+            val modelMissing = isModelFileMissing || AniobModelFiles.isMissing(modelsDir, installedModelId)
             if (modelMissing) {
                 return RouteDecision(
                     target = RouteTarget.CANNOT_PROCEED,
@@ -108,7 +110,7 @@ object AniobAutoRouter {
 
         // 3. Offline constraint -> Must use local SLM
         if (!powerState.isNetworkAvailable) {
-            val modelMissing = isModelFileMissing || (modelsDir != null && installedModelId != null && !File(modelsDir, "$installedModelId.gguf").exists())
+            val modelMissing = isModelFileMissing || AniobModelFiles.isMissing(modelsDir, installedModelId)
             if (modelMissing) {
                 return RouteDecision(
                     target = RouteTarget.CANNOT_PROCEED,
@@ -141,7 +143,7 @@ object AniobAutoRouter {
         }
 
         // 5. Check installed model actually exists
-        val modelMissing = isModelFileMissing || (modelsDir != null && installedModelId != null && !File(modelsDir, "$installedModelId.gguf").exists())
+        val modelMissing = isModelFileMissing || AniobModelFiles.isMissing(modelsDir, installedModelId)
         if (modelMissing) {
             return RouteDecision(
                 target = RouteTarget.OMNIROUTE_CLOUD,

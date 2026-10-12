@@ -53,7 +53,10 @@ object AniobScrollHelper {
             
             try {
                 Thread.sleep(500) // Wait for scroll animation
-            } catch (_: InterruptedException) {}
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                break
+            }
             currentScreen = capture()
             currentScreen.nodes.firstOrNull(targetPredicate)?.let { 
                 return ScrollResult(true, it, swipes + 1) 

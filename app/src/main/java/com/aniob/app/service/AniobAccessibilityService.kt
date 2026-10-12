@@ -190,7 +190,9 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         try {
             bridgeServer?.stop()
             bridgeServer = null
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to stop bridgeServer", e)
+        }
         notifySystemState()
     }
 

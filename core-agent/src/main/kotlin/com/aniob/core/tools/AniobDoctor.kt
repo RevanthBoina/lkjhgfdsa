@@ -1,5 +1,7 @@
 package com.aniob.core.tools
 
+import com.aniob.core.providers.AniobModelFiles
+
 import java.io.File
 
 enum class ReadinessTier {
@@ -64,7 +66,7 @@ object AniobDoctor {
         
         // Check 3: Model file exists + RAM headroom if local route (offline shortcuts exempt)
         if (autoRouterMode != "cloud-only" || isOfflineShortcut) {
-            val modelExists = isOfflineShortcut || (installedModelId != null && modelsDir != null && File(modelsDir, "$installedModelId.gguf").exists())
+            val modelExists = isOfflineShortcut || AniobModelFiles.isInstalled(modelsDir, installedModelId)
             val ramOk = isOfflineShortcut || (installedModelId?.let { id ->
                 val required = when {
                     id.contains("7b") -> 8

@@ -1,3 +1,6 @@
+# NOTE: this file is documentation only. No code in the repository loads providers.yaml —
+# AniobConfigLoader reads models.yaml (generation block), agent.yaml and prompts/*. Values here
+# must still agree with com.aniob.app.provider.AniobProviderConfig, which is the source of truth.
 # Provider Configuration for Aniob (AutoRouter & Providers)
 default_cloud_provider: "omniroute"
 default_local_provider: "ondevice_slm"
@@ -5,18 +8,23 @@ default_local_provider: "ondevice_slm"
 providers:
   omniroute:
     name: "Omniroute Cloud"
-    base_url: "https://api.omniroute.ai/v1/chat/completions"
-    api_key_env: "OMNIROUTE_API_KEY"
-    model: "gpt-4o"
+    base_url: "http://localhost:20128/v1"
+    # The key is NOT read from an environment variable or BuildConfig. It is stored in
+    # Tink-encrypted SharedPreferences by com.aniob.app.data.AniobSecretStore.
+    api_key_env: ""
+    model: "auto"
     vision_enabled: true
     timeout_seconds: 30
     temperature: 0.1
     max_tokens: 1024
 
+  # On-device inference is in-process LiteRT-LM (com.google.ai.edge.litertlm), not an HTTP
+  # server. There is no Ollama dependency and no localhost:11434 listener; the previous
+  # base_url/ollama_command values described a runtime this app has never shipped.
   ondevice_slm:
     name: "On-Device SLM (Qwen2.5-1.5B)"
-    base_url: "http://127.0.0.1:11434/v1/chat/completions"
-    model: "qwen2.5:1.5b"
+    base_url: ""
+    model: "gemma4-e2b"
     vision_enabled: false
     timeout_seconds: 15
     temperature: 0.1

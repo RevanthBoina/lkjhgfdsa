@@ -12,14 +12,16 @@ class AniobHybridEngineRouter(
     fun getProviderForModel(modelId: String): AniobLocalLlmProvider =
         AniobLiteRtProvider(modelPath = modelPath(modelId))
 
-    fun modelPath(modelId: String): String = java.io.File(modelsDir, "$modelId.gguf").absolutePath
+    fun modelPath(modelId: String): String = AniobModelFiles.absolutePath(modelsDir, modelId)
 
     /**
-     * LiteRT is the fastest GPU-delegate path for Gemma/Phi; llama.cpp wins for GGUF
-     * tool-calling families (qwen/llama/mistral) thanks to KleidiAI CPU kernels.
+     * Every catalog model is now a `.litertlm` file loaded through the LiteRT-LM runtime, so the
+     * llama.cpp branch is unreachable: RUNTIME_DECISION.md rejected Option B (building llama.cpp
+     * from source under the NDK) and this project neither builds nor ships a `libllama.so`.
+     * Kept as a single decision point rather than deleted, so that re-introducing a second engine
+     * later is one edit here instead of a search across call sites.
      */
-    fun usesLlamaCpp(modelId: String): Boolean =
-        modelId.contains("llama") || modelId.contains("qwen") || modelId.contains("mistral")
+    fun usesLlamaCpp(modelId: String): Boolean = false
 
     fun canRunSecondEngine(totalRamGb: Int): Boolean = totalRamGb >= 8 // memory gate
 }

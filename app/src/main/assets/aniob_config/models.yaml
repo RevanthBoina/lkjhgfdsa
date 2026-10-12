@@ -5,156 +5,77 @@
 # All models Q4_K_M GGUF - preserves ~95% quality at 1/4 size, standard mobile quant
 
 models:
-  - id: phi4-mini-3.8b-q4
-    name: "Phi-4 Mini 3.8B"
-    display_name: "Phi-4 Mini - Recommended for 8GB+"
-    params: "3.8B"
-    quantization: "Q4_K_M"
-    size_gb: 2.1
-    ram_required_gb: 2.7
-    min_device_ram_gb: 8
-    context_length: 128000
-    license: "MIT"
-    best_for: "reasoning, coding, general chat, smartest small model"
-    description: "Microsoft 3.8B, MMLU 68% HumanEval 70%, 30-50 tok/s CPU, smartest on 8GB+ phones"
-    url: "https://huggingface.co/unsloth/Phi-4-mini-instruct-GGUF/resolve/main/Phi-4-mini-instruct-Q4_K_M.gguf"
-    sha256: ""
-    ollama_command: "ollama pull phi4-mini"
+  - id: qwen2.5-1.5b-q8
+    name: "Qwen2.5 1.5B Instruct"
+    display_name: "Qwen2.5 1.5B - Fast / Low RAM"
+    params: "1.5B"
+    quantization: "Q8_0"
+    size_gb: 1.49
+    ram_required_gb: 2.5
+    min_device_ram_gb: 4
+    context_length: 4096
+    license: "Apache-2.0"
+    best_for: "fast on-device planning on 4GB devices"
+    description: "Smallest viable agent model; q8, 4096-token context"
+    url: "https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm"
+    sha256: "c4a9b7289365ab80fe599b844b77ad253eb3c53fb0e5d963d699146a6f01255e"
     requires_charging: false
     supports_tool_calling: true
     supports_vision: false
 
-  - id: gemma3-4b-q4
-    name: "Gemma 3 4B"
-    display_name: "Gemma 3 4B - Balanced Default"
-    params: "4B"
-    quantization: "Q4_K_M"
-    size_gb: 2.2
-    ram_required_gb: 2.9
-    min_device_ram_gb: 8
-    context_length: 128000
-    license: "Gemma"
-    best_for: "balanced, efficient, Google, chat"
-    description: "Google 4B, 2.9GB RAM at Q4, fits 8GB+ phones, tight on 6GB use Phi-4 Mini instead"
-    url: "https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf"
-    sha256: ""
-    ollama_command: "ollama pull gemma3:4b"
-    requires_charging: false
-    supports_tool_calling: true
-    supports_vision: false
-
-  - id: llama3.2-3b-q4
-    name: "Llama 3.2 3B"
-    display_name: "Llama 3.2 3B - Tool Calling Workhorse"
-    params: "3.2B"
-    quantization: "Q4_K_M"
-    size_gb: 1.8
-    ram_required_gb: 2.2
+  - id: gemma4-e2b
+    name: "Gemma 4 E2B Instruct"
+    display_name: "Gemma 4 E2B - Balanced"
+    params: "E2B"
+    quantization: "int4"
+    size_gb: 2.41
+    ram_required_gb: 3.5
     min_device_ram_gb: 6
-    context_length: 128000
-    license: "Llama 3.2"
-    best_for: "tool calling, function calling, general, fastest 3B"
-    description: "Meta 3.2B, 2.2GB RAM, 25-45 tok/s, best for tool calling, workhorse"
-    url: "https://huggingface.co/unsloth/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf"
-    sha256: ""
-    ollama_command: "ollama pull llama3.2:3b"
-    requires_charging: false
-    supports_tool_calling: true
-    supports_vision: false
-
-  - id: qwen3-4b-q4
-    name: "Qwen 3 4B"
-    display_name: "Qwen 3 4B - Multilingual Coding"
-    params: "4B"
-    quantization: "Q4_K_M"
-    size_gb: 2.2
-    ram_required_gb: 2.85
-    min_device_ram_gb: 8
-    context_length: 32000
-    license: "Qwen"
-    best_for: "multilingual, coding, 29+ languages, newest"
-    description: "Alibaba Qwen3 4B, 2.85GB RAM at Q4, 20-28 tok/s, mid-range 6-8GB, 1.7B variant 1.1GB"
-    url: "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf"
-    sha256: ""
-    ollama_command: "ollama pull qwen3:4b"
-    requires_charging: false
-    supports_tool_calling: true
-    supports_vision: false
-
-  - id: qwen2.5-coder-7b-q4
-    name: "Qwen 2.5 Coder 7B"
-    display_name: "Qwen 2.5 Coder 7B - Coding Specialist"
-    params: "7B"
-    quantization: "Q4_K_M"
-    size_gb: 4.7
-    ram_required_gb: 4.7
-    min_device_ram_gb: 8
-    context_length: 128000
-    license: "Qwen"
-    best_for: "coding, debugging, Continue.dev Copilot, HumanEval 88%"
-    description: "Alibaba Coder 7B, 4.7GB RAM, 50 tok/s, gold standard for 8GB laptops, tight on 8GB phones, use plugged in"
-    url: "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m.gguf"
-    sha256: ""
-    ollama_command: "ollama pull qwen2.5-coder:7b"
-    requires_charging: true
-    supports_tool_calling: true
-    supports_vision: false
-
-  - id: mistral-7b-q4
-    name: "Mistral 7B"
-    display_name: "Mistral 7B - Fastest 7B"
-    params: "7.2B"
-    quantization: "Q4_K_M"
-    size_gb: 4.0
-    ram_required_gb: 4.5
-    min_device_ram_gb: 8
-    context_length: 32000
-    license: "Apache 2.0"
-    best_for: "speed, lowest memory 7B, fast chat, summarization"
-    description: "Mistral AI 7B, 4.5GB RAM, 52 tok/s, lowest memory of 7B class, most context headroom on 8GB, Apache 2.0"
-    url: "https://huggingface.co/bartowski/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf"
-    sha256: ""
-    ollama_command: "ollama pull mistral"
-    requires_charging: true
-    supports_tool_calling: false
-    supports_vision: false
-
-  - id: gemma3-1b-q4
-    name: "Gemma 3 1B"
-    display_name: "Gemma 3 1B - Lightweight"
-    params: "1B"
-    quantization: "Q4_K_M"
-    size_gb: 0.6
-    ram_required_gb: 0.72
-    min_device_ram_gb: 4
-    context_length: 32000
+    context_length: 4096
     license: "Gemma"
-    best_for: "old phones 4GB RAM, iPhone SE, budget"
-    description: "Google 1B, 720MB RAM at Q4, runs on 4GB RAM minimum, only viable for very old phones"
-    url: "https://huggingface.co/ggml-org/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf"
-    sha256: ""
-    ollama_command: "ollama pull gemma3:1b"
+    best_for: "balanced instruction following and tool calling"
+    description: "Same artifact and runtime version proven in the reference implementation"
+    url: "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm"
+    sha256: "181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c"
     requires_charging: false
-    supports_tool_calling: false
+    supports_tool_calling: true
     supports_vision: false
 
-  - id: nomic-embed-text-v1.5-q4
-    name: "Nomic Embed Text v1.5"
-    display_name: "Nomic Embed - Semantic Search"
-    params: "0.137B"
-    quantization: "Q4_K_M"
-    size_gb: 0.3
-    ram_required_gb: 2.0
-    min_device_ram_gb: 4
-    context_length: 8192
-    license: "Apache 2.0"
-    best_for: "embeddings, semantic skill matching, memory RAG, +30% accuracy"
-    description: "Nomic 137M, 0.3GB, 2GB RAM, 8K context, best small embedding, Apache 2.0, for skill matching"
-    url: "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf"
+  - id: gemma4-e4b
+    name: "Gemma 4 E4B Instruct"
+    display_name: "Gemma 4 E4B - Capable"
+    params: "E4B"
+    quantization: "int4"
+    size_gb: 3.41
+    ram_required_gb: 5.0
+    min_device_ram_gb: 8
+    context_length: 4096
+    license: "Gemma"
+    best_for: "multi-step plans and harder reasoning on 8GB+ devices"
+    description: "Larger Gemma 4 variant for higher-RAM devices"
+    url: "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm"
+    sha256: "0b2a8980ce155fd97673d8e820b4d29d9c7d99b8fa6806f425d969b145bd52e0"
     requires_charging: false
-    supports_tool_calling: false
+    supports_tool_calling: true
     supports_vision: false
-    type: "embedding"
+
+  - id: phi4-mini-q8
+    name: "Phi-4 Mini Instruct"
+    display_name: "Phi-4 Mini - Reasoning / 8GB+"
+    params: "3.8B"
+    quantization: "Q8_0"
+    size_gb: 3.64
+    ram_required_gb: 5.5
+    min_device_ram_gb: 8
+    context_length: 4096
+    license: "MIT"
+    best_for: "strongest on-device reasoning; q8 keeps tool-call fidelity"
+    description: "Microsoft Phi-4 Mini, q8, 4096-token context"
+    url: "https://huggingface.co/litert-community/Phi-4-mini-instruct/resolve/main/Phi-4-mini-instruct_multi-prefill-seq_q8_ekv4096.litertlm"
+    sha256: "7764d4deb53800578307be33039476b38a6c370fff71bedb3c0552563e23ab02"
+    requires_charging: false
+    supports_tool_calling: true
+    supports_vision: false
 
 # Default model selection logic based on device RAM
 defaults:

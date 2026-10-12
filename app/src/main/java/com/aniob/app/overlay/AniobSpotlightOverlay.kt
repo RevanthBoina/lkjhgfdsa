@@ -1,4 +1,4 @@
-﻿package com.aniob.app.overlay
+package com.aniob.app.overlay
 
 import android.content.Context
 import android.graphics.Canvas
@@ -69,7 +69,9 @@ class AniobSpotlightOverlay(private val context: Context) {
         spotlightView?.let {
             try {
                 windowManager?.removeView(it)
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                android.util.Log.w("SpotlightOverlay", "Failed to remove spotlight view", e)
+            }
             spotlightView = null
         }
     }
