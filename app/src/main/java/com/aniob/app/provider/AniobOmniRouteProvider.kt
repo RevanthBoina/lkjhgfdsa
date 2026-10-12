@@ -25,8 +25,13 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 /**
- * Omniroute Cloud Provider client.
- * Connects to https://api.omniroute.ai/v1/chat/completions with gpt-4o vision.
+ * OmniRoute cloud provider client.
+ *
+ * Talks to an OmniRoute gateway's `/chat/completions` endpoint. The gateway address is
+ * [baseUrl] and defaults to [AniobProviderConfig.OMNIROUTE_DEFAULT_BASE_URL]; the hosted service is
+ * `omniroute.online`. Model selection is [AniobProviderConfig.OMNIROUTE_MODEL] (`auto`) only — the
+ * gateway picks the best model internally, so a concrete model name is not honoured.
+ *
  * When [jsonMode] is enabled, all generation requests enforce `response_format:
  * json_object` with temperature 0.1 so the ladder can trust structured output.
  */

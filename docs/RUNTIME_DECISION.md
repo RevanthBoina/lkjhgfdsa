@@ -2,6 +2,20 @@
 
 **Date**: 2026-09-26  
 **Status**: Accepted  
+**Implemented**: 2026-10-11
+
+Option A is now in the tree:
+
+- `:app` depends on `com.google.ai.edge.litertlm:litertlm-android:0.16.0` (Google Maven), the version proven in the reference implementation rather than the newest published (0.18.0).
+- `com.aniob.app.model.AniobLiteRtLmEngine` implements `core-agent`'s `AniobNativeLlmEngine` against the real Kotlin API (`EngineConfig`/`Engine`/`Conversation`/`SamplerConfig`). No hand-written JNI.
+- `AniobViewModel` injects it through `AniobLiteRtProvider`'s existing `engineFactory` seam, with a model path from `AniobModelDownloader.resolveInstalledModelPath()` instead of the stale adb default `/data/local/tmp/qwen2.5-1.5b-gpu.bin`.
+- The catalog now ships `.litertlm` files with real SHA-256 values (previously all empty, so the integrity check silently never ran).
+- `core-agent`'s `AniobLiteRtEngine` is deliberately retained: it is the JVM-testable unbacked seam the 311-test suite exercises without a device.
+
+**Verified**: `lib/arm64-v8a/liblitertlm_jni.so` (20.5 MB) is packaged in `app-debug.apk`. It was absent before this change, which is precisely why `System.loadLibrary("litertlm")` threw `UnsatisfiedLinkError` on every device while all CI guards stayed green.
+
+**Not verified**: actual on-device inference. No emulator or device was available (no KVM in the build sandbox), so generation quality, GPU-backend behaviour and memory headroom remain untested. CPU backend is the default for that reason.
+
 **Decision**: Option A (Prebuilt Maven LiteRT Runtime) with Option C (Cloud Fallback & Auto Routing)
 
 ## Context & Problem Statement

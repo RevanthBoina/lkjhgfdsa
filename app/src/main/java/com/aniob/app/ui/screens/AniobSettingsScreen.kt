@@ -263,7 +263,7 @@ fun AniobSettingsScreen(
 
                     if (showAdvancedDetails) {
                         Text(
-                            text = "Endpoint: http://127.0.0.1:11434/v1/chat/completions\nModel Engine: On-device GGUF / LiteRT",
+                            text = "Model Engine: On-device LiteRT-LM (.litertlm, in-process)\nNo Ollama or localhost server required.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

@@ -103,6 +103,8 @@ data class AniobUiState(
     val chatMessages: List<ChatMessage> = emptyList(),
     val omnirouteApiKey: String = "",
     val omnirouteModel: String = "auto",
+    /** OmniRoute gateway base URL; blank means AniobProviderConfig.OMNIROUTE_DEFAULT_BASE_URL. */
+    val omnirouteBaseUrl: String = "",
     val autoRouterMode: String = "auto", // auto, local-first, local-only, cloud-only, balanced
     val statusMessage: String = "Ready",
     val lastRoutingReason: String = "Ready",
@@ -279,7 +281,22 @@ class AniobViewModel(
     // UX-4 audit trails
     private val blockedRecords = mutableListOf<BlockedRecord>()
 
-    private val localLlmProvider: AniobLocalLlmProvider = AniobLiteRtProvider().apply {
+    /**
+     * On-device provider, wired to the real LiteRT-LM engine and to the model the downloader
+     * actually installs.
+     *
+     * This used to be `AniobLiteRtProvider()` with no arguments, so `modelPath` fell back to its
+     * default `/data/local/tmp/qwen2.5-1.5b-gpu.bin` — an adb-push path from early development,
+     * wholly disconnected from `modelDownloader.getModelsDir()`. No downloaded model could ever be
+     * picked up. The default `engineFactory` also produced `core-agent`'s `AniobLiteRtEngine`, whose
+     * `System.loadLibrary("litertlm")` had no bundled `.so`, so it threw `UnsatisfiedLinkError`
+     * unconditionally. Both halves are fixed here: the path resolves through the downloader and the
+     * engine is `AniobLiteRtLmEngine`, backed by the LiteRT-LM Maven artifact.
+     */
+    private val localLlmProvider: AniobLocalLlmProvider = AniobLiteRtProvider(
+        modelPath = modelDownloader.resolveInstalledModelPath(),
+        engineFactory = { _ -> com.aniob.app.model.AniobLiteRtLmEngine(cacheDir = app.cacheDir) }
+    ).apply {
         // Reflex 5: release the LiteRT engine on memory pressure, no LLM involved.
         app.onMemoryTrimListener = { _ ->
             try {
@@ -328,17 +345,29 @@ class AniobViewModel(
             "Last decision: $decision"
     }
 
+    /**
+     * Encrypted holder for the OmniRoute API key (Tink/AES256-GCM via the Android Keystore).
+     * Replaces plaintext SharedPreferences, and migrates any key an older build left behind.
+     */
+    private val secretStore = com.aniob.app.data.AniobSecretStore(app)
+
     private fun getOmniRouteProvider(): AniobOmniRouteProvider {
         return AniobOmniRouteProvider(
             apiKey = _uiState.value.omnirouteApiKey,
-            model = _uiState.value.omnirouteModel
+            baseUrl = com.aniob.app.provider.AniobProviderConfig.resolveEndpoint(_uiState.value.omnirouteBaseUrl),
+            model = com.aniob.app.provider.AniobProviderConfig.coerceModel(_uiState.value.omnirouteModel)
         )
     }
 
     init {
         val prefs = app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
-        val savedApiKey = prefs.getString("omniroute_api_key", "") ?: ""
-        val savedModel = prefs.getString("omniroute_model", "auto") ?: "auto"
+        // Key comes from encrypted storage (which migrates and then deletes any plaintext copy an
+        // older build wrote). Model is coerced because OmniRoute only honours "auto".
+        val savedApiKey = secretStore.getOmniRouteApiKey()
+        val savedModel = com.aniob.app.provider.AniobProviderConfig.coerceModel(
+            prefs.getString("omniroute_model", "auto") ?: "auto"
+        )
+        val savedBaseUrl = secretStore.getOmniRouteBaseUrl()
         val savedMode = prefs.getString("autorouter_mode", "auto") ?: "auto"
         val savedQueued = prefs.getString("queued_prompt", null)
         localFailCount = prefs.getInt("local_fail_count", 0)
@@ -349,6 +378,7 @@ class AniobViewModel(
             it.copy(
                 omnirouteApiKey = savedApiKey,
                 omnirouteModel = savedModel,
+                omnirouteBaseUrl = savedBaseUrl,
                 autoRouterMode = savedMode,
                 queuedPrompt = savedQueued,
                 // UX-4: switches are REAL state, restored from disk — never placebo remembr.
@@ -969,8 +999,18 @@ class AniobViewModel(
 
     fun updateSettings(apiKey: String, model: String) {
         val prefs = app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
-        prefs.edit().putString("omniroute_api_key", apiKey).putString("omniroute_model", model).apply()
-        _uiState.update { it.copy(omnirouteApiKey = apiKey, omnirouteModel = model) }
+        // The key is a secret: encrypted store only. The model name is not, so it stays in plaintext
+        // prefs alongside the other UI settings. OmniRoute accepts only "auto".
+        secretStore.setOmniRouteApiKey(apiKey)
+        val coerced = com.aniob.app.provider.AniobProviderConfig.coerceModel(model)
+        prefs.edit().putString("omniroute_model", coerced).apply()
+        _uiState.update { it.copy(omnirouteApiKey = apiKey, omnirouteModel = coerced) }
+    }
+
+    /** Sets the OmniRoute gateway base URL. Not a secret, so it is persisted in plaintext prefs. */
+    fun setOmniRouteBaseUrl(baseUrl: String) {
+        secretStore.setOmniRouteBaseUrl(baseUrl)
+        _uiState.update { it.copy(omnirouteBaseUrl = baseUrl.trim()) }
     }
 
     fun handleIncomingShare(shared: com.aniob.app.workflow.ParsedIncomingContent) {
@@ -1730,7 +1770,7 @@ class AniobViewModel(
                 // Evaluate Execution Ladder with real power state and on-device model status
                 val powerState = AniobDeviceTelemetry.getRealState(app)
                 val resolvedModelId = modelDownloader.getDefaultModelId()
-                val resolvedFileExists = File(modelDownloader.getModelsDir(), "$resolvedModelId.gguf").exists()
+                val resolvedFileExists = AniobModelFiles.isInstalled(modelDownloader.getModelsDir(), resolvedModelId)
                 val effectiveModelId = resolvedModelId.takeIf { resolvedFileExists }
                 val isModelFileMissing = !resolvedFileExists
 
@@ -1868,7 +1908,8 @@ class AniobViewModel(
                         } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD && _uiState.value.omnirouteApiKey.isNotBlank()) {
                             val omniroute = AniobOmniRouteProvider(
                                 apiKey = _uiState.value.omnirouteApiKey,
-                                model = _uiState.value.omnirouteModel
+                                baseUrl = com.aniob.app.provider.AniobProviderConfig.resolveEndpoint(_uiState.value.omnirouteBaseUrl),
+                                model = com.aniob.app.provider.AniobProviderConfig.coerceModel(_uiState.value.omnirouteModel)
                             )
                             val needsVision = (localFailCount > 0) || task.rawPrompt.contains(Regex("(?i)look|see|inspect|read|image|photo|visual"))
                             val isSensitiveScreen = currentScreen.nodes.any {

@@ -79,7 +79,7 @@ fun AniobModelDownloadScreen(
                 try {
                     val stream = context.contentResolver.openInputStream(uri)
                     if (stream != null) {
-                        val temp = File(downloader.getTempDir(), "imported_${System.currentTimeMillis()}.gguf")
+                        val temp = File(downloader.getTempDir(), "imported_${System.currentTimeMillis()}.${com.aniob.core.providers.AniobModelFiles.EXTENSION}")
                         FileOutputStream(temp).use { out -> stream.copyTo(out) }
                         val result = downloader.registerCustomFile("Imported Model", temp)
                         temp.delete()
