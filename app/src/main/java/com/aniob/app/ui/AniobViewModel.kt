@@ -65,9 +65,7 @@ import com.aniob.core.providers.AniobStructuredOutput
 import com.aniob.core.providers.AniobLocalActionResolver
 import com.aniob.core.providers.AniobHybridEngineRouter
 import com.aniob.core.providers.AniobLiteRtProvider
-import com.aniob.core.providers.AniobLocalLlmClient
 import com.aniob.core.providers.AniobLocalLlmEngine
-import com.aniob.core.providers.AniobLocalLlmProvider
 import com.aniob.core.router.RouteTarget
 import com.aniob.core.safety.AniobSafetyInterceptor
 import com.aniob.core.skills.AniobSemanticSkillMatcher
@@ -227,7 +225,6 @@ class AniobViewModel(
         database = (application as AniobApplication).database,
         replayEngine = executionRouter.fastPathEngine
     )
-    private var localLlmClient: AniobLocalLlmEngine = AniobLocalLlmClient.getEngine()
     private val watchdog = AniobWatchdog(loopThreshold = 3)
     private val observationPolicy = AniobObservationPolicy(maxBurstSteps = 3)
     private val appSessionManager = AniobAppSessionManager()
@@ -293,30 +290,30 @@ class AniobViewModel(
      * unconditionally. Both halves are fixed here: the path resolves through the downloader and the
      * engine is `AniobLiteRtLmEngine`, backed by the LiteRT-LM Maven artifact.
      */
-    private val localLlmProvider: AniobLocalLlmProvider = AniobLiteRtProvider(
+    private val localLlmProvider = AniobLiteRtProvider(
         modelPath = modelDownloader.resolveInstalledModelPath(),
+        useGpu = false,
         engineFactory = { _ -> com.aniob.app.model.AniobLiteRtLmEngine(cacheDir = app.cacheDir) }
     ).apply {
         // Reflex 5: release the LiteRT engine on memory pressure, no LLM involved.
         app.onMemoryTrimListener = { _ ->
-            try {
-                this.release()
-            } catch (e: Exception) {
-                android.util.Log.w("AniobViewModel", "Failed to release LiteRT engine on memory trim", e)
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    this@apply.release()
+                } catch (e: Exception) {
+                    android.util.Log.w("AniobViewModel", "Failed to release LiteRT engine on memory trim", e)
+                }
             }
         }
     }
 
-    /**
-     * Binds the on-device engine to the currently installed model file. Without this the provider
-     * would target a stale default path and every local step would degrade to a fabricated action.
-     */
-    private fun refreshLocalEngine() {
-        val modelFile = modelDownloader.getDefaultModelId()
-            ?.let { modelDownloader.getInstalledModelFile(it) }
-            ?: return
-        if (localLlmClient.isModelLoaded()) return
-        localLlmClient = AniobLocalLlmClient.useEngineForModel(modelFile.absolutePath)
+    // Both answers and actions share the same provider and native model ownership.
+    private val localLlmClient: AniobLocalLlmEngine =
+        com.aniob.core.providers.AniobLocalLlmEngineImpl(localLlmProvider)
+
+    /** Explicit background preparation before routing; re-resolves downloads and model changes. */
+    private suspend fun refreshLocalEngine() = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        localLlmProvider.prepare(modelDownloader.resolveInstalledModelPath())
     }
 
     /** Counts full accessibility-tree captures; asserted to stay unchanged when the Tracker opens. */
@@ -1346,6 +1343,8 @@ class AniobViewModel(
                         lastProviderUsed = "EXTERNAL_AI"
                     )
                 }
+                // Do not initialize native memory for an explicitly cloud-only request.
+                if (_uiState.value.autoRouterMode != "cloud-only") refreshLocalEngine()
                 val trigger = AniobExternalAiTrigger(
                     cloudProvider = getOmniRouteProvider(),
                     localProvider = localLlmProvider,
@@ -1541,7 +1540,6 @@ class AniobViewModel(
         watchdog.reset()
         observationPolicy.reset()
         executionTracker.clear()
-        refreshLocalEngine()
 
         // Honest completion (no fake SUCCESS): extract deterministic success criteria BEFORE step 0
         // so a provisional Finish can be verified against evidence. Without criteria a Finish could
@@ -1858,6 +1856,7 @@ class AniobViewModel(
                         }
                         if (decision.target == RouteTarget.OMNIROUTE_CLOUD) escalations++
 
+                        if (decision.target == RouteTarget.LOCAL_SLM) refreshLocalEngine()
                         val localCaps = if (decision.target == RouteTarget.LOCAL_SLM) localLlmClient.capabilities() else null
                         val localCanDrive = decision.target == RouteTarget.LOCAL_SLM &&
                             localLlmClient.isModelLoaded() && (localCaps?.canDriveActions == true)

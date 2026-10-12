@@ -2,6 +2,7 @@ package com.aniob.core.providers
 
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -28,17 +29,21 @@ interface AniobLocalLlmProvider {
  *   that may not exist (that produced silent wrong-action failures in production).
  * - Only when a real engine emits output does generation return [AniobGenerationResult.Ready].
  *
- * Streaming keeps the original shape: a worker thread emits 4-char deltas through [onDelta]
- * with a 60ms throttle, while the caller blocks on a 15s [CountDownLatch].
+ * Generation runs on a worker thread and emits the completed answer through [onDelta].
+ * The caller waits at most 15 seconds; native work may outlive interruption, so lifecycle
+ * operations are serialized and late results are invalidated.
  */
 class AniobLiteRtProvider(
-    private val modelPath: String = "/data/local/tmp/qwen2.5-1.5b-gpu.bin",
+    @Volatile private var modelPath: String = "/data/local/tmp/qwen2.5-1.5b-gpu.bin",
     private var useGpu: Boolean = true,
     private val engineFactory: (String) -> AniobNativeLlmEngine = { path -> AniobLiteRtEngine(path) }
 ) : AniobLocalLlmProvider {
 
     private val isEngineLoaded = AtomicBoolean(true)
     private var gpuFailed = false
+    private val lifecycleLock = Any()
+    private val epoch = AtomicLong()
+    private var preparedPath: String? = null
 
     /** Resolved once on first use so construction stays cheap and testable. */
     private val nativeEngine: AniobNativeLlmEngine? by lazy {
@@ -47,6 +52,26 @@ class AniobLiteRtProvider(
         } catch (_: Throwable) {
             null
         }
+    }
+
+    /** Blocking: call on a background dispatcher before routing, never from a readiness getter.
+     * Switching paths releases the old model first; failure never advertises availability.
+     */
+    fun prepare(path: String = modelPath): Boolean = synchronized(lifecycleLock) {
+        val engine = nativeEngine ?: return@synchronized false
+        if (preparedPath == path && isEngineLoaded.get() && engine.isReady()) {
+            return@synchronized true
+        }
+        epoch.incrementAndGet()
+        if (preparedPath != null && preparedPath != path) engine.release()
+        modelPath = path
+        preparedPath = null
+        isEngineLoaded.set(false)
+        val ready = engine.load(path) && engine.isReady()
+        if (ready) preparedPath = path
+        isEngineLoaded.set(ready)
+        gpuFailed = false
+        ready
     }
 
     override fun isAvailable(): Boolean {
@@ -91,16 +116,10 @@ class AniobLiteRtProvider(
         prompt: String,
         onDelta: (String) -> Unit
     ): AniobGenerationResult {
-        if (!isEngineLoaded.get()) {
-            return AniobGenerationResult.GenerationFailed("LiteRT engine released or uninitialized")
-        }
-        val engine = nativeEngine
-        if (engine == null || !engine.isReady()) {
-            return AniobGenerationResult.ModelUnavailable
-        }
-        if (!engine.load(modelPath)) {
-            return AniobGenerationResult.GenerationFailed("Native loadModel failed for $modelPath")
-        }
+        val engine = nativeEngine ?: return AniobGenerationResult.ModelUnavailable
+        // A cold engine is not ready until load succeeds. Preparation is also invoked explicitly
+        // by app callers before their routing gates; this covers direct provider callers.
+        if (!prepare()) return AniobGenerationResult.ModelUnavailable
 
         // GPU path first; retry once without the accelerator on any failure.
         val first = executeStreamingInternal(engine, prompt, onDelta)
@@ -133,14 +152,18 @@ class AniobLiteRtProvider(
         prompt: String,
         onDelta: (String) -> Unit
     ): String? {
+        val requestEpoch = epoch.get()
         val latch = CountDownLatch(1)
         val fullResponse = StringBuilder()
         var timedOut = false
 
         val workerThread = Thread {
             try {
-                val generated = engine.generate(prompt) ?: return@Thread
-                if (!isEngineLoaded.get()) return@Thread
+                val generated = synchronized(lifecycleLock) {
+                    if (!isEngineLoaded.get() || epoch.get() != requestEpoch) return@Thread
+                    engine.generate(prompt)
+                } ?: return@Thread
+                if (!isEngineLoaded.get() || epoch.get() != requestEpoch) return@Thread
                 fullResponse.append(generated)
                 onDelta(generated)
             } catch (_: InterruptedException) {
@@ -154,6 +177,7 @@ class AniobLiteRtProvider(
         val completed = latch.await(GENERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         if (!completed) {
             timedOut = true
+            epoch.incrementAndGet() // Suppress late results if native work ignores interruption.
             workerThread.interrupt()
         }
         if (timedOut || fullResponse.isEmpty()) return null
@@ -164,8 +188,14 @@ class AniobLiteRtProvider(
      * Called under memory pressure (e.g., onTrimMemory) to release native buffers.
      */
     override fun release() {
+        epoch.incrementAndGet()
         isEngineLoaded.set(false)
-        nativeEngine?.release()
+        synchronized(lifecycleLock) {
+            // A concurrent preparation may have completed while release waited for this lock.
+            isEngineLoaded.set(false)
+            nativeEngine?.release()
+            preparedPath = null
+        }
     }
 
     fun reload() {
