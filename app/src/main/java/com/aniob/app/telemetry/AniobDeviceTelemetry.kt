@@ -75,4 +75,51 @@ object AniobDeviceTelemetry {
             )
         }
     }
+
+    /**
+     * Checks if system battery saver is active.
+     */
+    fun isPowerSaveMode(context: Context): Boolean {
+        val pm = context.getSystemService(POWER_SERVICE) as? PowerManager
+        return pm?.isPowerSaveMode == true
+    }
+
+    /**
+     * Reads current thermal status on Android 10+ (API 29+).
+     */
+    fun getThermalStatus(context: Context): Int {
+        val pm = context.getSystemService(POWER_SERVICE) as? PowerManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            pm?.currentThermalStatus ?: PowerManager.THERMAL_STATUS_NONE
+        } else {
+            PowerManager.THERMAL_STATUS_NONE
+        }
+    }
+
+    /**
+     * Computes the recommended on-device SLM context window length and generation max tokens
+     * based on thermal conditions and battery saver.
+     */
+    fun recommendedMaxTokens(context: Context): Int {
+        val thermal = getThermalStatus(context)
+        val isPowerSave = isPowerSaveMode(context)
+
+        return when {
+            thermal >= PowerManager.THERMAL_STATUS_SEVERE || isPowerSave -> 512
+            thermal >= PowerManager.THERMAL_STATUS_MODERATE -> 1024
+            else -> 4096
+        }
+    }
+
+    /**
+     * Registers a listener for Android PowerManager thermal status updates (API 29+).
+     */
+    fun registerThermalListener(context: Context, onThermalChanged: (Int) -> Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val pm = context.getSystemService(POWER_SERVICE) as? PowerManager
+            pm?.addThermalStatusListener(context.mainExecutor) { status ->
+                onThermalChanged(status)
+            }
+        }
+    }
 }

@@ -45,7 +45,7 @@ Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT
     /** Fields that would smuggle pixel coordinates into the action vocabulary. */
     private val COORDINATE_FIELDS = listOf("x", "y", "startx", "starty", "endx", "endy", "bounds", "target_node_id", "targetnodeid", "node_id")
 
-    private val TOOL_OBJECT = Regex("\\{[^{}]*\"tool\"\\s*:\\s*\"[^\"]+\"[^{}]*}", RegexOption.DOT_MATCHES_ALL)
+    private val TOOL_OBJECT = Regex("\\{[^{}]*\"tool\"\\s*:\\s*\"[^\"]+\"[^{}]*\\}", RegexOption.DOT_MATCHES_ALL)
     private val STRING_FIELD: (String) -> Regex = { field ->
         Regex("\"$field\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
     }
@@ -144,10 +144,12 @@ Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT
     }
 
     private fun targetJson(target: SemanticTarget): String = when (target) {
-        is SemanticTarget.SomIndex -> """{"kind":"som_index","value":$target.index}"""
+        is SemanticTarget.SomIndex -> """{"kind":"som_index","value":${target.index}}"""
         is SemanticTarget.ResourceId -> """{"kind":"resource_id","value":"${esc(target.id)}"}"""
         is SemanticTarget.Text -> """{"kind":"text","value":"${esc(target.text)}","exact":${target.exact}}"""
         is SemanticTarget.ContentDesc -> """{"kind":"content_desc","value":"${esc(target.desc)}","exact":${target.exact}}"""
+        is SemanticTarget.NormalizedCoordinate -> """{"kind":"coord","x":${target.normX},"y":${target.normY}}"""
+        is SemanticTarget.BoundingBox -> """{"kind":"box","left":${target.left},"top":${target.top},"right":${target.right},"bottom":${target.bottom}}"""
     }
 
     /** `target` may be a nested object or a bare string/int scalar. */
@@ -158,6 +160,18 @@ Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT
         val block = Regex("\"target\"\\s*:\\s*\\{([^{}]*)}").find(json)?.groupValues?.get(1)
         if (block != null) {
             val kind = str(block, "kind")?.trim()?.lowercase()
+            if (kind == "coord") {
+                val x = int(block, "x") ?: return null
+                val y = int(block, "y") ?: return null
+                return SemanticTarget.NormalizedCoordinate(x, y)
+            }
+            if (kind == "box") {
+                val left = int(block, "left") ?: return null
+                val top = int(block, "top") ?: return null
+                val right = int(block, "right") ?: return null
+                val bottom = int(block, "bottom") ?: return null
+                return SemanticTarget.BoundingBox(left, top, right, bottom)
+            }
             val value = str(block, "value") ?: int(block, "value")?.toString()
             val exact = bool(block, "exact") ?: false
             if (kind == null || value == null) return null

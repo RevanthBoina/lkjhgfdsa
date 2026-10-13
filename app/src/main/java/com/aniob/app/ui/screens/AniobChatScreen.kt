@@ -43,6 +43,7 @@ import com.aniob.app.ui.components.StatusBanner
 import com.aniob.app.ui.theme.AniobTheme
 import com.aniob.app.ui.AniobUiState
 import com.aniob.app.ui.chat.ChatMessage
+import com.aniob.app.ui.chat.FormattedMessageView
 import com.aniob.app.ui.model.*
 import com.aniob.core.knowledge.AniobAppCatalog
 import com.aniob.core.narration.FailureReasonCopy
@@ -674,10 +675,10 @@ fun WhatsAppChatBubble(
                 .testTag("chat_bubble_${message.id}")
         ) {
             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                Text(
-                    text = message.content,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (isUser) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                FormattedMessageView(
+                    content = message.content,
+                    thoughtText = message.action?.thought,
+                    textColor = if (isUser) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
                 if (isPreflightFailure) {
@@ -775,7 +776,10 @@ fun StreamingChatBubble(text: String) {
             modifier = Modifier.widthIn(max = 320.dp)
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
-                Text(text = text, style = MaterialTheme.typography.bodyMedium)
+                FormattedMessageView(
+                    content = text,
+                    textColor = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Spacer(modifier = Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     PulsingDot()

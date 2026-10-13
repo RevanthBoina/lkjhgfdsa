@@ -12,9 +12,10 @@ import androidx.room.RoomDatabase
         TipEntity::class,
         LogEventEntity::class,
         ActiveTaskEntity::class,
-        WorkflowEntity::class
+        WorkflowEntity::class,
+        AuditLogEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = true
 )
 abstract class AniobDatabase : RoomDatabase() {
@@ -24,6 +25,7 @@ abstract class AniobDatabase : RoomDatabase() {
     abstract fun logEventDao(): LogEventDao
     abstract fun activeTaskDao(): ActiveTaskDao
     abstract fun workflowDao(): WorkflowDao
+    abstract fun auditLogDao(): AuditLogDao
 
     companion object {
         @Volatile
@@ -37,6 +39,24 @@ abstract class AniobDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_4_5 = object : androidx.room.migration.Migration(4, 5) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS audit_logs (" +
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "timestamp INTEGER NOT NULL, " +
+                        "taskId TEXT NOT NULL, " +
+                        "stepIndex INTEGER NOT NULL, " +
+                        "actionType TEXT NOT NULL, " +
+                        "targetPackage TEXT NOT NULL, " +
+                        "sanitizedPayload TEXT NOT NULL, " +
+                        "verificationStatus TEXT NOT NULL, " +
+                        "previousHash TEXT NOT NULL, " +
+                        "entryHash TEXT NOT NULL)"
+                )
+            }
+        }
+
         fun getDatabase(context: Context): AniobDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -46,7 +66,8 @@ abstract class AniobDatabase : RoomDatabase() {
                 ).addMigrations(
                     MIGRATION_1_2,
                     WorkflowDatabaseMigrations.MIGRATION_2_3,
-                    WorkflowDatabaseMigrations.MIGRATION_3_4
+                    WorkflowDatabaseMigrations.MIGRATION_3_4,
+                    MIGRATION_4_5
                 ).build()
                 INSTANCE = instance
                 instance

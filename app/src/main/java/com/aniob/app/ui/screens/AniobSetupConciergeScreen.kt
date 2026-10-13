@@ -78,6 +78,45 @@ fun AniobSetupConciergeScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
+            // OEM-specific concierge tip
+            val manufacturer = remember { android.os.Build.MANUFACTURER.lowercase() }
+            val oemTip = remember(manufacturer) {
+                when {
+                    manufacturer.contains("samsung") ->
+                        "Samsung tip: Find Aniob under Installed apps in Accessibility. In Battery Settings, add Aniob to 'Never sleeping apps'."
+                    manufacturer.contains("xiaomi") || manufacturer.contains("redmi") || manufacturer.contains("poco") ->
+                        "Xiaomi HyperOS tip: Open Security app -> Manage apps -> Aniob -> enable Autostart and set Battery saver to 'No restrictions'."
+                    manufacturer.contains("google") ->
+                        "Pixel tip: Tap Accessibility -> Downloaded apps -> Aniob. Set App battery usage to 'Unrestricted'."
+                    else ->
+                        "Tip: In Settings -> Accessibility -> Installed services, enable Aniob. Allow background battery activity."
+                }
+            }
+
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().testTag("setup_oem_tip")
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = oemTip,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                }
+            }
+
             SetupCard(
                 index = 1,
                 title = "See how it works",

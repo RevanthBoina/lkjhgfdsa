@@ -212,6 +212,18 @@ class AniobHippocampusTracker(
                 builder.appendLine("      value: \"${sanitizeLine(target.desc)}\"")
                 builder.appendLine("      exact: ${target.exact}")
             }
+            is SemanticTarget.NormalizedCoordinate -> {
+                builder.appendLine("      kind: \"coord\"")
+                builder.appendLine("      x: ${target.normX}")
+                builder.appendLine("      y: ${target.normY}")
+            }
+            is SemanticTarget.BoundingBox -> {
+                builder.appendLine("      kind: \"box\"")
+                builder.appendLine("      left: ${target.left}")
+                builder.appendLine("      top: ${target.top}")
+                builder.appendLine("      right: ${target.right}")
+                builder.appendLine("      bottom: ${target.bottom}")
+            }
         }
     }
 

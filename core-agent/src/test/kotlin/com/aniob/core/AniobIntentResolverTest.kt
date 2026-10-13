@@ -77,4 +77,19 @@ class AniobIntentResolverTest {
         val jsResult = AniobIntentResolver.resolve("open website javascript:alert(1)")
         assertNull("JavaScript scheme must be rejected", jsResult)
     }
+
+    @Test
+    fun testOpenClockAndAlarmResolveDirectly() {
+        val clock = AniobIntentResolver.resolve("Open Clock")
+        assertNotNull(clock)
+        assertEquals("android.intent.action.SHOW_ALARMS", clock?.action)
+
+        val alarm = AniobIntentResolver.resolve("Set alarm")
+        assertNotNull(alarm)
+        assertEquals("android.intent.action.SET_ALARM", alarm?.action)
+
+        val spotify = AniobIntentResolver.resolve("Open Spotify")
+        assertNotNull(spotify)
+        assertEquals("com.spotify.music", spotify?.targetPackage)
+    }
 }

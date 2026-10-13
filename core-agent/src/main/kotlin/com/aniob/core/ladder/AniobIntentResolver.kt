@@ -59,6 +59,47 @@ object AniobIntentResolver {
                     category = "android.intent.category.APP_CALCULATOR"
                 )
             }
+            lower == "open clock" || lower == "clock" || lower == "launch clock" || lower == "show clock" -> {
+                ResolvedIntentShortcut(
+                    action = "android.intent.action.SHOW_ALARMS"
+                )
+            }
+            lower == "set alarm" || lower == "alarm" || lower == "set an alarm" -> {
+                ResolvedIntentShortcut(
+                    action = "android.intent.action.SET_ALARM"
+                )
+            }
+            lower == "open spotify" || lower == "spotify" || lower == "launch spotify" -> {
+                ResolvedIntentShortcut(
+                    action = ACTION_MAIN,
+                    targetPackage = "com.spotify.music",
+                    category = CATEGORY_LAUNCHER
+                )
+            }
+            lower == "open maps" || lower == "maps" || lower == "launch maps" -> {
+                ResolvedIntentShortcut(
+                    action = ACTION_VIEW,
+                    uriString = "geo:0,0"
+                )
+            }
+            lower == "open calendar" || lower == "calendar" || lower == "launch calendar" -> {
+                ResolvedIntentShortcut(
+                    action = ACTION_MAIN,
+                    category = "android.intent.category.APP_CALENDAR"
+                )
+            }
+            lower == "open browser" || lower == "browser" || lower == "launch browser" -> {
+                ResolvedIntentShortcut(
+                    action = ACTION_MAIN,
+                    category = "android.intent.category.APP_BROWSER"
+                )
+            }
+            lower == "open files" || lower == "files" || lower == "launch files" -> {
+                ResolvedIntentShortcut(
+                    action = ACTION_MAIN,
+                    category = "android.intent.category.APP_FILES"
+                )
+            }
             lower == "open camera" || lower == "launch camera" -> {
                 ResolvedIntentShortcut(
                     action = "android.media.action.IMAGE_CAPTURE"

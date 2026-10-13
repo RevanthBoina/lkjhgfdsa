@@ -4,6 +4,7 @@ import com.aniob.core.domain.AniobNode
 import com.aniob.core.domain.AniobScreenState
 import com.aniob.core.domain.GroundingSource
 import com.aniob.core.domain.SemanticTarget
+import com.aniob.core.domain.matches
 
 /**
  * Turns a [SemanticTarget] into concrete pixels against a **live** screen capture using the fused element index.
@@ -46,6 +47,34 @@ object AniobGroundingResolver {
         is SemanticTarget.Text -> resolveText(target, liveScreen)
 
         is SemanticTarget.ContentDesc -> resolveContentDesc(target, liveScreen)
+
+        is SemanticTarget.NormalizedCoordinate -> resolveNormalizedCoordinate(target, liveScreen)
+
+        is SemanticTarget.BoundingBox -> resolveBoundingBox(target, liveScreen)
+    }
+
+    private fun resolveNormalizedCoordinate(target: SemanticTarget.NormalizedCoordinate, screen: AniobScreenState): Resolved {
+        val enclosing = screen.nodes.firstOrNull { it.isVisibleToUser && it.isEnabled && target.matches(it) }
+        val node = enclosing ?: AniobNode(
+            id = 9999,
+            className = "android.view.View",
+            bounds = com.aniob.core.domain.AniobRect(target.normX - 5, target.normY - 5, target.normX + 5, target.normY + 5),
+            source = GroundingSource.VISUAL_MODEL
+        )
+        return Resolved(node = node, x = target.normX, y = target.normY, source = GroundingSource.VISUAL_MODEL)
+    }
+
+    private fun resolveBoundingBox(target: SemanticTarget.BoundingBox, screen: AniobScreenState): Resolved {
+        val centerX = (target.left + target.right) / 2
+        val centerY = (target.top + target.bottom) / 2
+        val enclosing = screen.nodes.firstOrNull { it.isVisibleToUser && it.isEnabled && target.matches(it) }
+        val node = enclosing ?: AniobNode(
+            id = 9998,
+            className = "android.view.View",
+            bounds = com.aniob.core.domain.AniobRect(target.left, target.top, target.right, target.bottom),
+            source = GroundingSource.VISUAL_MODEL
+        )
+        return Resolved(node = node, x = centerX, y = centerY, source = GroundingSource.VISUAL_MODEL)
     }
 
     private fun resolveText(target: SemanticTarget.Text, screen: AniobScreenState): Resolved? {

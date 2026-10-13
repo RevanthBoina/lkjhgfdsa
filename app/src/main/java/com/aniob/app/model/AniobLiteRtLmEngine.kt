@@ -75,13 +75,13 @@ class AniobLiteRtLmEngine(
      *
      * @return true when the engine is initialised and ready to generate.
      */
-    override fun load(modelPath: String): Boolean {
+    override fun load(path: String): Boolean {
         // Fast path: already loaded from this exact file.
-        engine?.let { if (loadedPath == modelPath) return true }
+        engine?.let { if (loadedPath == path) return true }
 
-        val f = java.io.File(modelPath)
+        val f = java.io.File(path)
         if (!f.exists() || f.length() == 0L) {
-            Log.w(TAG, "model file missing or empty, refusing to initialise engine: $modelPath")
+            Log.w(TAG, "model file missing or empty, refusing to initialise engine: $path")
             return false
         }
 
@@ -90,23 +90,50 @@ class AniobLiteRtLmEngine(
             // of native memory, so two must not coexist on a phone.
             release()
 
-            val backend = if (preferGpu) Backend.GPU() else Backend.CPU()
-            val config = EngineConfig(
-                modelPath = modelPath,
-                backend = backend,
-                maxNumTokens = maxNumTokens,
-                cacheDir = cacheDir.absolutePath
-            )
-            val created = Engine(config).also { it.initialize() }
+            var activeBackend = "CPU"
+            var created: Engine? = null
+
+            if (preferGpu) {
+                try {
+                    Log.i(TAG, "Negotiating platform-native GPU OpenCL backend for ${f.name}...")
+                    val gpuConfig = EngineConfig(
+                        modelPath = path,
+                        backend = Backend.GPU(),
+                        maxNumTokens = maxNumTokens,
+                        cacheDir = cacheDir.absolutePath
+                    )
+                    created = Engine(gpuConfig).also { it.initialize() }
+                    activeBackend = "GPU"
+                    Log.i(TAG, "GPU OpenCL initialization succeeded")
+                } catch (gpuError: Throwable) {
+                    Log.w(
+                        TAG,
+                        "GPU OpenCL backend unavailable (${gpuError.javaClass.simpleName}: ${gpuError.message}); falling back to CPU (XNNPACK)"
+                    )
+                    created = null
+                }
+            }
+
+            if (created == null) {
+                val cpuConfig = EngineConfig(
+                    modelPath = path,
+                    backend = Backend.CPU(),
+                    maxNumTokens = maxNumTokens,
+                    cacheDir = cacheDir.absolutePath
+                )
+                created = Engine(cpuConfig).also { it.initialize() }
+                activeBackend = "CPU"
+            }
+
             engine = created
-            loadedPath = modelPath
-            Log.i(TAG, "LiteRT-LM engine ready: ${f.name} backend=${if (preferGpu) "GPU" else "CPU"}")
+            loadedPath = path
+            Log.i(TAG, "LiteRT-LM engine ready: ${f.name} backend=$activeBackend")
             true
         } catch (e: Throwable) {
             // Includes UnsatisfiedLinkError if the native library is ever stripped from the build,
             // and OOM on low-RAM devices. Degrade to "not ready" so AniobHybridEngineRouter can fall
             // back to cloud instead of crashing the app.
-            Log.e(TAG, "LiteRT-LM engine failed to load $modelPath: ${e.javaClass.simpleName}: ${e.message}")
+            Log.e(TAG, "LiteRT-LM engine failed to load $path: ${e.javaClass.simpleName}: ${e.message}")
             engine = null
             loadedPath = null
             false

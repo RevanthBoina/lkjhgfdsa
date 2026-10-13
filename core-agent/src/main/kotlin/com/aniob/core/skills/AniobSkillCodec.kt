@@ -89,6 +89,8 @@ object AniobSkillCodec {
         is SemanticTarget.ResourceId -> """{"kind": "resource_id", "value": "${esc(target.id)}"}"""
         is SemanticTarget.Text -> """{"kind": "text", "value": "${esc(target.text)}", "exact": ${target.exact}}"""
         is SemanticTarget.ContentDesc -> """{"kind": "content_desc", "value": "${esc(target.desc)}", "exact": ${target.exact}}"""
+        is SemanticTarget.NormalizedCoordinate -> """{"kind": "coord", "x": ${target.normX}, "y": ${target.normY}}"""
+        is SemanticTarget.BoundingBox -> """{"kind": "box", "left": ${target.left}, "top": ${target.top}, "right": ${target.right}, "bottom": ${target.bottom}}"""
     }
 
     /**
