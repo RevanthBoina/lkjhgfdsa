@@ -50,4 +50,20 @@ class WatchdogOscillationTest {
         watchdog.record("hash1", tap)
         assertTrue(watchdog.isLoopDetected())
     }
+
+    @Test
+    fun testPlannedListInspectionExemptionPreventsFalseOscillation() {
+        val watchdog = AniobWatchdog(loopThreshold = 3)
+        val tapItem = AniobAction.Tap(SemanticTarget.Text("Item"))
+        val pressBack = AniobAction.PressKey(com.aniob.core.domain.KeyType.BACK)
+        val listLoop = AniobWatchdog.PlannedLoopContext(AniobWatchdog.PlannedLoopType.LIST_INSPECTION)
+
+        watchdog.record("hash1", tapItem, plannedLoop = listLoop)
+        watchdog.record("hash2", pressBack, plannedLoop = listLoop)
+        watchdog.record("hash1", tapItem, plannedLoop = listLoop)
+        watchdog.record("hash2", pressBack, plannedLoop = listLoop)
+
+        assertFalse("Exempted LIST_INSPECTION cycle must not trigger oscillation", watchdog.isOscillating())
+        assertFalse("Exempted LIST_INSPECTION cycle must not trigger loop", watchdog.isLoopDetected())
+    }
 }

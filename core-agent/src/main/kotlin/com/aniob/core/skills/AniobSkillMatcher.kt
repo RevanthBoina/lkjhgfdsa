@@ -27,30 +27,46 @@ class AniobSkillMatcher(
             !disabledSkills.contains(it.name) && it.status == SkillStatus.ACTIVE && !it.isDraft
         }
 
+        // Specificity-ranked trigger matching: prefer longest matching trigger phrase first
+        var bestSkill: AniobSkill? = null
+        var bestTrigger = ""
         for (skill in candidates) {
-            // Check direct trigger keywords
             for (kw in skill.triggerKeywords) {
-                if (cleanPrompt == kw || cleanPrompt.startsWith(kw) || cleanPrompt.contains(kw)) {
-                    val slots = extractSlots(cleanPrompt, skill)
-                    return MatchResult(
-                        matched = true,
-                        skill = skill,
-                        confidence = 0.95f,
-                        extractedSlots = slots,
-                        reason = "Tier 1.5 YAML skill matched: '${skill.name}' via trigger '$kw' (0 LLM calls)"
-                    )
+                val cleanKw = kw.trim().lowercase()
+                if (cleanKw.isNotEmpty() &&
+                    (cleanPrompt == cleanKw || cleanPrompt.startsWith(cleanKw) || cleanPrompt.contains(cleanKw))
+                ) {
+                    if (cleanKw.length > bestTrigger.length) {
+                        bestSkill = skill
+                        bestTrigger = cleanKw
+                    }
                 }
             }
+        }
+        if (bestSkill != null) {
+            val slots = extractSlots(cleanPrompt, bestSkill)
+            return MatchResult(
+                matched = true,
+                skill = bestSkill,
+                confidence = 0.95f,
+                extractedSlots = slots,
+                reason = "Tier 1.5 YAML skill matched: '${bestSkill.name}' via trigger '$bestTrigger' (0 LLM calls)"
+            )
+        }
 
-            // Check regex pattern if defined
+        for (skill in candidates) {
+            // Check regex pattern if defined (using pre-compiled cache)
             if (skill.intentPattern.isNotBlank()) {
                 try {
-                    val regex = Regex(skill.intentPattern, RegexOption.IGNORE_CASE)
+                    val regex = INTENT_REGEX_CACHE.computeIfAbsent(skill.intentPattern) {
+                        Regex(it, RegexOption.IGNORE_CASE)
+                    }
                     if (regex.containsMatchIn(cleanPrompt)) {
                         return MatchResult(
                             matched = true,
                             skill = skill,
                             confidence = 0.90f,
+                            extractedSlots = extractSlots(cleanPrompt, skill),
                             reason = "Tier 1.5 YAML skill matched: '${skill.name}' via pattern (0 LLM calls)"
                         )
                     }
@@ -66,8 +82,9 @@ class AniobSkillMatcher(
     private fun extractSlots(prompt: String, skill: AniobSkill): Map<String, String> {
         val result = mutableMapOf<String, String>()
         for ((slotName, _) in skill.slots) {
-            // simple extraction heuristic: text following slot keyword
-            val regex = Regex("$slotName\\s+(?:is|to|as)?\\s*([a-zA-Z0-9_ -]+)", RegexOption.IGNORE_CASE)
+            val regex = SLOT_REGEX_CACHE.computeIfAbsent(slotName) {
+                Regex("${Regex.escape(it)}\\s+(?:is|to|as)?\\s*([a-zA-Z0-9_ -]+)", RegexOption.IGNORE_CASE)
+            }
             regex.find(prompt)?.let { match ->
                 val value = match.groupValues.getOrNull(1)?.trim()
                 if (!value.isNullOrBlank()) {
@@ -76,5 +93,10 @@ class AniobSkillMatcher(
             }
         }
         return result
+    }
+
+    companion object {
+        private val INTENT_REGEX_CACHE = java.util.concurrent.ConcurrentHashMap<String, Regex>()
+        private val SLOT_REGEX_CACHE = java.util.concurrent.ConcurrentHashMap<String, Regex>()
     }
 }

@@ -344,6 +344,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
             isEditable = node.isEditable,
             isScrollable = node.isScrollable,
             isSelected = node.isSelected,
+            isChecked = node.isChecked,
             isEnabled = node.isEnabled,
             isVisibleToUser = isVisible,
             isPassword = node.isPassword,

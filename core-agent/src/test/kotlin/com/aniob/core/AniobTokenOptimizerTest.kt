@@ -116,4 +116,34 @@ class AniobTokenOptimizerTest {
         assertEquals(2, optimized.size)
         assertEquals(listOf("Dup", "Other"), optimized.map { it.text })
     }
+
+    @Test
+    fun testSaliencyFoveationRetainsBottomInteractiveControlsWhenOverSixtyNodes() {
+        // 65 passive TextViews at the top + 1 interactive Send Button at the bottom (index 66)
+        val passiveNodes = (1..65).map { i ->
+            AniobNode(
+                id = i,
+                className = "android.widget.TextView",
+                text = "Static line $i",
+                isClickable = false,
+                bounds = AniobRect(0, i * 20, 200, i * 20 + 15)
+            )
+        }
+        val bottomSendButton = AniobNode(
+            id = 66,
+            className = "android.widget.Button",
+            text = "Send Message",
+            isClickable = true,
+            bounds = AniobRect(0, 2000, 200, 2060)
+        )
+
+        val optimized = AniobTokenOptimizer.optimize(passiveNodes + bottomSendButton)
+        assertEquals(60, optimized.size)
+        assertTrue(
+            "Bottom-of-screen clickable Send button must be retained by saliency foveation",
+            optimized.any { it.text == "Send Message" }
+        )
+        assertEquals("Send Message", optimized.last().text)
+        assertEquals(60, optimized.last().id)
+    }
 }

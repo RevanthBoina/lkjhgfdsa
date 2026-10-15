@@ -11,7 +11,15 @@ import kotlin.math.max
 class AniobFusedIndex(
     val elements: List<AniobNode> = emptyList()
 ) {
-    fun findById(id: Int): AniobNode? = elements.find { it.id == id }
+    private val byId: Map<Int, AniobNode> by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        HashMap<Int, AniobNode>(elements.size * 2).apply {
+            for (node in elements) {
+                putIfAbsent(node.id, node)
+            }
+        }
+    }
+
+    fun findById(id: Int): AniobNode? = byId[id]
 
     fun exactMatch(query: String, ignoreCase: Boolean = true): List<AniobNode> {
         val q = query.trim()
@@ -33,9 +41,13 @@ class AniobFusedIndex(
                 .filter { it.isNotBlank() }
                 .map { it.lowercase() }
 
-            val bestScore = targets.maxOfOrNull { textSimilarity(q, it) } ?: 0.0
+            val bestScore = targets.maxOfOrNull { textSimilarity(q, it, minSimilarity) } ?: 0.0
             if (bestScore >= minSimilarity) node to bestScore else null
-        }.sortedByDescending { it.second }
+        }.sortedWith(
+            compareByDescending<Pair<AniobNode, Double>> { it.second }
+                .thenByDescending { it.first.isClickable }
+                .thenBy { it.first.bounds.area }
+        )
     }
 
     fun hitTest(x: Int, y: Int): AniobNode? {
@@ -51,16 +63,23 @@ class AniobFusedIndex(
         get() = elements.groupingBy { it.source }.eachCount()
 
     companion object {
-        fun textSimilarity(s1: String, s2: String): Double {
+        fun textSimilarity(s1: String, s2: String, minSimilarity: Double = 0.0): Double {
             if (s1 == s2) return 1.0
+            if (s1.isEmpty() || s2.isEmpty()) return 0.0
+            val minLen = minOf(s1.length, s2.length)
+            val maxLen = maxOf(s1.length, s2.length)
             if (s1.contains(s2) || s2.contains(s1)) {
-                val minLen = minOf(s1.length, s2.length).toDouble()
-                val maxLen = maxOf(s1.length, s2.length).toDouble()
-                return max(0.75, minLen / maxLen)
+                return max(0.75, minLen.toDouble() / maxLen.toDouble())
+            }
+            // Mathematical Upper-Bound Pruning:
+            // Since levenshteinDistance(s1, s2) >= maxLen - minLen,
+            // maximum possible similarity is minLen / maxLen.
+            val maxPossibleSimilarity = minLen.toDouble() / maxLen.toDouble()
+            if (minSimilarity > 0.0 && maxPossibleSimilarity < minSimilarity) {
+                return 0.0
             }
             val distance = levenshteinDistance(s1, s2)
-            val maxLen = maxOf(s1.length, s2.length)
-            return if (maxLen == 0) 1.0 else (1.0 - (distance.toDouble() / maxLen))
+            return 1.0 - (distance.toDouble() / maxLen.toDouble())
         }
 
         private fun levenshteinDistance(s1: String, s2: String): Int {

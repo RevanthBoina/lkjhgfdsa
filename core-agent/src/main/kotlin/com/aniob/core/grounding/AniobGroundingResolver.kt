@@ -62,6 +62,10 @@ object AniobGroundingResolver {
         val fuzzyHits = screen.fusedIndex.fuzzyTextSearch(target.text, minSimilarity = 0.70)
             .filter { it.first.isVisibleToUser && it.first.isEnabled }
         if (fuzzyHits.isNotEmpty()) {
+            val topScore = fuzzyHits.first().second
+            val topTied = fuzzyHits.filter { kotlin.math.abs(it.second - topScore) <= 1e-4 }.map { it.first }
+            val clickableTied = topTied.filter { it.isClickable || it.isEditable }
+            if (clickableTied.size == 1) return clickableTied.first().toResolved()
             return fuzzyHits.first().first.toResolved()
         }
         return null
@@ -84,6 +88,12 @@ object AniobGroundingResolver {
             val clickables = partialHits.filter { it.isClickable }
             if (clickables.size == 1) return clickables.first().toResolved()
             return null
+        }
+
+        val fuzzyHits = screen.fusedIndex.fuzzyTextSearch(target.desc, minSimilarity = 0.72)
+            .filter { it.first.isVisibleToUser && it.first.isEnabled && it.first.contentDescription.isNotBlank() }
+        if (fuzzyHits.size == 1) {
+            return fuzzyHits.first().first.toResolved()
         }
         return null
     }

@@ -97,4 +97,16 @@ class AniobStructuredOutputTest {
         assertTrue(result.action is AniobAction.Fail)
         assertFalse(result.usedFallback)
     }
+
+    @Test
+    fun `json string unescaping preserves literal backslash-n versus newline`() {
+        val action = com.aniob.core.domain.AniobAction.InputText(
+            target = com.aniob.core.domain.SemanticTarget.Text("Submit"),
+            text = "path\\new\nline",
+            thought = "type escaped text"
+        )
+        val encoded = com.aniob.core.domain.AniobActionSchema.toActionJson(action)
+        val decoded = com.aniob.core.domain.AniobActionSchema.parseActionJson(encoded) as com.aniob.core.domain.AniobAction.InputText
+        assertEquals("path\\new\nline", decoded.text)
+    }
 }
