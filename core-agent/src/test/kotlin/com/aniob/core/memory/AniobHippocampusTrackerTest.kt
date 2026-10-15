@@ -144,4 +144,20 @@ class AniobHippocampusTrackerTest {
         assertEquals("com.google.android.calendar", playbook!!.packageName)
         assertEquals(2, playbook.actions.size)
     }
+
+    @Test
+    fun `loadFromDirectory loads consolidated skills into AniobSkillEngine`() {
+        val tracker = AniobHippocampusTracker(skillsDir = skillsDir)
+        tracker.beginTask("t7", "Open clock\nand set alarm")
+        tracker.recordStep(step(1, AniobAction.OpenApp(packageName = "com.google.android.deskclock")))
+        tracker.recordStep(step(2, AniobAction.Finish()))
+
+        val name = tracker.consolidateOnSuccess("t7", "Open clock\nand set alarm", 2, 2, 0, 200)
+        assertNotNull(name)
+
+        val engine = AniobSkillEngine()
+        val loaded = engine.loadFromDirectory(skillsDir)
+        assertEquals(1, loaded)
+        assertTrue(engine.getActiveCatalog().any { it.name == name })
+    }
 }

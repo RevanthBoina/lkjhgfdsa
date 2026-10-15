@@ -150,8 +150,8 @@ class AniobHippocampusTracker(
     }
 
     private fun buildSkillYaml(skillName: String, prompt: String, riskTier: String): String {
-        val description = sanitize(prompt).ifBlank { "Learned multi-step automation" }
-        val trigger = prompt.trim().lowercase()
+        val description = sanitizeLine(prompt).ifBlank { "Learned multi-step automation" }
+        val trigger = sanitizeLine(prompt.trim().lowercase())
         return buildString {
             appendLine("name: \"$skillName\"")
             appendLine("version: \"2.1\"")
@@ -171,7 +171,7 @@ class AniobHippocampusTracker(
     private fun appendStepFields(builder: StringBuilder, action: AniobAction, thought: String) {
         builder.appendLine("    action: \"${action.toolName}\"")
         when (action) {
-            is AniobAction.OpenApp -> builder.appendLine("    package: \"${action.packageName}\"")
+            is AniobAction.OpenApp -> builder.appendLine("    package: \"${sanitizeLine(action.packageName)}\"")
             is AniobAction.Tap -> appendTarget(builder, action.target)
             is AniobAction.LongPress -> {
                 appendTarget(builder, action.target)
@@ -215,5 +215,11 @@ class AniobHippocampusTracker(
         }
     }
 
-    private fun sanitizeLine(s: String): String = sanitize(s).replace("\"", "\\\"")
+    private fun sanitizeLine(s: String): String =
+        sanitize(s)
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\r", " ")
+            .replace("\n", " ")
+            .trim()
 }

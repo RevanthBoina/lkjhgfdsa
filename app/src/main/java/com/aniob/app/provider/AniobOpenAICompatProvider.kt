@@ -22,7 +22,7 @@ open class AniobOpenAICompatProvider(
     private val apiKey: String = "",
     private val modelName: String = "qwen2.5:1.5b"
 ) {
-    private val client = OkHttpClient.Builder()
+    private val client = com.aniob.app.network.AniobHttpClientSingleton.client.newBuilder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
@@ -56,20 +56,21 @@ open class AniobOpenAICompatProvider(
                 requestBuilder.addHeader("Authorization", "Bearer $apiKey")
             }
 
-            val response = client.newCall(requestBuilder.build()).execute()
-            val body = response.body?.string().orEmpty()
+            client.newCall(requestBuilder.build()).execute().use { response ->
+                val body = response.body?.string().orEmpty()
 
-            if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("Provider returned ${response.code}: $body"))
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(Exception("Provider returned ${response.code}: $body"))
+                }
+
+                val root = JSONObject(body)
+                val text = root.getJSONArray("choices")
+                    .getJSONObject(0)
+                    .getJSONObject("message")
+                    .getString("content")
+
+                Result.success(text)
             }
-
-            val root = JSONObject(body)
-            val text = root.getJSONArray("choices")
-                .getJSONObject(0)
-                .getJSONObject("message")
-                .getString("content")
-
-            Result.success(text)
         } catch (e: Exception) {
             Result.failure(e)
         }

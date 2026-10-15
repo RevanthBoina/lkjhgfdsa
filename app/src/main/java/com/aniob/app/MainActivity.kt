@@ -74,8 +74,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        // Memory safety: release local SLM native memory when device is under memory pressure
-        AniobLocalLlmClient.release()
+        // Memory safety: release local SLM native memory when device is under severe memory pressure
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            (application as? AniobApplication)?.onMemoryTrimListener?.invoke(level)
+            AniobLocalLlmClient.release()
+        }
     }
 
     override fun onDestroy() {

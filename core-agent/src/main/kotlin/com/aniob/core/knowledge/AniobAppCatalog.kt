@@ -72,11 +72,18 @@ class AniobAppCatalog private constructor() {
         }
     }
 
+    private fun escapeJson(s: String): String =
+        s.replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+
     @Synchronized
     fun toJson(): String {
         val entries = catalog.values.joinToString(",") { entry ->
-            val aliasJson = entry.aliases.joinToString(",") { "\"${it.replace("\"", "\\\"")}\"" }
-            """{"packageName":"${entry.packageName}","appName":"${entry.appName.replace("\"", "\\\"")}","isSystem":${entry.isSystemApp},"aliases":[$aliasJson]}"""
+            val aliasJson = entry.aliases.joinToString(",") { "\"${escapeJson(it)}\"" }
+            """{"packageName":"${escapeJson(entry.packageName)}","appName":"${escapeJson(entry.appName)}","isSystem":${entry.isSystemApp},"aliases":[$aliasJson]}"""
         }
         return "[$entries]"
     }
@@ -88,7 +95,8 @@ class AniobAppCatalog private constructor() {
         sb.appendLine("| App Name | Package Name | System App |")
         sb.appendLine("|---|---|---|")
         catalog.values.sortedBy { it.appName.lowercase() }.forEach {
-            sb.appendLine("| ${it.appName} | `${it.packageName}` | ${if (it.isSystemApp) "Yes" else "No"} |")
+            val safeName = it.appName.replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+            sb.appendLine("| $safeName | `${it.packageName}` | ${if (it.isSystemApp) "Yes" else "No"} |")
         }
         return sb.toString()
     }

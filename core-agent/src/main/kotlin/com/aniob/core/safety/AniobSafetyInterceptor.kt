@@ -33,6 +33,8 @@ object AniobSafetyInterceptor {
 
     private val paymentBlocklist = listOf("upi://", "com.android.vending.BILLING", "checkout", "purchase", "payment", "transaction")
     private val sensitiveBlocklist = listOf("otp", "cvv", "password", "pin")
+    private val SENSITIVE_BLOCKLIST_REGEX = sensitiveBlocklist.joinToString("|") { Regex.escape(it) }
+        .let { Regex("\\b(?:$it)\\b") }
     private val destructiveBlocklist = listOf("delete account", "erase all", "factory reset", "format storage", "wipe data")
     private val unknownContactKeywords = listOf("unknown", "add new", "new contact", "create contact", "???")
     private val blockedFingerprints = mutableSetOf<String>()
@@ -81,9 +83,7 @@ object AniobSafetyInterceptor {
         }
 
         // Sensitive data on editable fields
-        val sensitiveRegex = sensitiveBlocklist.joinToString("|") { Regex.escape(it) }
-            .let { Regex("\\b(?:$it)\\b") }
-        if (targetNode?.isEditable == true && (sensitiveRegex.containsMatchIn(actionStr) || OTP_PATTERN.containsMatchIn(typedOrThoughtText))) {
+        if (targetNode?.isEditable == true && (SENSITIVE_BLOCKLIST_REGEX.containsMatchIn(actionStr) || OTP_PATTERN.containsMatchIn(typedOrThoughtText))) {
             blockedFingerprints.add(screenFingerprint)
             blockedTimestamps[screenFingerprint] = System.currentTimeMillis()
             return InterceptResult(isAllowed = false, reason = "Sensitive data blocked", riskTier = "HIGH")

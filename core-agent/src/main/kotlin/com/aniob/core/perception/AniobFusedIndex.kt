@@ -64,21 +64,31 @@ class AniobFusedIndex(
         }
 
         private fun levenshteinDistance(s1: String, s2: String): Int {
-            val dp = Array(s1.length + 1) { IntArray(s2.length + 1) }
-            for (i in 0..s1.length) dp[i][0] = i
-            for (j in 0..s2.length) dp[0][j] = j
+            if (s1 == s2) return 0
+            if (s1.isEmpty()) return s2.length
+            if (s2.isEmpty()) return s1.length
 
-            for (i in 1..s1.length) {
-                for (j in 1..s2.length) {
-                    val cost = if (s1[i - 1] == s2[j - 1]) 0 else 1
-                    dp[i][j] = minOf(
-                        dp[i - 1][j] + 1,
-                        dp[i][j - 1] + 1,
-                        dp[i - 1][j - 1] + cost
+            val (shorter, longer) = if (s1.length <= s2.length) s1 to s2 else s2 to s1
+            val cols = shorter.length
+            var prev = IntArray(cols + 1) { it }
+            var curr = IntArray(cols + 1)
+
+            for (i in 1..longer.length) {
+                curr[0] = i
+                val cLong = longer[i - 1]
+                for (j in 1..cols) {
+                    val cost = if (cLong == shorter[j - 1]) 0 else 1
+                    curr[j] = minOf(
+                        prev[j] + 1,
+                        curr[j - 1] + 1,
+                        prev[j - 1] + cost
                     )
                 }
+                val tmp = prev
+                prev = curr
+                curr = tmp
             }
-            return dp[s1.length][s2.length]
+            return prev[cols]
         }
     }
 }

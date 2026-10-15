@@ -51,4 +51,13 @@ class AniobTrajectoryCodecTest {
         )
         assertEquals(2, decoded.size)
     }
+
+    @Test
+    fun `round trips trajectory with pipe and newline characters in taskSignature`() {
+        val tricky = trajectory.copy(taskSignature = "search a | b \\ c\nand tap display")
+        val decoded = AniobTrajectoryCodec.decode(AniobTrajectoryCodec.encode(tricky))
+        assertEquals(1, decoded.size)
+        assertEquals("search a | b \\ c\nand tap display", decoded[0].taskSignature)
+        assertEquals(3, decoded[0].steps.size)
+    }
 }

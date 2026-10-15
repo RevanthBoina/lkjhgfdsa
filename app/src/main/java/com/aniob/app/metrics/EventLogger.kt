@@ -33,9 +33,12 @@ class EventLogger(private val database: AniobDatabase) {
 
     companion object {
         const val MAX_TRAJECTORY_CAPACITY = 50
+        private const val PRUNE_INTERVAL = 100
+        private const val MAX_PERSISTED_LOGS = 1000
     }
 
     private val trajectory = mutableListOf<TrajectoryStep>()
+    private val insertCount = java.util.concurrent.atomic.AtomicInteger(0)
 
     fun info(tag: String, message: String) = log("INFO", tag, message)
     fun warn(tag: String, message: String) = log("WARN", tag, message)
@@ -107,6 +110,9 @@ class EventLogger(private val database: AniobDatabase) {
                         message = message
                     )
                 )
+                if (insertCount.incrementAndGet() % PRUNE_INTERVAL == 0) {
+                    database.logEventDao().pruneOldLogs(MAX_PERSISTED_LOGS)
+                }
             } catch (e: Exception) {
                 Log.e("EventLogger", "Failed to persist log: ${e.message}")
             }

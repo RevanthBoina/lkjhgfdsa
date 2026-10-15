@@ -40,6 +40,7 @@ data class SystemState(
 class AniobSystemState(private val app: AniobApplication) {
 
     private val downloader = AniobModelDownloader(app)
+    private val secretStore = com.aniob.app.data.AniobSecretStore(app)
 
     private val _state = MutableStateFlow(SystemState())
     val state: StateFlow<SystemState> = _state.asStateFlow()
@@ -91,14 +92,10 @@ class AniobSystemState(private val app: AniobApplication) {
     }
 
     private fun isModelReady(): Boolean {
-        val id = downloader.getDefaultModelId() ?: return false
-        if (!downloader.isModelInstalled(id)) return false
-        return try {
-            val engine = com.aniob.core.providers.AniobLocalLlmClient.getEngine()
-            engine.isModelLoaded() && engine.capabilities().canDriveActions
-        } catch (_: Throwable) {
-            false
-        }
+        val defaultId = downloader.getDefaultModelId()
+        val hasLocalModel = !defaultId.isNullOrBlank() && downloader.isModelInstalled(defaultId)
+        val hasCloudKey = secretStore.getOmniRouteApiKey().isNotBlank()
+        return hasLocalModel || hasCloudKey
     }
 
     private fun registerConnectivityCallback() {

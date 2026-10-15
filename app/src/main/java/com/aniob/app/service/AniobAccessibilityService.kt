@@ -112,12 +112,14 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
                 Log.e(TAG, "Catalog build failed", e)
             }
         }
-        try {
-            bridgeServer = com.aniob.app.bridge.AniobBridgeServer()
-            bridgeServer?.start()
-            Log.i(TAG, "AniobBridgeServer started on port 8765")
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to start AniobBridgeServer", e)
+        if (com.aniob.app.BuildConfig.DEBUG) {
+            try {
+                bridgeServer = com.aniob.app.bridge.AniobBridgeServer()
+                bridgeServer?.start()
+                Log.i(TAG, "AniobBridgeServer started on port 8765")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to start AniobBridgeServer", e)
+            }
         }
         Log.i(TAG, "AniobAccessibilityService successfully connected and ready.")
     }
