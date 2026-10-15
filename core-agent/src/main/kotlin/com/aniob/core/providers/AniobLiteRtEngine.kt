@@ -24,7 +24,7 @@ interface AniobNativeLlmEngine {
  * No mock fallback lives here: if the library cannot be loaded, [isReady] is false and the
  * caller must surface an explicit failure rather than a fabricated action.
  */
-class AniobLiteRtEngine(private val modelPath: String) : AniobNativeLlmEngine {
+class AniobLiteRtEngine(@Volatile private var modelPath: String) : AniobNativeLlmEngine {
 
     private var nativeLoaded: Boolean = try {
         System.loadLibrary(LITE_RT_LIBRARY)
@@ -36,6 +36,7 @@ class AniobLiteRtEngine(private val modelPath: String) : AniobNativeLlmEngine {
     override fun isReady(): Boolean = nativeLoaded && java.io.File(modelPath).exists()
 
     override fun load(path: String): Boolean {
+        modelPath = path
         if (!isReady()) return false
         return try {
             nativeLoadModel(path)

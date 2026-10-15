@@ -94,7 +94,12 @@ object AniobScreenDiff {
         oldNodes: List<AniobNode>,
         newNodes: List<AniobNode>
     ): AniobRect? {
-        val oldMap = oldNodes.associateBy { it.viewId.ifBlank { "${it.bounds.left},${it.bounds.top}" } }
+        fun nodeSignature(n: AniobNode): String =
+            "${n.viewId}:${n.className}:${n.text}:${n.contentDescription}:${n.bounds.left},${n.bounds.top},${n.bounds.right},${n.bounds.bottom}:${n.isChecked}"
+
+        val oldSignatures = oldNodes.mapTo(mutableSetOf()) { nodeSignature(it) }
+        val newSignatures = newNodes.mapTo(mutableSetOf()) { nodeSignature(it) }
+
         var minL = Int.MAX_VALUE
         var minT = Int.MAX_VALUE
         var maxR = Int.MIN_VALUE
@@ -102,9 +107,17 @@ object AniobScreenDiff {
         var anyDiff = false
 
         for (node in newNodes) {
-            val key = node.viewId.ifBlank { "${node.bounds.left},${node.bounds.top}" }
-            val oldNode = oldMap[key]
-            if (oldNode == null || oldNode.text != node.text || oldNode.bounds != node.bounds) {
+            if (nodeSignature(node) !in oldSignatures && !node.bounds.isEmpty) {
+                anyDiff = true
+                minL = minOf(minL, node.bounds.left)
+                minT = minOf(minT, node.bounds.top)
+                maxR = maxOf(maxR, node.bounds.right)
+                maxB = maxOf(maxB, node.bounds.bottom)
+            }
+        }
+
+        for (node in oldNodes) {
+            if (nodeSignature(node) !in newSignatures && !node.bounds.isEmpty) {
                 anyDiff = true
                 minL = minOf(minL, node.bounds.left)
                 minT = minOf(minT, node.bounds.top)

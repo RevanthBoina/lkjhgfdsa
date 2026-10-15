@@ -1540,6 +1540,7 @@ class AniobViewModel(
         watchdog.reset()
         observationPolicy.reset()
         executionTracker.clear()
+        com.aniob.core.exec.AniobErrorTaxonomy.reset()
 
         // Honest completion (no fake SUCCESS): extract deterministic success criteria BEFORE step 0
         // so a provisional Finish can be verified against evidence. Without criteria a Finish could
@@ -1917,9 +1918,13 @@ class AniobViewModel(
                             val screenshotBase64 = if (needsVision && !isSensitiveScreen && a11y != null) {
                                 val snap = a11y.captureScreenshotAsync()
                                 snap.bitmap?.let { bmp ->
-                                    val stream = java.io.ByteArrayOutputStream()
-                                    bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, stream)
-                                    android.util.Base64.encodeToString(stream.toByteArray(), android.util.Base64.NO_WRAP)
+                                    try {
+                                        val stream = java.io.ByteArrayOutputStream()
+                                        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, stream)
+                                        android.util.Base64.encodeToString(stream.toByteArray(), android.util.Base64.NO_WRAP)
+                                    } finally {
+                                        bmp.recycle()
+                                    }
                                 }
                             } else null
                             val raw = omniroute.getNextActionRaw(systemPrompt, activePrompt, screenshotBase64)
@@ -1995,27 +2000,26 @@ class AniobViewModel(
                 }
 
                 val dispatchLambda: suspend (AniobAction) -> StepPipeline.DispatchOutcome = { act ->
-                    when (act) {
-                        is AniobAction.Finish -> {
+                    when {
+                        proposal is StepPipeline.Proposal.DirectIntent && ladderResult is AniobExecutionRouter.ExecutionPlanResult.DirectIntent -> {
+                            val ok = dispatchSystemIntent(ladderResult.shortcut)
+                            AniobWaitForIdle.waitForIdle(800)
+                            val screenAfter = a11y?.captureCurrentScreenState()
+                            actionsDispatched++
+                            StepPipeline.DispatchOutcome(dispatched = ok, reason = act.describeAction(), screenAfter = screenAfter)
+                        }
+                        act is AniobAction.Finish -> {
                             StepPipeline.DispatchOutcome(dispatched = true, reason = act.summary)
                         }
-                        is AniobAction.Fail -> {
+                        act is AniobAction.Fail -> {
                             StepPipeline.DispatchOutcome(dispatched = false, reason = act.reason)
                         }
                         else -> {
-                            if (proposal is StepPipeline.Proposal.DirectIntent && ladderResult is AniobExecutionRouter.ExecutionPlanResult.DirectIntent) {
-                                val ok = dispatchSystemIntent(ladderResult.shortcut)
-                                AniobWaitForIdle.waitForIdle(800)
-                                val screenAfter = a11y?.captureCurrentScreenState()
-                                actionsDispatched++
-                                StepPipeline.DispatchOutcome(dispatched = ok, screenAfter = screenAfter)
-                            } else {
-                                val ok = if (a11y != null) executeActionSync(a11y, act) else true
-                                actionsDispatched++
-                                AniobWaitForIdle.waitForIdle(600)
-                                val screenAfter = a11y?.captureCurrentScreenState()
-                                StepPipeline.DispatchOutcome(dispatched = ok, screenAfter = screenAfter)
-                            }
+                            val ok = if (a11y != null) executeActionSync(a11y, act) else true
+                            actionsDispatched++
+                            AniobWaitForIdle.waitForIdle(600)
+                            val screenAfter = a11y?.captureCurrentScreenState()
+                            StepPipeline.DispatchOutcome(dispatched = ok, screenAfter = screenAfter)
                         }
                     }
                 }
@@ -2065,7 +2069,7 @@ class AniobViewModel(
                     break
                 }
 
-                screenBefore = res.nextCtx.trajectory.lastOrNull()?.let { currentScreen }
+                screenBefore = res.nextCtx.lastScreenState ?: currentScreen
                 currentStep++
             }
         } finally {
@@ -2218,7 +2222,7 @@ class AniobViewModel(
                 providerUsed = primaryProvider,
                 decisionReason = decisionReason
             )
-            if (isSuccess) {
+            if (isSuccess && stepResult?.terminalState != StepResult.TerminalState.SUCCESS) {
                 val trajectory = verifiedActions.toList()
                 learningPipeline.onTaskSuccess(
                     TaskContext(

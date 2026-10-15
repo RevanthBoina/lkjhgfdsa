@@ -37,7 +37,7 @@ object AniobUpdateChecker {
                 val tagMatch = Regex("\"tag_name\"\\s*:\\s*\"([^\"]+)\"").find(body)
                 val tagName = tagMatch?.groupValues?.getOrNull(1) ?: currentVersion
 
-                val isNewer = tagName != currentVersion && !tagName.contains(currentVersion)
+                val isNewer = isVersionNewer(tagName, currentVersion)
                 UpdateInfo(
                     isUpdateAvailable = isNewer,
                     latestVersion = tagName,
@@ -47,5 +47,20 @@ object AniobUpdateChecker {
         } catch (_: Exception) {
             UpdateInfo(isUpdateAvailable = false, latestVersion = currentVersion)
         }
+    }
+
+    internal fun isVersionNewer(candidate: String, current: String): Boolean {
+        val candParts = candidate.trimStart('v', 'V').substringBefore('-').split('.').mapNotNull { it.toIntOrNull() }
+        val currParts = current.trimStart('v', 'V').substringBefore('-').split('.').mapNotNull { it.toIntOrNull() }
+        if (candParts.isEmpty() || currParts.isEmpty()) {
+            return candidate.trimStart('v', 'V') != current.trimStart('v', 'V')
+        }
+        val maxLen = maxOf(candParts.size, currParts.size)
+        for (i in 0 until maxLen) {
+            val c = candParts.getOrElse(i) { 0 }
+            val cur = currParts.getOrElse(i) { 0 }
+            if (c != cur) return c > cur
+        }
+        return false
     }
 }

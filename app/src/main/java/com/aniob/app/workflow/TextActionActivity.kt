@@ -83,7 +83,15 @@ class TextActionActivity : ComponentActivity() {
                                                 url = "https://chatgpt.com/",
                                                 browserPackage = browserPkg
                                             )
-                                            startActivity(browserIntent)
+                                            try {
+                                                startActivity(browserIntent)
+                                            } catch (_: android.content.ActivityNotFoundException) {
+                                                android.widget.Toast.makeText(
+                                                    this@TextActionActivity,
+                                                    "Copied to clipboard; no browser installed",
+                                                    android.widget.Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
                                             setResult(Activity.RESULT_CANCELED)
                                             finish()
                                         }

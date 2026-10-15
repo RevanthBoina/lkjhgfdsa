@@ -45,7 +45,7 @@ Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT
     /** Fields that would smuggle pixel coordinates into the action vocabulary. */
     private val COORDINATE_FIELDS = listOf("x", "y", "startx", "starty", "endx", "endy", "bounds", "target_node_id", "targetnodeid", "node_id")
 
-    private val TOOL_OBJECT = Regex("\\{[^{}]*\"tool\"\\s*:\\s*\"[^\"]+\"[^{}]*}", RegexOption.DOT_MATCHES_ALL)
+    private val TOOL_OBJECT = Regex("\\{(?:[^{}]|\\{[^{}]*\\})*\"tool\"\\s*:\\s*\"[^\"]+\"(?:[^{}]|\\{[^{}]*\\})*}", RegexOption.DOT_MATCHES_ALL)
     private val STRING_FIELD: (String) -> Regex = { field ->
         Regex("\"$field\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
     }
@@ -132,7 +132,7 @@ Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT
     fun toActionJson(action: AniobAction): String = when (action) {
         is AniobAction.Tap -> """{"thought":"${esc(action.thought)}","tool":"TAP","target":${targetJson(action.target)}}"""
         is AniobAction.LongPress -> """{"thought":"${esc(action.thought)}","tool":"LONG_PRESS","target":${targetJson(action.target)},"duration_ms":${action.durationMs}}"""
-        is AniobAction.InputText -> """{"thought":"${esc(action.thought)}","tool":"INPUT_TEXT","target":${targetJson(action.target)},"text":"${esc(action.text)}"}"""
+        is AniobAction.InputText -> """{"thought":"${esc(action.thought)}","tool":"INPUT_TEXT","target":${targetJson(action.target)},"text":"${esc(action.text)}","clear_first":${action.clearFirst}}"""
         is AniobAction.Swipe -> """{"thought":"${esc(action.thought)}","tool":"SWIPE","direction":"${action.direction}","distance_px":${action.distancePx}}"""
         is AniobAction.OpenApp -> """{"thought":"${esc(action.thought)}","tool":"OPEN_APP","package_name":"${esc(action.packageName)}"}"""
         is AniobAction.SystemKey -> """{"thought":"${esc(action.thought)}","tool":"SYSTEM_KEY","key":"${action.key}"}"""
@@ -144,7 +144,7 @@ Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT
     }
 
     private fun targetJson(target: SemanticTarget): String = when (target) {
-        is SemanticTarget.SomIndex -> """{"kind":"som_index","value":$target.index}"""
+        is SemanticTarget.SomIndex -> """{"kind":"som_index","value":${target.index}}"""
         is SemanticTarget.ResourceId -> """{"kind":"resource_id","value":"${esc(target.id)}"}"""
         is SemanticTarget.Text -> """{"kind":"text","value":"${esc(target.text)}","exact":${target.exact}}"""
         is SemanticTarget.ContentDesc -> """{"kind":"content_desc","value":"${esc(target.desc)}","exact":${target.exact}}"""

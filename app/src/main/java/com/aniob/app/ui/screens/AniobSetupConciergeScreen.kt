@@ -112,12 +112,21 @@ fun AniobSetupConciergeScreen(
                 done = systemState.overlayGranted,
                 actionLabel = "Allow overlay",
                 onAction = {
-                    context.startActivity(
-                        Intent(
-                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                            Uri.parse("package:${context.packageName}")
-                        ).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
-                    )
+                    try {
+                        context.startActivity(
+                            Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:${context.packageName}")
+                            ).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
+                        )
+                    } catch (_: Exception) {
+                        context.startActivity(
+                            Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.parse("package:${context.packageName}")
+                            ).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
+                        )
+                    }
                 },
                 testTag = "setup_overlay"
             )
@@ -129,10 +138,19 @@ fun AniobSetupConciergeScreen(
                 done = systemState.notificationsEnabled,
                 actionLabel = "Open Settings",
                 onAction = {
-                    context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                        putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    })
+                    try {
+                        context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                            putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        })
+                    } catch (_: Exception) {
+                        context.startActivity(
+                            Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.parse("package:${context.packageName}")
+                            ).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
+                        )
+                    }
                 },
                 testTag = "setup_notifications"
             )
@@ -144,9 +162,18 @@ fun AniobSetupConciergeScreen(
                 done = systemState.batteryUnrestricted,
                 actionLabel = "Open Settings",
                 onAction = {
-                    context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    })
+                    try {
+                        context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        })
+                    } catch (_: Exception) {
+                        context.startActivity(
+                            Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.parse("package:${context.packageName}")
+                            ).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
+                        )
+                    }
                 },
                 testTag = "setup_battery"
             )

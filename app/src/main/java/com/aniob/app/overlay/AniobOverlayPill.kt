@@ -50,6 +50,10 @@ class AniobOverlayPill(
     fun dpToPx(dp: Int): Int = dpToPx(dp.toFloat())
 
     fun show(stepIndex: Int, statusText: String) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { show(stepIndex, statusText) }
+            return
+        }
         if (!Settings.canDrawOverlays(context)) return
         if (isShowing) {
             updateStep(stepIndex, statusText)
@@ -57,7 +61,7 @@ class AniobOverlayPill(
         }
 
         val params = WindowManager.LayoutParams(
-            dpToPx(MIN_TOUCH_TARGET_DP),
+            WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
@@ -155,7 +159,7 @@ class AniobOverlayPill(
                     initialY = params.y
                     initialTouchX = event.rawX
                     initialTouchY = event.rawY
-                    false
+                    true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     params.x = initialX + (event.rawX - initialTouchX).toInt()
@@ -192,11 +196,19 @@ class AniobOverlayPill(
 
     /** Narration + step for the pill body; failure variant is amber (UX-3). */
     fun updateStep(stepIndex: Int, statusText: String) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { updateStep(stepIndex, statusText) }
+            return
+        }
         statusTextView?.text = statusText
         statusTextView?.contentDescription = statusText
     }
 
     fun setPaused(paused: Boolean) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { setPaused(paused) }
+            return
+        }
         isPaused = paused
         pauseView?.text = if (paused) "▶" else "⏸"
         pauseView?.contentDescription = if (paused) "Resume task" else "Pause task"
@@ -204,6 +216,10 @@ class AniobOverlayPill(
     }
 
     fun showDoneAndDismiss() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { showDoneAndDismiss() }
+            return
+        }
         if (!isShowing || overlayContainer == null) return
         statusTextView?.text = "Done ✓"
         (statusDotView?.background as? GradientDrawable)?.setColor(Color.parseColor("#00E676"))
@@ -223,6 +239,10 @@ class AniobOverlayPill(
     }
 
     fun hide() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { hide() }
+            return
+        }
         if (isShowing && overlayContainer != null) {
             try {
                 windowManager.removeView(overlayContainer)

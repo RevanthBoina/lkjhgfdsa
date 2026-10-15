@@ -4,8 +4,8 @@ object AniobWaitForIdle {
     const val DEFAULT_IDLE_TIMEOUT_MS = 500L // Wait for no CONTENT_CHANGED for N ms
     const val ANIMATION_DISABLE = false // Could disable animations via Settings.Global
     
-    private var lastContentChangedTime = 0L
-    private var isIdle = true
+    @Volatile private var lastContentChangedTime = 0L
+    @Volatile private var isIdle = true
     
     fun onContentChanged() {
         lastContentChangedTime = System.currentTimeMillis()

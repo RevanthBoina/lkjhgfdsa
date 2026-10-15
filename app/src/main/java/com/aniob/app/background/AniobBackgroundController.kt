@@ -33,6 +33,7 @@ object AniobBackgroundController {
         AniobForegroundService.startService(context, prompt)
 
         // Status pill 2.0 (UX-3): narration + pause/stop while the user watches.
+        pill?.hide()
         pill = AniobOverlayPill(
             context = context,
             onCancelTask = { AniobForegroundService.requestStop() },

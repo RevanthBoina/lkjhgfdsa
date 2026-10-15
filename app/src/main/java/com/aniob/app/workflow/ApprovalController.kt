@@ -34,7 +34,7 @@ class ApprovalController {
     private val taskApprovals = mutableSetOf<String>()
 
     private fun approvalMemoKey(identity: OperationIdentity, what: String): String {
-        return "${identity.taskId}|${identity.generation}|${identity.actionId}|${identity.destinationKey}|${identity.approvedPayloadHash ?: ""}|$what"
+        return "${identity.taskId}|${identity.generation}|${identity.destinationKey}|${identity.approvedPayloadHash ?: ""}|$what"
     }
 
     /**
@@ -45,8 +45,10 @@ class ApprovalController {
         identity: OperationIdentity
     ): ConfirmDecision {
         val memoKey = approvalMemoKey(identity, request.what)
-        if (taskApprovals.contains(memoKey)) {
-            return ConfirmDecision.APPROVE_FOR_TASK
+        synchronized(this) {
+            if (taskApprovals.contains(memoKey)) {
+                return ConfirmDecision.APPROVE_FOR_TASK
+            }
         }
 
         val deferred = CompletableDeferred<ConfirmDecision>()

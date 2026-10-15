@@ -4,7 +4,7 @@ package com.aniob.core.providers
  * Real llama.cpp engine. Chosen over LiteRT for GGUF tool-calling models (qwen/llama/mistral)
  * where KleidiAI CPU kernels are the fastest option.
  */
-class AniobLlamaCppEngine(private val modelPath: String) : AniobNativeLlmEngine {
+class AniobLlamaCppEngine(@Volatile private var modelPath: String) : AniobNativeLlmEngine {
 
     private var nativeLoaded: Boolean = try {
         System.loadLibrary(LLAMA_LIBRARY)
@@ -16,6 +16,7 @@ class AniobLlamaCppEngine(private val modelPath: String) : AniobNativeLlmEngine 
     override fun isReady(): Boolean = nativeLoaded && java.io.File(modelPath).exists()
 
     override fun load(path: String): Boolean {
+        modelPath = path
         if (!isReady()) return false
         return try {
             nativeLoadModel(path)
@@ -36,7 +37,6 @@ class AniobLlamaCppEngine(private val modelPath: String) : AniobNativeLlmEngine 
         } catch (_: Throwable) {
             // Native layer already unloaded; nothing to release.
         }
-        nativeLoaded = false
     }
 
     // Native methods - implemented in C++ via NDK arm64-v8a only.

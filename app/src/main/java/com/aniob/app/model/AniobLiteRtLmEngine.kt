@@ -63,6 +63,7 @@ class AniobLiteRtLmEngine(
     private val sampler: SamplerConfig = SamplerConfig(topK = 64, topP = 0.95, temperature = 0.3)
 ) : AniobNativeLlmEngine {
 
+    private val engineLock = Any()
     @Volatile private var engine: Engine? = null
     @Volatile private var loadedPath: String? = null
 
@@ -75,7 +76,7 @@ class AniobLiteRtLmEngine(
      *
      * @return true when the engine is initialised and ready to generate.
      */
-    override fun load(modelPath: String): Boolean {
+    override fun load(modelPath: String): Boolean = synchronized(engineLock) {
         // Fast path: already loaded from this exact file.
         engine?.let { if (loadedPath == modelPath) return true }
 
@@ -119,7 +120,7 @@ class AniobLiteRtLmEngine(
      * ready or the call failed — matching the contract's nullable return so callers treat failure as
      * "fall back to cloud" rather than an exception.
      */
-    override fun generate(prompt: String): String? {
+    override fun generate(prompt: String): String? = synchronized(engineLock) {
         val eng = engine ?: run {
             Log.w(TAG, "generate() called before a successful load(); returning null")
             return null
@@ -145,7 +146,7 @@ class AniobLiteRtLmEngine(
     }
 
     /** Releases native model memory. Safe to call repeatedly and before any [load]. */
-    override fun release() {
+    override fun release() = synchronized(engineLock) {
         val eng = engine
         engine = null
         loadedPath = null

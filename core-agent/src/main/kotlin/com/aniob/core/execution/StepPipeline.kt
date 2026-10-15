@@ -264,7 +264,8 @@ class StepPipeline(
         return finish(
             action, proposal, nextCtx, screenAfter, resolvedNode,
             terminal, verification.reason, start, verification, reflection, liveCommand,
-            dispatched = true
+            dispatched = true,
+            learningScreen = observed
         )
     }
 
@@ -280,7 +281,8 @@ class StepPipeline(
         verification: DeterministicVerifier.VerificationResult?,
         reflection: ReflectionOutcome? = null,
         dispatch: DispatchCommand? = null,
-        dispatched: Boolean = true
+        dispatched: Boolean = true,
+        learningScreen: AniobScreenState = screen
     ): StepResult {
         val verified = verification?.isExpected == true && terminal != StepResult.TerminalState.FAIL && dispatched
         val computedTokens = (action.describeAction().length + screen.treeHash.length) / 4 + 50
@@ -300,7 +302,7 @@ class StepPipeline(
         // RECORD: one call site, verified-only for learning (failures must never distill).
         recordStep(record)
         if (verified && dispatched) {
-            learning.onVerifiedStep(nextCtx, action, screen)
+            learning.onVerifiedStep(nextCtx, action, learningScreen)
             if (terminal == StepResult.TerminalState.SUCCESS) {
                 learning.onTaskSuccess(nextCtx, nextCtx.trajectory)
             }

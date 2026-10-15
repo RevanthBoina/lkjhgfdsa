@@ -33,7 +33,7 @@ android {
       if (ksFile.exists()) {
         storeFile = ksFile
         storePassword = System.getenv("STORE_PASSWORD") ?: "android"
-        keyAlias = "upload"
+        keyAlias = System.getenv("KEY_ALIAS") ?: "upload"
         keyPassword = System.getenv("KEY_PASSWORD") ?: "android"
       } else {
         storeFile = file("${rootDir}/debug.keystore")

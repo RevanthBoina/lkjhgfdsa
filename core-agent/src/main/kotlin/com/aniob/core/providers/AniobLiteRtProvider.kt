@@ -212,7 +212,9 @@ class AniobLiteRtProvider(
         const val MODEL_UNAVAILABLE_JSON =
             """{"thought":"No local model available","tool":"fail","reason":"Local model engine unavailable - install a model in Models screen or switch to Auto mode"}"""
 
-        fun generationFailedJson(reason: String): String =
-            """{"thought":"Local generation failed","tool":"fail","reason":"$reason"}"""
+        fun generationFailedJson(reason: String): String {
+            val safeReason = reason.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ").replace("\r", "")
+            return """{"thought":"Local generation failed","tool":"fail","reason":"$safeReason"}"""
+        }
     }
 }
