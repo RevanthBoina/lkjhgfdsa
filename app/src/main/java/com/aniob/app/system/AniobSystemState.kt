@@ -127,6 +127,7 @@ class AniobSystemState(private val app: AniobApplication) {
     }
 
     fun stop() {
+        started = false
         val cm = connectivityManager ?: return
         val callback = networkCallback ?: return
         try {

@@ -21,6 +21,11 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
       - name: Run CI Preflight Guards
         run: |
           chmod +x scripts/*.sh

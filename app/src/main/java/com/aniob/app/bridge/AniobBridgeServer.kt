@@ -22,10 +22,10 @@ class AniobBridgeServer(
     private val host: String = "127.0.0.1"
 ) {
 
-    private var serverSocket: ServerSocket? = null
-    private var isRunning = false
-    private val scope = CoroutineScope(Dispatchers.IO)
-    private var activeSessionToken: String? = null
+    @Volatile private var serverSocket: ServerSocket? = null
+    @Volatile private var isRunning = false
+    private val scope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+    @Volatile private var activeSessionToken: String? = null
 
     /**
      * Host pushes the session token at session start. Requests without this token return 401.
@@ -41,7 +41,10 @@ class AniobBridgeServer(
             try {
                 // Strictly bind to 127.0.0.1, never wildcard 0.0.0.0
                 val bindAddr = InetAddress.getByName(host)
-                serverSocket = ServerSocket(port, 50, bindAddr)
+                val sock = ServerSocket()
+                sock.reuseAddress = true
+                sock.bind(java.net.InetSocketAddress(bindAddr, port), 50)
+                serverSocket = sock
                 while (isRunning) {
                     val client = serverSocket?.accept() ?: break
                     handleClient(client)
@@ -56,6 +59,7 @@ class AniobBridgeServer(
         isRunning = false
         try {
             serverSocket?.close()
+            serverSocket = null
         } catch (e: Exception) {
             // Already closed
         }
@@ -98,11 +102,12 @@ class AniobBridgeServer(
                     }
 
                     var body = ""
-                    if (contentLength > 0) {
-                        val bodyChars = CharArray(contentLength)
+                    val boundedContentLength = contentLength.coerceIn(0, 1_048_576)
+                    if (boundedContentLength > 0) {
+                        val bodyChars = CharArray(boundedContentLength)
                         var readTotal = 0
-                        while (readTotal < contentLength) {
-                            val r = reader.read(bodyChars, readTotal, contentLength - readTotal)
+                        while (readTotal < boundedContentLength) {
+                            val r = reader.read(bodyChars, readTotal, boundedContentLength - readTotal)
                             if (r == -1) break
                             readTotal += r
                         }

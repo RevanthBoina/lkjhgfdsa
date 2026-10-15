@@ -379,68 +379,76 @@ class AniobModelDownloader(private val context: Context) {
                 requestBuilder.addHeader("Range", "bytes=$downloaded-")
             }
             val client = AniobHttpClientSingleton.client
-            val response = client.newCall(requestBuilder.build()).execute()
-
-            if (!response.isSuccessful && response.code != 206) {
-                val reason = FailureReasonCopy.downloadError(response.code, model.name)
-                return@withContext Result.failure(IllegalStateException(reason))
-            }
-
-            val isPartial = response.code == 206
-            val actualStart = if (isPartial) downloaded else 0L
-            val body = response.body ?: return@withContext Result.failure(IllegalStateException("Empty response body"))
-            val remoteContentLen = body.contentLength()
-            val totalBytes = if (isPartial && remoteContentLen > 0) {
-                actualStart + remoteContentLen
-            } else if (remoteContentLen > 0) {
-                remoteContentLen
-            } else {
-                model.sizeBytes
-            }
-
-            val output = FileOutputStream(tmpFile, isPartial && downloaded > 0)
-            val input = body.byteStream()
-            val buffer = ByteArray(32768)
-            var bytesRead: Int
-            var totalRead = actualStart
-
-            try {
-                while (input.read(buffer).also { bytesRead = it } != -1) {
-                    if (cancelRequested[modelId]?.get() == true) {
-                        output.close()
-                        input.close()
-                        tmpFile.delete()
-                        _downloadProgressFlow.value = _downloadProgressFlow.value - modelId
-                        _downloadStates.value = _downloadStates.value - modelId
-                        return@withContext Result.failure(IllegalStateException("Download cancelled"))
-                    }
-                    if (pauseRequested[modelId]?.get() == true) {
-                        output.close()
-                        input.close()
-                        val resumeSize = tmpFile.length()
-                        val paused = DownloadProgress(modelId, progressOf(resumeSize, totalBytes), 0L, 0L, isPaused = true, downloadedBytes = resumeSize, totalBytes = totalBytes)
-                        _downloadProgressFlow.value = _downloadProgressFlow.value + (modelId to paused)
-                        _activeDownloads.value = _activeDownloads.value - modelId
-                        _pausedDownloads.value = _pausedDownloads.value + modelId
-                        onProgress(paused)
-                        return@withContext Result.failure(IllegalStateException("Download paused"))
-                    }
-
-                    output.write(buffer, 0, bytesRead)
-                    totalRead += bytesRead
-                    val elapsed = (System.currentTimeMillis() - startTime) / 1000L
-                    val bps = if (elapsed > 0) (totalRead - actualStart) / elapsed else 0L
-                    val remaining = (totalBytes - totalRead).coerceAtLeast(0L)
-                    val eta = if (bps > 0) remaining / bps else 0L
-                    val prog = DownloadProgress(modelId, progressOf(totalRead, totalBytes), bps, eta, downloadedBytes = totalRead, totalBytes = totalBytes)
-
-                    _downloadProgressFlow.value = _downloadProgressFlow.value + (modelId to prog)
-                    _downloadStates.value = _downloadStates.value + (modelId to prog.progress)
-                    onProgress(prog)
+            client.newCall(requestBuilder.build()).execute().use { response ->
+                if (!response.isSuccessful && response.code != 206) {
+                    val reason = FailureReasonCopy.downloadError(response.code, model.name)
+                    return@withContext Result.failure(IllegalStateException(reason))
                 }
-            } finally {
-                output.close()
-                input.close()
+
+                val isPartial = response.code == 206
+                val actualStart = if (isPartial) downloaded else 0L
+                val body = response.body ?: return@withContext Result.failure(IllegalStateException("Empty response body"))
+                val remoteContentLen = body.contentLength()
+                val totalBytes = if (isPartial && remoteContentLen > 0) {
+                    actualStart + remoteContentLen
+                } else if (remoteContentLen > 0) {
+                    remoteContentLen
+                } else {
+                    model.sizeBytes
+                }
+
+                val output = FileOutputStream(tmpFile, isPartial && downloaded > 0)
+                val input = body.byteStream()
+                val buffer = ByteArray(32768)
+                var bytesRead: Int
+                var totalRead = actualStart
+                var lastEmitTimeMs = 0L
+                var lastEmittedProgress = -1
+
+                try {
+                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                        if (cancelRequested[modelId]?.get() == true) {
+                            output.close()
+                            input.close()
+                            tmpFile.delete()
+                            _downloadProgressFlow.value = _downloadProgressFlow.value - modelId
+                            _downloadStates.value = _downloadStates.value - modelId
+                            return@withContext Result.failure(IllegalStateException("Download cancelled"))
+                        }
+                        if (pauseRequested[modelId]?.get() == true) {
+                            output.close()
+                            input.close()
+                            val resumeSize = tmpFile.length()
+                            val paused = DownloadProgress(modelId, progressOf(resumeSize, totalBytes), 0L, 0L, isPaused = true, downloadedBytes = resumeSize, totalBytes = totalBytes)
+                            _downloadProgressFlow.value = _downloadProgressFlow.value + (modelId to paused)
+                            _activeDownloads.value = _activeDownloads.value - modelId
+                            _pausedDownloads.value = _pausedDownloads.value + modelId
+                            onProgress(paused)
+                            return@withContext Result.failure(IllegalStateException("Download paused"))
+                        }
+
+                        output.write(buffer, 0, bytesRead)
+                        totalRead += bytesRead
+                        val now = System.currentTimeMillis()
+                        val pct = progressOf(totalRead, totalBytes)
+                        if (pct != lastEmittedProgress || now - lastEmitTimeMs >= 200L || totalRead >= totalBytes) {
+                            lastEmittedProgress = pct
+                            lastEmitTimeMs = now
+                            val elapsed = (now - startTime) / 1000L
+                            val bps = if (elapsed > 0) (totalRead - actualStart) / elapsed else 0L
+                            val remaining = (totalBytes - totalRead).coerceAtLeast(0L)
+                            val eta = if (bps > 0) remaining / bps else 0L
+                            val prog = DownloadProgress(modelId, pct, bps, eta, downloadedBytes = totalRead, totalBytes = totalBytes)
+
+                            _downloadProgressFlow.value = _downloadProgressFlow.value + (modelId to prog)
+                            _downloadStates.value = _downloadStates.value + (modelId to prog.progress)
+                            onProgress(prog)
+                        }
+                    }
+                } finally {
+                    output.close()
+                    input.close()
+                }
             }
 
             if (!tmpFile.exists() || tmpFile.length() == 0L) {
@@ -671,8 +679,16 @@ class AniobModelDownloader(private val context: Context) {
                         put("id", m.id)
                         put("name", m.name)
                         put("displayName", m.displayName)
-                        put("fileName", m.fileName)
+                        put("params", m.params)
                         put("sizeBytes", m.sizeBytes)
+                        put("ramRequiredGb", m.ramRequiredGb)
+                        put("minDeviceRamGb", m.minDeviceRamGb)
+                        put("repoId", m.repoId)
+                        put("fileName", m.fileName)
+                        put("bestFor", m.bestFor)
+                        put("description", m.description)
+                        put("requiresCharging", m.requiresCharging)
+                        put("customUrl", m.customUrl)
                     }
                     arr.put(obj)
                 }

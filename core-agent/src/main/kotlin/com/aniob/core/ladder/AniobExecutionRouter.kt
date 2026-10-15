@@ -89,20 +89,26 @@ class AniobExecutionRouter(
         if (trajectory != null) {
             val cachedAction = replayEngine.nextAction(trajectory, stepIndex, screenState)
             if (cachedAction != null) {
-                // If the action names an element not currently on screen, try scroll-until-found
+                // If the action names an element not currently on screen, scroll to reveal it
                 val target = cachedAction.semanticTarget()
                 if (target is SemanticTarget.SomIndex && screenState.nodes.none { it.id == target.index }) {
-                    val scrollResult = com.aniob.core.tools.AniobScrollHelper.scrollUntilFound(
-                        screenState = screenState,
-                        targetPredicate = { it.id == target.index || it.text.contains(taskPrompt, true) },
-                        taskPrompt = taskPrompt,
-                        capture = { screenState },
-                        executeSwipe = { true }
-                    )
-                    if (scrollResult.found && scrollResult.node != null) {
+                    val fallbackNode = screenState.nodes.firstOrNull {
+                        it.text.isNotBlank() && (taskPrompt.contains(it.text, ignoreCase = true) || it.text.contains(taskPrompt, ignoreCase = true))
+                    }
+                    if (fallbackNode != null) {
                         return ExecutionPlanResult.FastPathStep(
-                            action = AniobAction.Tap(SemanticTarget.SomIndex(scrollResult.node.id)),
-                            reason = "Scroll-until-found success after ${scrollResult.swipes} swipes"
+                            action = AniobAction.Tap(SemanticTarget.SomIndex(fallbackNode.id)),
+                            reason = "FastPath fallback matched node ${fallbackNode.id} by text"
+                        )
+                    }
+                    if (screenState.nodes.any { it.isScrollable }) {
+                        return ExecutionPlanResult.FastPathStep(
+                            action = AniobAction.Swipe(
+                                direction = com.aniob.core.domain.SwipeDirection.DOWN,
+                                distancePx = 600,
+                                thought = "Scroll down to reveal off-screen FastPath target ${target.index}"
+                            ),
+                            reason = "FastPath target ${target.index} off-screen; scrolling to reveal"
                         )
                     }
                 }
@@ -127,17 +133,25 @@ class AniobExecutionRouter(
                 val action = step.toAniobAction()
                 val target = action.semanticTarget()
                 if (target is SemanticTarget.SomIndex && screenState.nodes.none { it.id == target.index }) {
-                    val scrollResult = com.aniob.core.tools.AniobScrollHelper.scrollUntilFound(
-                        screenState = screenState,
-                        targetPredicate = { it.id == target.index || it.text.contains(taskPrompt, true) },
-                        taskPrompt = taskPrompt,
-                        capture = { screenState },
-                        executeSwipe = { true }
-                    )
-                    if (scrollResult.found && scrollResult.node != null) {
-                        return ExecutionPlanResult.FastPathStep(
-                            action = AniobAction.Tap(SemanticTarget.SomIndex(scrollResult.node.id)),
-                            reason = "Scroll-until-found success after ${scrollResult.swipes} swipes"
+                    val fallbackNode = screenState.nodes.firstOrNull {
+                        it.text.isNotBlank() && (taskPrompt.contains(it.text, ignoreCase = true) || it.text.contains(taskPrompt, ignoreCase = true))
+                    }
+                    if (fallbackNode != null) {
+                        return ExecutionPlanResult.SkillStepExecution(
+                            action = AniobAction.Tap(SemanticTarget.SomIndex(fallbackNode.id)),
+                            skill = skill,
+                            reason = "Skill fallback matched node ${fallbackNode.id} by text"
+                        )
+                    }
+                    if (screenState.nodes.any { it.isScrollable }) {
+                        return ExecutionPlanResult.SkillStepExecution(
+                            action = AniobAction.Swipe(
+                                direction = com.aniob.core.domain.SwipeDirection.DOWN,
+                                distancePx = 600,
+                                thought = "Scroll down to reveal off-screen skill target ${target.index}"
+                            ),
+                            skill = skill,
+                            reason = "Skill target ${target.index} off-screen; scrolling to reveal"
                         )
                     }
                 }

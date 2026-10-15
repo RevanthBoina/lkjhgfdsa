@@ -132,6 +132,7 @@ class AniobForegroundService : Service() {
 
         private fun notifyFinished(context: Context, summary: String) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+            ensureChannels(context, nm)
             val intent = Intent(context, MainActivity::class.java).apply {
                 action = Intent.ACTION_VIEW
                 data = Uri.parse("aniob://result")
@@ -221,6 +222,7 @@ class AniobForegroundService : Service() {
                 .setStyle(NotificationCompat.BigTextStyle().bigText("${request.what}\n${request.why}"))
                 .setSmallIcon(R.drawable.ic_stat_aniob)
                 .setContentIntent(fullScreenPi)
+                .setFullScreenIntent(fullScreenPi, true)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setAutoCancel(false)
                 .addAction(0, "Approve once", approvePi)

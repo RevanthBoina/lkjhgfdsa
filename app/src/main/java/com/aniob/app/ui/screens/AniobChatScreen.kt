@@ -116,9 +116,9 @@ fun AniobChatScreen(
     val listState = rememberLazyListState()
 
     // Auto-scroll to latest message
-    LaunchedEffect(uiState.chatMessages.size, uiState.streamingBubbleText) {
-        if (uiState.chatMessages.isNotEmpty()) {
-            listState.animateScrollToItem(uiState.chatMessages.size - 1)
+    LaunchedEffect(displayMessages.size, uiState.streamingBubbleText) {
+        if (displayMessages.isNotEmpty()) {
+            listState.animateScrollToItem(displayMessages.lastIndex)
         }
     }
 
@@ -653,7 +653,9 @@ fun WhatsAppChatBubble(
     val timeString = remember(message.timestamp) {
         SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.timestamp))
     }
-    val isPreflightFailure = message.badge?.contains("Pre-flight") == true
+    val isPreflightFailure = message.badge?.let {
+        it.contains("Pre-flight") || it.contains("Check Failed")
+    } == true
 
     Row(
         modifier = Modifier.fillMaxWidth(),

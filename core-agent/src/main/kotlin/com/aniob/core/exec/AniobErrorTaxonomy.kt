@@ -77,12 +77,15 @@ object AniobErrorTaxonomy {
         }
     }
     
+    @Synchronized
     fun recordError(errorClass: AniobErrorClass): Boolean {
         val count = errorCounters.getOrDefault(errorClass, 0) + 1
         errorCounters[errorClass] = count
         return count <= MAX_RETRIES_PER_CLASS // Circuit breaker per error class
     }
     
+    @Synchronized
     fun reset() { errorCounters.clear() }
+    @Synchronized
     fun getCount(errorClass: AniobErrorClass): Int = errorCounters.getOrDefault(errorClass, 0)
 }

@@ -39,7 +39,9 @@ class IncomingContentReader(private val context: Context) {
         val mimeType = intent.type ?: "text/plain"
 
         if (action == Intent.ACTION_SEND) {
-            val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.take(WorkflowLimits.TEXT_BRIEF_MAX_BYTES)
+            val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.let {
+                WorkflowPayloadStore.boundUtf8Bytes(it, WorkflowLimits.TEXT_BRIEF_MAX_BYTES)
+            }
             val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
             val uris = if (uri != null) listOf(uri) else emptyList()
             return ParsedIncomingContent(
@@ -52,7 +54,9 @@ class IncomingContentReader(private val context: Context) {
             // ACTION_SEND_MULTIPLE
             val uris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM) ?: emptyList()
             val boundedUris = uris.take(WorkflowLimits.MAX_ATTACHMENTS)
-            val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.take(WorkflowLimits.TEXT_BRIEF_MAX_BYTES)
+            val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.let {
+                WorkflowPayloadStore.boundUtf8Bytes(it, WorkflowLimits.TEXT_BRIEF_MAX_BYTES)
+            }
             return ParsedIncomingContent(
                 mimeType = mimeType,
                 text = text,
