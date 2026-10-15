@@ -120,9 +120,20 @@ object AniobPhysicalSafetyNetGate {
             }
 
             // Signal 2: Text similarity (weight 0.4)
-            val textSim = AniobFusedIndex.textSimilarity(targetNode.text, candidate.text)
-            val descSim = AniobFusedIndex.textSimilarity(targetNode.contentDescription, candidate.contentDescription)
-            val textSignal = max(textSim, descSim)
+            // Guard against blank-string inflation: two empty strings have no semantic text signal (neutral 0.3), not 1.0.
+            val hasTargetText = targetNode.text.isNotBlank() || targetNode.contentDescription.isNotBlank()
+            val hasCandText = candidate.text.isNotBlank() || candidate.contentDescription.isNotBlank()
+            val textSignal = if (!hasTargetText && !hasCandText) {
+                0.3
+            } else {
+                val textSim = if (targetNode.text.isNotBlank() || candidate.text.isNotBlank()) {
+                    AniobFusedIndex.textSimilarity(targetNode.text, candidate.text)
+                } else 0.0
+                val descSim = if (targetNode.contentDescription.isNotBlank() || candidate.contentDescription.isNotBlank()) {
+                    AniobFusedIndex.textSimilarity(targetNode.contentDescription, candidate.contentDescription)
+                } else 0.0
+                max(textSim, descSim)
+            }
 
             // Signal 3: Bounds overlap ratio (weight 0.3)
             val intersection = targetNode.bounds.intersect(candidate.bounds)
@@ -142,7 +153,9 @@ object AniobPhysicalSafetyNetGate {
             val candCenterY = candidate.centerY
             val dist = hypot((candCenterX - targetX).toDouble(), (candCenterY - targetY).toDouble())
 
-            if (score > bestScore) {
+            val isBetter = score > bestScore + 1e-6 ||
+                (kotlin.math.abs(score - bestScore) <= 1e-6 && dist < bestDistance)
+            if (isBetter) {
                 bestScore = score
                 bestIdentityScore = identityScore
                 bestCandidate = candidate

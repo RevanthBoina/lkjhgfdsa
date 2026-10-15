@@ -36,19 +36,20 @@ object AniobScreenDiff {
         currentNodes: List<AniobNode>,
         previousScreen: AniobScreenState?
     ): WaterfallResult {
-        // Compute new structural tree hash covering all observed nodes and attributes
-        val currentFingerprint = computeTreeHash(currentNodes)
-
-        // Level 1: Event-Driven Skip (0ms)
+        // Level 1: Event-Driven Skip (O(1) zero-iteration skip when previous treeHash is known)
         if (previousScreen != null && !hasAccessibilityContentChanged) {
+            val cachedHash = previousScreen.treeHash.ifBlank { computeTreeHash(currentNodes) }
             return WaterfallResult(
                 waterfallLevelUsed = 1,
                 shouldCaptureFullScreenshot = false,
                 changedRegion = null,
-                treeHash = currentFingerprint,
+                treeHash = cachedHash,
                 isIdenticalToPrevious = true
             )
         }
+
+        // Compute new structural tree hash covering all observed nodes and attributes
+        val currentFingerprint = computeTreeHash(currentNodes)
 
         // Level 2: Perceptual Tree Hash Match (0ms capture)
         if (previousScreen != null && previousScreen.treeHash == currentFingerprint) {
@@ -83,22 +84,71 @@ object AniobScreenDiff {
         )
     }
 
-    fun computeTreeHash(nodes: List<AniobNode>): String {
-        val raw = nodes.joinToString(";") {
-            "${it.id}:${it.className}:${it.text}:${it.contentDescription}:${it.viewId}:${it.bounds.left},${it.bounds.top},${it.bounds.right},${it.bounds.bottom}:${it.isEnabled}:${it.isClickable}"
+    private const val FNV_OFFSET_BASIS = -0x340d631b7bdddcdbL // 0xcbf29ce484222325UL
+    private const val FNV_PRIME = 0x100000001b3L
+
+    private fun fnvMixString(hash: Long, s: String): Long {
+        var h = hash
+        for (i in 0 until s.length) {
+            h = (h xor s[i].code.toLong()) * FNV_PRIME
         }
-        return raw.hashCode().toString(16)
+        return (h xor 0xFFL) * FNV_PRIME
+    }
+
+    private fun fnvMixInt(hash: Long, v: Int): Long =
+        ((hash xor v.toLong()) * FNV_PRIME)
+
+    private fun fnvMixBoolean(hash: Long, b: Boolean): Long =
+        ((hash xor (if (b) 1L else 0L)) * FNV_PRIME)
+
+    /**
+     * Zero-allocation 64-bit FNV-1a streaming structural tree hash.
+     * Eliminates multi-KB joinToString allocations and reduces collision probability from 2^-32 to 2^-64.
+     */
+    fun computeTreeHash(nodes: List<AniobNode>): String {
+        var h = FNV_OFFSET_BASIS
+        for (node in nodes) {
+            h = fnvMixInt(h, node.id)
+            h = fnvMixString(h, node.className)
+            h = fnvMixString(h, node.text)
+            h = fnvMixString(h, node.contentDescription)
+            h = fnvMixString(h, node.viewId)
+            h = fnvMixInt(h, node.bounds.left)
+            h = fnvMixInt(h, node.bounds.top)
+            h = fnvMixInt(h, node.bounds.right)
+            h = fnvMixInt(h, node.bounds.bottom)
+            h = fnvMixBoolean(h, node.isEnabled)
+            h = fnvMixBoolean(h, node.isClickable)
+            h = fnvMixBoolean(h, node.isSelected)
+            h = fnvMixBoolean(h, node.isChecked)
+        }
+        return java.lang.Long.toUnsignedString(h, 16)
+    }
+
+    private fun nodeSignatureHash(n: AniobNode): Long {
+        var h = FNV_OFFSET_BASIS
+        h = fnvMixString(h, n.viewId)
+        h = fnvMixString(h, n.className)
+        h = fnvMixString(h, n.text)
+        h = fnvMixString(h, n.contentDescription)
+        h = fnvMixInt(h, n.bounds.left)
+        h = fnvMixInt(h, n.bounds.top)
+        h = fnvMixInt(h, n.bounds.right)
+        h = fnvMixInt(h, n.bounds.bottom)
+        h = fnvMixBoolean(h, n.isSelected)
+        h = fnvMixBoolean(h, n.isChecked)
+        return h
     }
 
     private fun computeChangedRegion(
         oldNodes: List<AniobNode>,
         newNodes: List<AniobNode>
     ): AniobRect? {
-        fun nodeSignature(n: AniobNode): String =
-            "${n.viewId}:${n.className}:${n.text}:${n.contentDescription}:${n.bounds.left},${n.bounds.top},${n.bounds.right},${n.bounds.bottom}:${n.isChecked}"
+        val oldSignatures = HashSet<Long>(oldNodes.size * 2)
+        for (n in oldNodes) oldSignatures.add(nodeSignatureHash(n))
 
-        val oldSignatures = oldNodes.mapTo(mutableSetOf()) { nodeSignature(it) }
-        val newSignatures = newNodes.mapTo(mutableSetOf()) { nodeSignature(it) }
+        val newSignatures = HashSet<Long>(newNodes.size * 2)
+        for (n in newNodes) newSignatures.add(nodeSignatureHash(n))
 
         var minL = Int.MAX_VALUE
         var minT = Int.MAX_VALUE
@@ -107,7 +157,7 @@ object AniobScreenDiff {
         var anyDiff = false
 
         for (node in newNodes) {
-            if (nodeSignature(node) !in oldSignatures && !node.bounds.isEmpty) {
+            if (!oldSignatures.contains(nodeSignatureHash(node)) && !node.bounds.isEmpty) {
                 anyDiff = true
                 minL = minOf(minL, node.bounds.left)
                 minT = minOf(minT, node.bounds.top)
@@ -117,7 +167,7 @@ object AniobScreenDiff {
         }
 
         for (node in oldNodes) {
-            if (nodeSignature(node) !in newSignatures && !node.bounds.isEmpty) {
+            if (!newSignatures.contains(nodeSignatureHash(node)) && !node.bounds.isEmpty) {
                 anyDiff = true
                 minL = minOf(minL, node.bounds.left)
                 minT = minOf(minT, node.bounds.top)

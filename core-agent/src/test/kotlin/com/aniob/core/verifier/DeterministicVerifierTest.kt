@@ -154,4 +154,29 @@ class DeterministicVerifierTest {
         assertTrue(inputRes.isExpected)
         assertEquals("hello", inputRes.textEvidence)
     }
+
+    @Test
+    fun `input text verifies when som index shifts due to newly inserted sibling`() {
+        val searchBoxBefore = AniobNode(
+            id = 1,
+            className = "android.widget.EditText",
+            text = "",
+            viewId = "com.app:id/search_input",
+            bounds = AniobRect(20, 100, 800, 180),
+            isEditable = true
+        )
+        val before = AniobScreenState(packageName = "com.app", treeHash = "h1", nodes = listOf(searchBoxBefore))
+
+        // After typing, a banner appears at id=1 and the search EditText shifts to id=2
+        val bannerNode = AniobNode(id = 1, className = "android.widget.TextView", text = "Suggestions", bounds = AniobRect(0, 0, 800, 80))
+        val searchBoxAfter = searchBoxBefore.copy(id = 2, text = "Wi-Fi settings")
+        val after = AniobScreenState(packageName = "com.app", treeHash = "h2", nodes = listOf(bannerNode, searchBoxAfter))
+
+        val res = DeterministicVerifier.verify(
+            AniobAction.InputText(SemanticTarget.SomIndex(1), text = "Wi-Fi"),
+            before,
+            after
+        )
+        assertTrue("Shifted editable node with matching viewId/bounds must verify", res.isExpected)
+    }
 }
