@@ -340,9 +340,14 @@ class AniobForegroundService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_PAUSE -> {
-                isPaused = !isPaused
-                onPauseToggleFromNotification?.invoke()
-                refreshNotification()
+                val toggleHandler = onPauseToggleFromNotification
+                if (toggleHandler != null) {
+                    // ViewModel.togglePause() flips pauseRequested and calls setPaused(pauseRequested)
+                    toggleHandler.invoke()
+                } else {
+                    isPaused = !isPaused
+                    refreshNotification()
+                }
                 return START_STICKY
             }
             ACTION_CONFIRM_APPROVE -> {

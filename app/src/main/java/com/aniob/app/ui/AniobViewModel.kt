@@ -1701,6 +1701,18 @@ class AniobViewModel(
                     targetBounds = stepRecord.targetBounds
                 )
                 addStepRecord(uiStep)
+                if (stepRecord.blockedBySafety && !stepRecord.blockedFingerprint.isNullOrBlank()) {
+                    val fp = stepRecord.blockedFingerprint
+                    taskBlockedFingerprints.add(fp)
+                    val record = BlockedRecord(
+                        fingerprint = fp,
+                        rule = stepRecord.failureReason ?: "Blocked by safety interceptor",
+                        at = com.aniob.core.safety.AniobSafetyInterceptor.getBlockedFingerprintTimestamp(fp)
+                    )
+                    blockedRecords.removeAll { it.fingerprint == fp }
+                    blockedRecords.add(0, record)
+                    _uiState.update { it.copy(blockedActions = blockedRecords.toList()) }
+                }
             },
             settle = { _, capture ->
                 AniobWaitForIdle.waitForIdle(1000)
@@ -1832,7 +1844,12 @@ class AniobViewModel(
                         primaryProvider = "SKILL"
                         decisionReason = ladderResult.reason
                         _uiState.update { it.copy(statusMessage = "Executing Skill '${ladderResult.skill.name}' step ${currentStep + 1}...") }
-                        proposal = StepPipeline.Proposal.Skill(ladderResult.action, skillName = ladderResult.skill.name)
+                        proposal = StepPipeline.Proposal.Skill(
+                            action = ladderResult.action,
+                            skillName = ladderResult.skill.name,
+                            riskTier = ladderResult.skill.riskTier,
+                            requiresConfirmation = ladderResult.skill.confirmationRequired
+                        )
                         targetNode = ladderResult.action.semanticTarget()?.let {
                             com.aniob.core.execution.AniobActionExecutor.resolveTarget(ladderResult.action, currentScreen)?.node
                         }
@@ -1909,7 +1926,7 @@ class AniobViewModel(
                                 systemPrompt,
                                 activePrompt
                             )
-                            totalTokens += 80
+                            totalTokens += ((systemPrompt.length + activePrompt.length) / 4).coerceAtLeast(80)
                             val structured = AniobLocalActionResolver.resolveStructured(gen, currentScreen)
                             if (structured.usedFallback) {
                                 app.eventLogger.warn("AniobViewModel", "Local SLM produced no schema-valid action: ${structured.reason}")
@@ -1940,13 +1957,15 @@ class AniobViewModel(
                                 }
                             } else null
                             val raw = omniroute.getNextActionRaw(systemPrompt, activePrompt, screenshotBase64)
-                            totalTokens += 150
+                            totalTokens += ((systemPrompt.length + activePrompt.length) / 4).coerceAtLeast(150)
                             raw.fold(
                                 onSuccess = { text ->
+                                    totalTokens += (text.length / 4).coerceAtLeast(1)
+                                    val executorDecode = AniobDecodeConfig.forRole(AniobDecodeConfig.Role.EXECUTOR)
                                     var structured = AniobStructuredOutput.parseOrRepair(
                                         raw = text,
                                         screenState = currentScreen,
-                                        decode = AniobDecodeConfig.forRole(AniobDecodeConfig.Role.PLANNER)
+                                        decode = executorDecode
                                     )
                                     if (structured.usedFallback) {
                                         val repairMsg = "${AniobStructuredOutput.repairPrompt(text)}\n\nOriginal Request:\n$executorPrompt"
@@ -1958,10 +1977,11 @@ class AniobViewModel(
                                             ).getOrNull()
                                         }.getOrNull()
                                         if (repaired != null) {
+                                            totalTokens += ((repairMsg.length + repaired.length) / 4).coerceAtLeast(1)
                                             structured = AniobStructuredOutput.parseOrRepair(
                                                 raw = repaired,
                                                 screenState = currentScreen,
-                                                decode = AniobDecodeConfig.forRole(AniobDecodeConfig.Role.PLANNER)
+                                                decode = executorDecode
                                             )
                                         }
                                     }
@@ -2037,13 +2057,22 @@ class AniobViewModel(
                 }
 
                 val confirmLambda: suspend (String) -> Boolean = { actionDesc ->
+                    val consequence = com.aniob.core.safety.AniobConsequenceClassifier.classify(proposal.action, targetNode)
+                    val humanWhat = StepNarration.narrate(proposal.action, targetNode).take(80)
+                    val humanWhy = consequence.confirmQuestion ?: "Action requires user confirmation"
+                    val skillRiskTier = (proposal as? StepPipeline.Proposal.Skill)?.riskTier ?: "MEDIUM"
+                    val computedRisk = if (consequence.reversibility == com.aniob.core.safety.AniobConsequenceClassifier.Reversibility.IRREVERSIBLE) {
+                        ConfirmRequest.Risk.HIGH
+                    } else {
+                        riskFromTier(skillRiskTier, _uiState.value.safetyLevel)
+                    }
                     val confirmReq = buildConfirmRequest(
-                        what = proposal.action.toString().take(80),
-                        why = "Action requires user confirmation",
-                        risk = ConfirmRequest.Risk.HIGH,
+                        what = humanWhat,
+                        why = humanWhy,
+                        risk = computedRisk,
                         details = actionDesc,
                         taskId = task.id,
-                        payload = proposal.action.toString(),
+                        payload = proposal.action.describeAction(),
                         target = targetNode?.text?.take(40) ?: ""
                     )
                     val decision = requestConfirmation(confirmReq)
@@ -2244,7 +2273,8 @@ class AniobViewModel(
                     TaskContext(
                         instruction = task.rawPrompt,
                         successCriteria = resolvedCriteria,
-                        taskId = task.id
+                        taskId = task.id,
+                        lastScreenState = finalScreen
                     ),
                     trajectory
                 )
@@ -2483,6 +2513,18 @@ class AniobViewModel(
         postSummaryCard(stoppedSummary)
         AniobBackgroundController.onTaskFinished(app, "Stopped by user", isSuccess = false)
         updateToIdle { it.copy(statusMessage = "Stopped. Earlier changes were not undone.") }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        app.onMemoryTrimListener = null
+        AniobAccessibilityService.onServiceLost = null
+        AniobForegroundService.onStopRequestedFromNotification = null
+        AniobForegroundService.onPauseToggleFromNotification = null
+        AniobForegroundService.onConfirmDecisionWithIds = null
+        pendingConfirmation?.complete(ConfirmDecision.DENY)
+        pendingConfirmation = null
+        runCatching { localLlmProvider.release() }
     }
 
     companion object {

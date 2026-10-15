@@ -149,7 +149,10 @@ object AniobSafetyInterceptor {
             )
         }
 
-        return InterceptResult(isAllowed = true, reason = "Allowed", riskTier = "LOW")
+        // 5. Plan-7.8 Consequence & Reversibility Classifier on resolved target label
+        val baseResult = InterceptResult(isAllowed = true, reason = "Allowed", riskTier = "LOW")
+        val consequenceAssessment = AniobConsequenceClassifier.classify(action, targetNode)
+        return AniobConsequenceClassifier.mergeWithInterceptor(baseResult, consequenceAssessment)
     }
 
     @Synchronized

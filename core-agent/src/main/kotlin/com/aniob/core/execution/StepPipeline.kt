@@ -54,7 +54,12 @@ class StepPipeline(
             override val providerLabel: String = "FASTPATH"
         }
 
-        data class Skill(override val action: AniobAction, val skillName: String = "") : Proposal {
+        data class Skill(
+            override val action: AniobAction,
+            val skillName: String = "",
+            val riskTier: String = "LOW",
+            val requiresConfirmation: Boolean = false
+        ) : Proposal {
             override val providerLabel: String = "SKILL"
         }
 
@@ -98,7 +103,9 @@ class StepPipeline(
         val latencyMs: Long,
         val tokensUsed: Int,
         val textEvidence: String? = null,
-        val targetBounds: AniobRect? = resolvedNode?.bounds
+        val targetBounds: AniobRect? = resolvedNode?.bounds,
+        val blockedBySafety: Boolean = false,
+        val blockedFingerprint: String? = null
     )
 
     suspend fun executeStep(
@@ -162,11 +169,14 @@ class StepPipeline(
 
         // GATE: safety sees the *resolved node*, not a substring of toString()
         val resolvedNode = targetNode ?: AniobActionExecutor.resolveTarget(action, observed)?.node
+        val skillProposal = proposal as? Proposal.Skill
         val intercept = AniobSafetyInterceptor.evaluateAction(
             action = action,
             targetNode = resolvedNode,
             screenState = observed,
-            screenFingerprint = observed.treeHash
+            screenFingerprint = observed.treeHash,
+            skillRisk = skillProposal?.riskTier,
+            skillRequiresConfirmation = skillProposal?.requiresConfirmation == true
         )
         if (!intercept.isAllowed) {
             val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, NeutralWordingContract.neutralize("blocked before execution: ${intercept.reason}"))
@@ -174,7 +184,9 @@ class StepPipeline(
             return finish(
                 action, proposal, nextCtx, observed, resolvedNode,
                 StepResult.TerminalState.FAIL, intercept.reason, start,
-                verification = null, dispatched = false
+                verification = null, dispatched = false,
+                blockedBySafety = true,
+                blockedFingerprint = observed.treeHash.takeIf { it.isNotBlank() }
             )
         }
 
@@ -337,7 +349,9 @@ class StepPipeline(
         reflection: ReflectionOutcome? = null,
         dispatch: DispatchCommand? = null,
         dispatched: Boolean = true,
-        learningScreen: AniobScreenState = screen
+        learningScreen: AniobScreenState = screen,
+        blockedBySafety: Boolean = false,
+        blockedFingerprint: String? = null
     ): StepResult {
         val verified = verification?.isExpected == true && terminal != StepResult.TerminalState.FAIL && dispatched
         val computedTokens = (action.describeAction().length + screen.treeHash.length) / 4 + 50
@@ -352,7 +366,9 @@ class StepPipeline(
             latencyMs = System.currentTimeMillis() - start,
             tokensUsed = computedTokens,
             textEvidence = verification?.textEvidence,
-            targetBounds = resolvedNode?.bounds
+            targetBounds = resolvedNode?.bounds,
+            blockedBySafety = blockedBySafety,
+            blockedFingerprint = blockedFingerprint
         )
         // RECORD: one call site, verified-only for learning (failures must never distill).
         recordStep(record)

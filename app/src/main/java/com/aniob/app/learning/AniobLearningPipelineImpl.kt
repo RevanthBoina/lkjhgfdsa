@@ -70,10 +70,11 @@ class AniobLearningPipelineImpl(
         )
         replayEngine.registerTrajectory(replayTrajectory)
 
+        val inMemCount = signatureCounts.merge(signature, 1, Int::plus) ?: 1
         val persistedCount = runCatching {
             kotlinx.coroutines.runBlocking {
                 val existing = database.appKnowledgeBaseDao().findBySignature(signature)
-                val nextCount = (existing?.successCount ?: 0) + 1
+                val nextCount = maxOf(inMemCount, (existing?.successCount ?: 0) + 1)
                 database.appKnowledgeBaseDao().saveMacro(
                     AppKnowledgeBaseEntity(
                         taskSignature = signature,
@@ -84,9 +85,10 @@ class AniobLearningPipelineImpl(
                 )
                 nextCount
             }
-        }.getOrDefault(1)
+        }.getOrDefault(inMemCount)
 
-        val count = signatureCounts.merge(signature, 1, Int::plus)?.coerceAtLeast(persistedCount) ?: persistedCount
+        val count = maxOf(inMemCount, persistedCount)
+        signatureCounts[signature] = count
 
         // 2. Distill candidacy: three matching verified runs are the threshold for a skill draft.
         if (count >= DISTILL_THRESHOLD) {

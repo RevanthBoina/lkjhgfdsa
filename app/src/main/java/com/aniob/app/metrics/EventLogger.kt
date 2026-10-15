@@ -15,7 +15,7 @@ import kotlinx.coroutines.launch
  * only — never the raw user utterance (mirrors AniobXLog's mandate).
  */
 class EventLogger(private val database: AniobDatabase) {
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val scope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
 
     /** BrowserUse-style append-only trajectory for the current task (in-memory, privacy-safe). */
     data class TrajectoryStep(
@@ -37,7 +37,7 @@ class EventLogger(private val database: AniobDatabase) {
         private const val MAX_PERSISTED_LOGS = 1000
     }
 
-    private val trajectory = mutableListOf<TrajectoryStep>()
+    private val trajectory = ArrayDeque<TrajectoryStep>(MAX_TRAJECTORY_CAPACITY + 1)
     private val insertCount = java.util.concurrent.atomic.AtomicInteger(0)
 
     fun info(tag: String, message: String) = log("INFO", tag, message)
@@ -47,10 +47,10 @@ class EventLogger(private val database: AniobDatabase) {
 
     @Synchronized
     fun logStep(step: TrajectoryStep) {
-        if (trajectory.size >= MAX_TRAJECTORY_CAPACITY) {
-            trajectory.removeAt(0)
+        if (trajectory.size >= MAX_TRAJECTORY_CAPACITY && trajectory.isNotEmpty()) {
+            trajectory.removeFirst()
         }
-        trajectory.add(step)
+        trajectory.addLast(step)
         // Privacy: never store raw user text. Sensitive gates are referenced only via
         // categorical audit entries (stepIndex + targetPackage), not the raw message.
         if (step.action is AniobAction.ConfirmWithUser) {

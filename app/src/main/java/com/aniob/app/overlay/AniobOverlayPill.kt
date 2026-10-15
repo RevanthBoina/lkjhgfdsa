@@ -123,9 +123,13 @@ class AniobOverlayPill(
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(dpToPx(MIN_TOUCH_TARGET_DP), dpToPx(MIN_TOUCH_TARGET_DP))
             setOnClickListener {
-                isPaused = !isPaused
-                setPaused(isPaused)
-                onPauseToggle?.invoke()
+                // Delegate to ViewModel (single source of truth), which calls setPaused() back
+                val handler = onPauseToggle
+                if (handler != null) {
+                    handler.invoke()
+                } else {
+                    setPaused(!isPaused)
+                }
             }
         }
         pauseView = pause

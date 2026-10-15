@@ -18,6 +18,18 @@ object AniobSkillCodec {
     private val VALID_DIRECTIONS = setOf("UP", "DOWN", "LEFT", "RIGHT")
     private val VALID_KEYS = setOf("BACK", "HOME", "ENTER")
 
+    private val TRIGGERS_BLOCK_REGEX = Regex("\"triggers\"\\s*:\\s*\\[([^\\]]*)\\]")
+    private val QUOTED_STRING_REGEX = Regex("\"([^\"]*)\"")
+    private val SLOTS_BLOCK_REGEX = Regex("\"slots\"\\s*:\\s*\\{([^}]*)\\}")
+    private val KEY_VALUE_PAIR_REGEX = Regex("\"([^\"]*)\"\\s*:\\s*\"([^\"]*)\"")
+    private val STEPS_BLOCK_REGEX = Regex("\"steps\"\\s*:\\s*\\[(.*)\\]\\s*\\}\\s*$", RegexOption.DOT_MATCHES_ALL)
+    private val STEP_OBJECT_REGEX = Regex("\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\}")
+    private val TARGET_OBJ_REGEX = Regex("\"target\"\\s*:\\s*(\\{[^{}]*\\})")
+
+    private val strFieldRegexCache = java.util.concurrent.ConcurrentHashMap<String, Regex>()
+    private val numFieldRegexCache = java.util.concurrent.ConcurrentHashMap<String, Regex>()
+    private val boolFieldRegexCache = java.util.concurrent.ConcurrentHashMap<String, Regex>()
+
     fun stripQuotes(s: String): String = s.trim().removeSurrounding("\"").removeSurrounding("'").trim()
 
     /**
@@ -354,20 +366,20 @@ object AniobSkillCodec {
         val intentPattern = strVal(json, "intent_pattern") ?: ""
 
         val triggers = mutableListOf<String>()
-        val triggerBlock = Regex("\"triggers\"\\s*:\\s*\\[([^\\]]*)\\]").find(json)?.groupValues?.get(1).orEmpty()
-        Regex("\"([^\"]*)\"").findAll(triggerBlock).forEach { m ->
+        val triggerBlock = TRIGGERS_BLOCK_REGEX.find(json)?.groupValues?.get(1).orEmpty()
+        QUOTED_STRING_REGEX.findAll(triggerBlock).forEach { m ->
             triggers.add(m.groupValues[1].lowercase())
         }
 
         val slots = mutableMapOf<String, String>()
-        val slotsBlock = Regex("\"slots\"\\s*:\\s*\\{([^}]*)\\}").find(json)?.groupValues?.get(1).orEmpty()
-        Regex("\"([^\"]*)\"\\s*:\\s*\"([^\"]*)\"").findAll(slotsBlock).forEach { m ->
+        val slotsBlock = SLOTS_BLOCK_REGEX.find(json)?.groupValues?.get(1).orEmpty()
+        KEY_VALUE_PAIR_REGEX.findAll(slotsBlock).forEach { m ->
             slots[m.groupValues[1]] = m.groupValues[2]
         }
 
         val steps = mutableListOf<SkillStep>()
-        val stepsBlock = Regex("\"steps\"\\s*:\\s*\\[(.*)\\]\\s*\\}\\s*$", RegexOption.DOT_MATCHES_ALL).find(json)?.groupValues?.get(1).orEmpty()
-        val stepObjects = Regex("\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\}").findAll(stepsBlock)
+        val stepsBlock = STEPS_BLOCK_REGEX.find(json)?.groupValues?.get(1).orEmpty()
+        val stepObjects = STEP_OBJECT_REGEX.findAll(stepsBlock)
 
         for (m in stepObjects) {
             val stepJson = m.value
@@ -389,7 +401,7 @@ object AniobSkillCodec {
             val key = strVal(stepJson, "key")
             val targetId = intVal(stepJson, "target_id")
 
-            val targetObj = Regex("\"target\"\\s*:\\s*(\\{[^{}]*\\})").find(stepJson)?.groupValues?.get(1)
+            val targetObj = TARGET_OBJ_REGEX.find(stepJson)?.groupValues?.get(1)
             val target = targetObj?.let { parseTargetObj(it) }
 
             // Validate
@@ -457,16 +469,20 @@ object AniobSkillCodec {
     }
 
     private fun strVal(json: String, field: String): String? =
-        Regex("\"$field\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").find(json)?.groupValues?.get(1)?.let { unesc(it) }
+        strFieldRegexCache.getOrPut(field) { Regex("\"${Regex.escape(field)}\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"") }
+            .find(json)?.groupValues?.get(1)?.let { unesc(it) }
 
     private fun intVal(json: String, field: String): Int? =
-        Regex("\"$field\"\\s*:\\s*(-?\\d+)").find(json)?.groupValues?.get(1)?.toIntOrNull()
+        numFieldRegexCache.getOrPut(field) { Regex("\"${Regex.escape(field)}\"\\s*:\\s*(-?\\d+)") }
+            .find(json)?.groupValues?.get(1)?.toIntOrNull()
 
     private fun longVal(json: String, field: String): Long? =
-        Regex("\"$field\"\\s*:\\s*(-?\\d+)").find(json)?.groupValues?.get(1)?.toLongOrNull()
+        numFieldRegexCache.getOrPut(field) { Regex("\"${Regex.escape(field)}\"\\s*:\\s*(-?\\d+)") }
+            .find(json)?.groupValues?.get(1)?.toLongOrNull()
 
     private fun boolVal(json: String, field: String): Boolean? =
-        Regex("\"$field\"\\s*:\\s*(true|false)").find(json)?.groupValues?.get(1)?.toBooleanStrictOrNull()
+        boolFieldRegexCache.getOrPut(field) { Regex("\"${Regex.escape(field)}\"\\s*:\\s*(true|false)") }
+            .find(json)?.groupValues?.get(1)?.toBooleanStrictOrNull()
 
     private fun esc(s: String): String =
         s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "")
