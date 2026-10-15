@@ -14,9 +14,11 @@ data class EgressEvent(
 )
 
 object AniobEgressLedger {
+    private const val MAX_LEDGER_EVENTS = 500
     private val _events = MutableStateFlow<List<EgressEvent>>(emptyList())
     val events: StateFlow<List<EgressEvent>> = _events.asStateFlow()
 
+    @Synchronized
     fun record(provider: String, model: String, promptChars: Int, completionChars: Int, latencyMs: Long) {
         val event = EgressEvent(
             provider = provider,
@@ -25,12 +27,19 @@ object AniobEgressLedger {
             completionChars = completionChars,
             latencyMs = latencyMs
         )
-        _events.value = _events.value + event
+        val current = _events.value
+        _events.value = if (current.size >= MAX_LEDGER_EVENTS) {
+            current.drop(current.size - MAX_LEDGER_EVENTS + 1) + event
+        } else {
+            current + event
+        }
     }
 
     fun getTotalEgressCount(): Int = _events.value.size
     fun getTotalPromptChars(): Int = _events.value.sumOf { it.promptChars }
     fun getTotalCompletionChars(): Int = _events.value.sumOf { it.completionChars }
+
+    @Synchronized
     fun clear() {
         _events.value = emptyList()
     }

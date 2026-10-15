@@ -76,6 +76,13 @@ class TerminationStage {
         requests += request
     }
 
+    /** Resets the stage before starting a new task run. */
+    @Synchronized
+    fun reset() {
+        requests.clear()
+        terminated = false
+    }
+
     /**
      * Ends the run. Idempotent — a second call returns the same outcome rather than running the
      * safe-stop contract twice, because dismissing a dialog the user has since reopened is worse

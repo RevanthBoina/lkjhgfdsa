@@ -67,103 +67,104 @@ class AniobBridgeServer(
 
     private fun handleClient(socket: Socket) {
         scope.launch {
-            try {
-                val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
-                val writer = PrintWriter(socket.getOutputStream(), true)
+            socket.use { client ->
+                try {
+                    client.soTimeout = 5_000
+                    val reader = BufferedReader(InputStreamReader(client.getInputStream()))
+                    val writer = PrintWriter(client.getOutputStream(), true)
 
-                val firstLine = reader.readLine().orEmpty()
-                if (firstLine.isBlank()) {
-                    socket.close()
-                    return@launch
-                }
+                    val firstLine = reader.readLine().orEmpty()
+                    if (firstLine.isBlank()) {
+                        return@use
+                    }
 
-                val responseStr: String
-                if (firstLine.startsWith("GET ") || firstLine.startsWith("POST ")) {
-                    // HTTP-style request
-                    val parts = firstLine.split(" ")
-                    val fullPath = parts.getOrNull(1).orEmpty()
-                    val pathAndQuery = fullPath.split("?", limit = 2)
-                    val path = pathAndQuery[0]
-                    val query = pathAndQuery.getOrNull(1)
+                    val responseStr: String
+                    if (firstLine.startsWith("GET ") || firstLine.startsWith("POST ")) {
+                        // HTTP-style request
+                        val parts = firstLine.split(" ")
+                        val fullPath = parts.getOrNull(1).orEmpty()
+                        val pathAndQuery = fullPath.split("?", limit = 2)
+                        val path = pathAndQuery[0]
+                        val query = pathAndQuery.getOrNull(1)
 
-                    var headerToken: String? = null
-                    var contentLength = 0
-                    var line: String? = reader.readLine()
-                    while (!line.isNullOrEmpty()) {
-                        val lower = line.lowercase()
-                        if (lower.startsWith("x-session-token:")) {
-                            headerToken = line.substringAfter(":").trim()
-                        } else if (lower.startsWith("authorization: bearer ")) {
-                            headerToken = line.substringAfter("Bearer ").trim()
-                        } else if (lower.startsWith("content-length:")) {
-                            contentLength = line.substringAfter(":").trim().toIntOrNull() ?: 0
+                        var headerToken: String? = null
+                        var contentLength = 0
+                        var line: String? = reader.readLine()
+                        while (!line.isNullOrEmpty()) {
+                            val lower = line.lowercase()
+                            if (lower.startsWith("x-session-token:")) {
+                                headerToken = line.substringAfter(":").trim()
+                            } else if (lower.startsWith("authorization: bearer ")) {
+                                headerToken = line.substringAfter("Bearer ").trim()
+                            } else if (lower.startsWith("content-length:")) {
+                                contentLength = line.substringAfter(":").trim().toIntOrNull() ?: 0
+                            }
+                            line = reader.readLine()
                         }
-                        line = reader.readLine()
-                    }
 
-                    var body = ""
-                    val boundedContentLength = contentLength.coerceIn(0, 1_048_576)
-                    if (boundedContentLength > 0) {
-                        val bodyChars = CharArray(boundedContentLength)
-                        var readTotal = 0
-                        while (readTotal < boundedContentLength) {
-                            val r = reader.read(bodyChars, readTotal, boundedContentLength - readTotal)
-                            if (r == -1) break
-                            readTotal += r
+                        var body = ""
+                        val boundedContentLength = contentLength.coerceIn(0, 1_048_576)
+                        if (boundedContentLength > 0) {
+                            val bodyChars = CharArray(boundedContentLength)
+                            var readTotal = 0
+                            while (readTotal < boundedContentLength) {
+                                val r = reader.read(bodyChars, readTotal, boundedContentLength - readTotal)
+                                if (r == -1) break
+                                readTotal += r
+                            }
+                            body = String(bodyChars, 0, readTotal)
                         }
-                        body = String(bodyChars, 0, readTotal)
-                    }
 
-                    val queryToken = query?.split("&")?.firstOrNull { it.startsWith("token=") }?.substringAfter("token=")
-                    val bodyJson = try { if (body.isNotBlank()) JSONObject(body) else null } catch (_: Exception) { null }
-                    val bodyToken = bodyJson?.optString("token")
+                        val queryToken = query?.split("&")?.firstOrNull { it.startsWith("token=") }?.substringAfter("token=")
+                        val bodyJson = try { if (body.isNotBlank()) JSONObject(body) else null } catch (_: Exception) { null }
+                        val bodyToken = bodyJson?.optString("token")
 
-                    val token = headerToken ?: queryToken ?: (if (!bodyToken.isNullOrBlank()) bodyToken else null)
-                    val isPing = path.equals("/ping", ignoreCase = true) || bodyJson?.optString("cmd") == "PING"
+                        val token = headerToken ?: queryToken ?: (if (!bodyToken.isNullOrBlank()) bodyToken else null)
+                        val isPing = path.equals("/ping", ignoreCase = true) || bodyJson?.optString("cmd") == "PING"
 
-                    if (isPing) {
-                        val jsonResp = JSONObject().apply {
-                            put("status", "OK")
-                            put("service_connected", AniobAccessibilityService.isServiceConnected)
-                        }.toString()
-                        responseStr = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n$jsonResp"
-                    } else if (!validateToken(token)) {
-                        val jsonResp = JSONObject().apply {
-                            put("status", "UNAUTHORIZED")
-                            put("error", "401 Unauthorized: Valid session token required")
-                        }.toString()
-                        responseStr = "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\n\r\n$jsonResp"
+                        if (isPing) {
+                            val jsonResp = JSONObject().apply {
+                                put("status", "OK")
+                                put("service_connected", AniobAccessibilityService.isServiceConnected)
+                            }.toString()
+                            responseStr = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n$jsonResp"
+                        } else if (!validateToken(token)) {
+                            val jsonResp = JSONObject().apply {
+                                put("status", "UNAUTHORIZED")
+                                put("error", "401 Unauthorized: Valid session token required")
+                            }.toString()
+                            responseStr = "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\n\r\n$jsonResp"
+                        } else {
+                            val jsonResp = processCommand(path, bodyJson)
+                            responseStr = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n$jsonResp"
+                        }
                     } else {
-                        val jsonResp = processCommand(path, bodyJson)
-                        responseStr = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n$jsonResp"
-                    }
-                } else {
-                    // Raw JSON protocol
-                    val json = try { JSONObject(firstLine) } catch (_: Exception) { null }
-                    val cmd = json?.optString("cmd", "STATUS") ?: "UNKNOWN"
-                    val token = json?.optString("token")
+                        // Raw JSON protocol
+                        val json = try { JSONObject(firstLine) } catch (_: Exception) { null }
+                        val cmd = json?.optString("cmd", "STATUS") ?: "UNKNOWN"
+                        val token = json?.optString("token")
 
-                    val isPing = cmd.equals("PING", ignoreCase = true)
-                    if (isPing) {
-                        responseStr = JSONObject().apply {
-                            put("status", "OK")
-                            put("service_connected", AniobAccessibilityService.isServiceConnected)
-                        }.toString()
-                    } else if (!validateToken(token)) {
-                        responseStr = JSONObject().apply {
-                            put("status", "UNAUTHORIZED")
-                            put("code", 401)
-                            put("message", "401 Unauthorized: Valid session token required")
-                        }.toString()
-                    } else {
-                        responseStr = processCommand(cmd, json)
+                        val isPing = cmd.equals("PING", ignoreCase = true)
+                        if (isPing) {
+                            responseStr = JSONObject().apply {
+                                put("status", "OK")
+                                put("service_connected", AniobAccessibilityService.isServiceConnected)
+                            }.toString()
+                        } else if (!validateToken(token)) {
+                            responseStr = JSONObject().apply {
+                                put("status", "UNAUTHORIZED")
+                                put("code", 401)
+                                put("message", "401 Unauthorized: Valid session token required")
+                            }.toString()
+                        } else {
+                            responseStr = processCommand(cmd, json)
+                        }
                     }
+
+                    writer.println(responseStr)
+                } catch (e: Exception) {
+                    // Socket handling error; closed by client.use
                 }
-
-                writer.println(responseStr)
-                socket.close()
-            } catch (e: Exception) {
-                // Socket handling error
             }
         }
     }

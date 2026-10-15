@@ -422,6 +422,14 @@ class AniobViewModel(
                 .onFailure { app.eventLogger.warn("AniobViewModel", "FastPath hydration failed: ${it.message}") }
         }
 
+        // Hydrate learned skills consolidated into the runtime skill_library/skills directory
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val skillsDir = File(app.getExternalFilesDir(null) ?: app.filesDir, "skill_library/skills")
+                semanticSkillMatcher.loadAndIndexDirectory(skillsDir)
+            }
+        }
+
         // Add initial system greeting
         _uiState.update {
             it.copy(
@@ -976,6 +984,7 @@ class AniobViewModel(
         runCatching {
             val dir = File(app.getExternalFilesDir(null) ?: app.filesDir, "skill_library/skills")
             File(dir, "$name.yaml").takeIf { it.exists() }?.delete()
+            semanticSkillMatcher.removeSkill(name)
         }
     }
 
@@ -1259,6 +1268,7 @@ class AniobViewModel(
         taskApprovals.clear()
         taskBlockedFingerprints.forEach { com.aniob.core.safety.AniobSafetyInterceptor.unblockFingerprint(it) }
         taskBlockedFingerprints.clear()
+        terminationStage.reset()
         pauseRequested = false
         localFailCount = 0
         verifiedActions.clear()
@@ -1277,6 +1287,8 @@ class AniobViewModel(
                 statusMessage = "Analyzing task...",
                 chatMessages = it.chatMessages + userMessage,
                 steps = emptyList(),
+                stepEvents = emptyList(),
+                lastNarration = "",
                 confirmRequest = null,
                 pendingInputPrefill = null
             )
@@ -2138,6 +2150,10 @@ class AniobViewModel(
             null
         }
         if (consolidatedSkill != null) {
+            runCatching {
+                val skillsDir = File(app.getExternalFilesDir(null) ?: app.filesDir, "skill_library/skills")
+                semanticSkillMatcher.loadAndIndexDirectory(skillsDir)
+            }
             app.eventLogger.info("AniobHippocampus", "Consolidated learned skill '$consolidatedSkill'")
         }
         app.eventLogger.recordSessionCounters(

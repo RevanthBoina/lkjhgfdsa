@@ -7,6 +7,10 @@ import android.util.Log
 import com.aniob.core.knowledge.AniobAppCatalog
 import com.aniob.core.knowledge.AppCatalogEntry
 import java.io.File
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * Reflex 1: Package-change spinal reflex (Tasker/macroDroid trigger provider).
@@ -23,23 +27,30 @@ class AniobPackageReceiver : BroadcastReceiver() {
         ) return
 
         val packageName = intent.data?.schemeSpecificPart ?: return
-        val catalog = AniobAppCatalog.getInstance()
-        try {
-            when (action) {
-                ACTION_PACKAGE_ADDED, ACTION_PACKAGE_REPLACED -> {
-                    val pm = context.packageManager
-                    val appInfo = pm.getApplicationInfo(packageName, 0)
-                    val appName = pm.getApplicationLabel(appInfo)?.toString() ?: packageName
-                    val isSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
-                    catalog.registerApp(AppCatalogEntry(packageName, appName, isSystem))
+        val appContext = context.applicationContext
+        val pendingResult = goAsync()
+
+        receiverScope.launch {
+            val catalog = AniobAppCatalog.getInstance()
+            try {
+                when (action) {
+                    ACTION_PACKAGE_ADDED, ACTION_PACKAGE_REPLACED -> {
+                        val pm = appContext.packageManager
+                        val appInfo = pm.getApplicationInfo(packageName, 0)
+                        val appName = pm.getApplicationLabel(appInfo)?.toString() ?: packageName
+                        val isSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                        catalog.registerApp(AppCatalogEntry(packageName, appName, isSystem))
+                    }
+                    ACTION_PACKAGE_REMOVED -> {
+                        catalog.removeApp(packageName)
+                    }
                 }
-                ACTION_PACKAGE_REMOVED -> {
-                    catalog.removeApp(packageName)
-                }
+                saveCatalog(appContext, catalog)
+            } catch (e: Exception) {
+                Log.w(TAG, "Package reflex failed for $packageName", e)
+            } finally {
+                pendingResult.finish()
             }
-            saveCatalog(context, catalog)
-        } catch (e: Exception) {
-            Log.w(TAG, "Package reflex failed for $packageName", e)
         }
     }
 
@@ -55,5 +66,6 @@ class AniobPackageReceiver : BroadcastReceiver() {
         private const val ACTION_PACKAGE_ADDED = Intent.ACTION_PACKAGE_ADDED
         private const val ACTION_PACKAGE_REMOVED = Intent.ACTION_PACKAGE_REMOVED
         private const val ACTION_PACKAGE_REPLACED = Intent.ACTION_PACKAGE_REPLACED
+        private val receiverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     }
 }
