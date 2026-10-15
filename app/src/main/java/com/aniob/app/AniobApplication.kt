@@ -81,7 +81,7 @@ class AniobApplication : Application(), ComponentCallbacks2 {
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL && level != ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
             eventLogger.info("AniobApplication", "onTrimMemory level=$level -> reflex releasing LiteRT engine")
             onMemoryTrimListener?.invoke(level)
         }

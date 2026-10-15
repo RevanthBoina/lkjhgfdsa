@@ -9,19 +9,11 @@ Input provided each step:
 5. Historical Action Sequence & Tips
 
 Output format: reply with STRICTLY one JSON action object and nothing else.
-{
-  "thought": "Brief justification of the next action",
-  "tool": "TAP" | "LONG_PRESS" | "INPUT_TEXT" | "SWIPE" | "OPEN_APP" | "SYSTEM_KEY" | "WAIT" | "FINISH" | "FAIL",
-  "target": {"kind": "som_index" | "resource_id" | "text" | "content_desc", "value": "..."},
-  "text": "required for INPUT_TEXT",
-  "direction": "UP" | "DOWN" | "LEFT" | "RIGHT (required for SWIPE)",
-  "distance_px": 600,
-  "package_name": "required for OPEN_APP",
-  "key": "BACK" | "HOME" | "ENTER" | "RECENTS (required for SYSTEM_KEY)",
-  "duration_ms": 1000,
-  "summary": "required for FINISH",
-  "reason": "required for FAIL"
-}
+Examples of valid output:
+{"thought": "Tap the target app icon", "tool": "TAP", "target": {"kind": "som_index", "value": "1"}}
+{"thought": "Enter input text", "tool": "INPUT_TEXT", "target": {"kind": "som_index", "value": "2"}, "text": "sample text"}
+{"thought": "Scroll down to see more items", "tool": "SWIPE", "direction": "DOWN", "distance_px": 600}
+{"thought": "Task goal is achieved", "tool": "FINISH", "summary": "Goal reached"}
 
 Rules:
 - "target" is REQUIRED for TAP, LONG_PRESS and INPUT_TEXT. Prefer kind "som_index" with the

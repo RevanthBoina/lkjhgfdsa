@@ -59,8 +59,10 @@ class AniobForegroundService : Service() {
         @Volatile private var currentStep: Int = 0
         @Volatile private var currentNarration: String = ""
         @Volatile private var isPaused: Boolean = false
+        @Volatile private var isStopRequested: Boolean = false
 
         fun startService(context: Context, taskPrompt: String) {
+            isStopRequested = false
             currentPrompt = taskPrompt
             currentStep = 0
             currentNarration = "Getting ready"
@@ -69,18 +71,27 @@ class AniobForegroundService : Service() {
                 action = ACTION_START
                 putExtra(EXTRA_TASK_PROMPT, taskPrompt)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("AniobForegroundService", "startForegroundService failed: ${e.message}")
             }
         }
 
         fun stopService(context: Context) {
-            val intent = Intent(context, AniobForegroundService::class.java).apply {
-                action = ACTION_STOP
+            isStopRequested = true
+            instances.forEach { service ->
+                try {
+                    service.stopForeground(STOP_FOREGROUND_REMOVE)
+                    service.stopSelf()
+                } catch (e: Exception) {
+                    android.util.Log.d("AniobForegroundService", "instance teardown error: ${e.message}")
+                }
             }
-            context.stopService(intent)
         }
 
         /** Pill/notification Stop action entry point. */
@@ -319,24 +330,60 @@ class AniobForegroundService : Service() {
         super.onCreate()
         instances.add(this)
         createNotificationChannels()
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification(),
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, buildNotification())
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("AniobForegroundService", "startForeground failed in onCreate: ${e.message}")
+        }
+        if (isStopRequested) {
+            try {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            } catch (e: Exception) {
+                android.util.Log.d("AniobForegroundService", "early stop in onCreate error: ${e.message}")
+            }
+        }
     }
 
     override fun onDestroy() {
         instances.remove(this)
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } catch (e: Exception) {
+            android.util.Log.d("AniobForegroundService", "onDestroy stopForeground error: ${e.message}")
+        }
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        notificationManager?.cancel(NOTIFICATION_ID)
         super.onDestroy()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP -> {
-                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-                notificationManager?.cancel(NOTIFICATION_ID)
+        val prompt = intent?.getStringExtra(EXTRA_TASK_PROMPT) ?: currentPrompt
+        if (prompt.isNotBlank()) currentPrompt = prompt
+
+        if (isStopRequested || intent?.action == ACTION_STOP) {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            notificationManager?.cancel(NOTIFICATION_ID)
+            try {
                 stopForeground(STOP_FOREGROUND_REMOVE)
-                onStopRequestedFromNotification?.invoke()
-                onStopRequestedFromNotification = null
-                stopSelf()
-                return START_NOT_STICKY
+            } catch (e: Exception) {
+                android.util.Log.d("AniobForegroundService", "stopForeground in onStartCommand error: ${e.message}")
             }
+            onStopRequestedFromNotification?.invoke()
+            onStopRequestedFromNotification = null
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        when (intent?.action) {
             ACTION_PAUSE -> {
                 isPaused = !isPaused
                 onPauseToggleFromNotification?.invoke()
@@ -362,9 +409,7 @@ class AniobForegroundService : Service() {
                 return START_STICKY
             }
             else -> {
-                val prompt = intent?.getStringExtra(EXTRA_TASK_PROMPT) ?: currentPrompt
-                if (prompt.isNotBlank()) currentPrompt = prompt
-                startForeground(NOTIFICATION_ID, buildNotification())
+                refreshNotification()
                 return START_STICKY
             }
         }

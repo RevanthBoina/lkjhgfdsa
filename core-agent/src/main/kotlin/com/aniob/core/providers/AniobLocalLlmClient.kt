@@ -87,11 +87,14 @@ class AniobLocalLlmEngineImpl(
     }
 
     override fun generateStep(systemPrompt: String, userPrompt: String): String {
-        return provider.chatStreaming("$systemPrompt\n$userPrompt") { /* stream delta */ }
+        val prompt = if (userPrompt.trim().startsWith(systemPrompt.trim())) userPrompt else "$systemPrompt\n$userPrompt"
+        return provider.chatStreaming(prompt) { /* stream delta */ }
     }
 
-    override fun generateStepResult(systemPrompt: String, userPrompt: String): AniobGenerationResult =
-        provider.chatStreamingResult("$systemPrompt\n$userPrompt") { /* stream delta */ }
+    override fun generateStepResult(systemPrompt: String, userPrompt: String): AniobGenerationResult {
+        val prompt = if (userPrompt.trim().startsWith(systemPrompt.trim())) userPrompt else "$systemPrompt\n$userPrompt"
+        return provider.chatStreamingResult(prompt) { /* stream delta */ }
+    }
 
     override fun isAvailable(): Boolean = provider.isAvailable()
 

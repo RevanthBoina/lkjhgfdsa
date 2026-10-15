@@ -225,7 +225,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
      */
     override fun captureScreen(includeInvisible: Boolean): AniobScreenState {
         val rawNodes = mutableListOf<AniobNode>()
-        var primaryPackage = ""
+        var primaryPackage = currentForegroundPackage().orEmpty()
         val displayMetrics = resources.displayMetrics
         val screenBounds = AniobRect(0, 0, displayMetrics.widthPixels, displayMetrics.heightPixels)
 
@@ -236,7 +236,14 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         }
 
         if (windowList.isNotEmpty()) {
-            for (w in windowList) {
+            val appWindows = windowList.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+            val targetWindows = if (appWindows.isNotEmpty()) {
+                windowList.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION || it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }
+            } else {
+                windowList
+            }
+
+            for (w in targetWindows) {
                 val root = w.root ?: continue
                 if (primaryPackage.isEmpty() && root.packageName != null) {
                     primaryPackage = root.packageName.toString()

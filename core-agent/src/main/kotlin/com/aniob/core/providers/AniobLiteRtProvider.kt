@@ -206,7 +206,7 @@ class AniobLiteRtProvider(
     companion object {
         const val DELTA_THROTTLE_MS = 60L
         const val DELTA_CHUNK_CHARS = 4
-        const val GENERATION_TIMEOUT_SECONDS = 15L
+        const val GENERATION_TIMEOUT_SECONDS = 180L
 
         /** Explicit, non-actionable failure contract for absent native engine/model. */
         const val MODEL_UNAVAILABLE_JSON =

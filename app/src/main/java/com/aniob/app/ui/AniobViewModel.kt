@@ -617,7 +617,11 @@ class AniobViewModel(
                     reason = "Interrupted during dispatch. Outcome in external app is unverified."
                 )
                 kotlinx.coroutines.withContext(Dispatchers.Main) {
-                    updateToIdle { it.copy(interruptedSummary = summary) }
+                    if (_uiState.value.isRunning) {
+                        _uiState.update { it.copy(interruptedSummary = summary) }
+                    } else {
+                        updateToIdle { it.copy(interruptedSummary = summary) }
+                    }
                 }
             }
 
@@ -650,6 +654,11 @@ class AniobViewModel(
                 app.database.activeTaskDao().getActiveTask()
             } catch (_: Exception) { null } ?: return@launch
 
+            // If a task is currently executing with this taskId, it is live, not an interrupted prior task
+            if (_uiState.value.isRunning && _uiState.value.activeTask?.id == marker.taskId) {
+                return@launch
+            }
+
             val prompt = marker.rawPrompt
             val step = marker.currentStep
             val lastEffect = marker.lastKnownEffect
@@ -666,8 +675,13 @@ class AniobViewModel(
                     "Interrupted at step $step. Review external effects before retrying."
                 }
             )
+            clearRunningMarker()
             kotlinx.coroutines.withContext(Dispatchers.Main) {
-                updateToIdle { it.copy(interruptedSummary = summary) }
+                if (_uiState.value.isRunning) {
+                    _uiState.update { it.copy(interruptedSummary = summary) }
+                } else {
+                    updateToIdle { it.copy(interruptedSummary = summary) }
+                }
             }
         }
     }
@@ -1346,7 +1360,7 @@ class AniobViewModel(
                 // Do not initialize native memory for an explicitly cloud-only request.
                 if (_uiState.value.autoRouterMode != "cloud-only") refreshLocalEngine()
                 val trigger = AniobExternalAiTrigger(
-                    cloudProvider = getOmniRouteProvider(),
+                    cloudProvider = if (_uiState.value.omnirouteApiKey.isNotBlank()) getOmniRouteProvider() else null,
                     localProvider = localLlmProvider,
                     sharedKnowledgeStore = sharedKnowledgeStore
                 )
@@ -1586,6 +1600,7 @@ class AniobViewModel(
 
         // Background automation integrity: minimize Aniob chat UI and run foreground service
         AniobBackgroundController.onTaskStarted(app, task.rawPrompt)
+        delay(500) // Allow WindowManager to minimize Aniob so a11y perceives the target app
 
         val a11y = AniobAccessibilityService.instance
         var screenBefore: AniobScreenState? = a11y?.captureCurrentScreenState()
@@ -1745,7 +1760,15 @@ class AniobViewModel(
                 var currentScreen = captured
                 val liveService = a11y
                 if (!reuseCheck.valid && liveService != null) {
-                    if (foregroundBefore != null && foregroundBefore != captured.packageName) {
+                    if (foregroundBefore == "com.aniob.app") {
+                        app.eventLogger.info("AniobViewModel", "Aniob is still foregrounded; minimizing to reveal target app")
+                        AniobBackgroundController.currentActivity?.runOnUiThread {
+                            AniobBackgroundController.currentActivity?.moveTaskToBack(true)
+                        }
+                        delay(600)
+                        currentScreen = liveService.captureCurrentScreenState()
+                        screenReads++; screenCaptureCount++
+                    } else if (foregroundBefore != null && foregroundBefore != captured.packageName) {
                         app.eventLogger.info(
                             "AniobViewModel",
                             "Session invalid (${reuseCheck.reason}) - cold starting $foregroundBefore"
@@ -1897,6 +1920,9 @@ class AniobViewModel(
                                 activePrompt
                             )
                             totalTokens += 80
+                            if (gen is AniobGenerationResult.Ready) {
+                                android.util.Log.i("AniobViewModel", "Local SLM raw output: '${gen.fullText}'")
+                            }
                             val structured = AniobLocalActionResolver.resolveStructured(gen, currentScreen)
                             if (structured.usedFallback) {
                                 app.eventLogger.warn("AniobViewModel", "Local SLM produced no schema-valid action: ${structured.reason}")
@@ -1995,21 +2021,21 @@ class AniobViewModel(
                 }
 
                 val dispatchLambda: suspend (AniobAction) -> StepPipeline.DispatchOutcome = { act ->
-                    when (act) {
-                        is AniobAction.Finish -> {
-                            StepPipeline.DispatchOutcome(dispatched = true, reason = act.summary)
-                        }
-                        is AniobAction.Fail -> {
-                            StepPipeline.DispatchOutcome(dispatched = false, reason = act.reason)
-                        }
-                        else -> {
-                            if (proposal is StepPipeline.Proposal.DirectIntent && ladderResult is AniobExecutionRouter.ExecutionPlanResult.DirectIntent) {
-                                val ok = dispatchSystemIntent(ladderResult.shortcut)
-                                AniobWaitForIdle.waitForIdle(800)
-                                val screenAfter = a11y?.captureCurrentScreenState()
-                                actionsDispatched++
-                                StepPipeline.DispatchOutcome(dispatched = ok, screenAfter = screenAfter)
-                            } else {
+                    if (proposal is StepPipeline.Proposal.DirectIntent && ladderResult is AniobExecutionRouter.ExecutionPlanResult.DirectIntent) {
+                        val ok = dispatchSystemIntent(ladderResult.shortcut)
+                        AniobWaitForIdle.waitForIdle(800)
+                        val screenAfter = a11y?.captureCurrentScreenState()
+                        actionsDispatched++
+                        StepPipeline.DispatchOutcome(dispatched = ok, screenAfter = screenAfter)
+                    } else {
+                        when (act) {
+                            is AniobAction.Finish -> {
+                                StepPipeline.DispatchOutcome(dispatched = true, reason = act.summary)
+                            }
+                            is AniobAction.Fail -> {
+                                StepPipeline.DispatchOutcome(dispatched = false, reason = act.reason)
+                            }
+                            else -> {
                                 val ok = if (a11y != null) executeActionSync(a11y, act) else true
                                 actionsDispatched++
                                 AniobWaitForIdle.waitForIdle(600)
@@ -2423,8 +2449,34 @@ class AniobViewModel(
                         shortcut.uriString?.let { data = Uri.parse(it) }
                         shortcut.category?.let { addCategory(it) }
                     }
-                    app.startActivity(intent)
-                    true
+                    val launchCtx = AniobAccessibilityService.instance ?: AniobBackgroundController.currentActivity ?: app
+                    try {
+                        launchCtx.startActivity(intent)
+                        true
+                    } catch (e: Exception) {
+                        app.eventLogger.warn("AniobViewModel", "Direct intent launch failed (${e.message}); attempting fallback package launch")
+                        val fallbackPkg = shortcut.targetPackage ?: when (shortcut.action) {
+                            "android.intent.action.SHOW_ALARMS", "android.intent.action.SET_ALARM" -> {
+                                listOf("com.sec.android.app.clockpackage", "com.google.android.deskclock", "com.android.deskclock")
+                                    .firstOrNull { pkg ->
+                                        runCatching { app.packageManager.getPackageInfo(pkg, 0) }.isSuccess
+                                    }
+                            }
+                            else -> null
+                        }
+                        if (fallbackPkg != null) {
+                            val launchIntent = app.packageManager.getLaunchIntentForPackage(fallbackPkg)
+                            if (launchIntent != null) {
+                                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                launchCtx.startActivity(launchIntent)
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    }
                 }
             }
         } catch (e: Exception) {

@@ -42,6 +42,7 @@ class AniobOmniRouteProvider(
     private val jsonMode: Boolean = false
 ) : AniobCloudLlmProvider {
     override val name: String = "OMNIROUTE_CLOUD"
+    override val isConfigured: Boolean get() = apiKey.isNotBlank()
 
     private val client: OkHttpClient =
         AniobHttpClientSingleton.client.newBuilder()

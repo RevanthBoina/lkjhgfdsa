@@ -31,13 +31,14 @@ data class AniobNode(
 
     fun toOptimizedTokenString(): String {
         val viewIdPart = if (viewId.isNotBlank()) " viewId='$viewId'" else ""
+        val contentDescPart = if (contentDescription.isNotBlank()) " contentDesc='$contentDescription'" else ""
         val enabledPart = if (!isEnabled) " enabled=false" else ""
         val errorPart = if (errorText.isNotBlank()) " error='$errorText'" else ""
         val headingPart = if (isHeading) " heading=true" else ""
         val panePart = if (paneTitle.isNotBlank()) " pane='$paneTitle'" else ""
         val tooltipPart = if (tooltip.isNotBlank()) " tooltip='$tooltip'" else ""
         val sourcePart = if (source != GroundingSource.ACCESSIBILITY) " source=$source" else ""
-        return "[$id] $className$viewIdPart text='$text' contentDesc='$contentDescription'$errorPart$headingPart$panePart$tooltipPart bounds=[${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}] clickable=$isClickable$enabledPart$sourcePart"
+        return "[$id] $className$viewIdPart text='$text'$contentDescPart$errorPart$headingPart$panePart$tooltipPart bounds=[${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}] clickable=$isClickable$enabledPart$sourcePart"
     }
 }
 

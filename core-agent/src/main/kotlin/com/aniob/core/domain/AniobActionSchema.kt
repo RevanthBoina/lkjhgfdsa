@@ -62,7 +62,15 @@ Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT
      * valid action — including any attempt to pass coordinates.
      */
     fun parseActionJson(json: String): AniobAction {
-        val candidate = TOOL_OBJECT.find(json)?.value ?: json.trim()
+        val candidate = TOOL_OBJECT.find(json)?.value ?: run {
+            val firstBrace = json.indexOf('{')
+            val lastBrace = json.lastIndexOf('}')
+            if (firstBrace != -1 && lastBrace > firstBrace) {
+                json.substring(firstBrace, lastBrace + 1)
+            } else {
+                json.trim()
+            }
+        }
         if (!candidate.contains("\"tool\"") && !candidate.contains("\"action\"")) {
             throw ActionSchemaException("missing required field 'tool'")
         }

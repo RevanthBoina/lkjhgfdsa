@@ -17,6 +17,7 @@ import java.lang.ref.WeakReference
 object AniobBackgroundController {
 
     private var currentActivityRef: WeakReference<Activity>? = null
+    val currentActivity: Activity? get() = currentActivityRef?.get()
     private var pill: AniobOverlayPill? = null
 
     fun registerActivity(activity: Activity) {

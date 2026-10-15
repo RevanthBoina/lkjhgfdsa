@@ -10,6 +10,7 @@ import com.aniob.core.tools.DevicePowerState
  */
 interface AniobCloudLlmProvider {
     val name: String
+    val isConfigured: Boolean get() = true
     suspend fun generate(prompt: String, systemPrompt: String): String
     suspend fun generateStreaming(prompt: String, systemPrompt: String, onDelta: (String) -> Unit): String
 }
@@ -105,7 +106,7 @@ class AniobExternalAiTrigger(
         }
 
         val isLocalReady = localProvider != null && localProvider.isAvailable()
-        val isCloudReady = powerState.isNetworkAvailable && cloudProvider != null
+        val isCloudReady = powerState.isNetworkAvailable && cloudProvider != null && cloudProvider.isConfigured
 
         val useLocal = when (autoMode.lowercase()) {
             "local-only" -> isLocalReady

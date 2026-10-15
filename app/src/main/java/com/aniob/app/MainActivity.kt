@@ -58,6 +58,20 @@ class MainActivity : ComponentActivity() {
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent == null) return
         val app = application as AniobApplication
+        val rawPrompt = intent.getStringExtra("prompt") ?: intent.getStringExtra("com.aniob.app.PROMPT")
+        android.util.Log.i("MainActivity", "handleIncomingIntent: rawPrompt=$rawPrompt action=${intent.action}")
+        val promptExtra = rawPrompt?.trim()?.removeSurrounding("'")?.removeSurrounding("\"")?.trim()
+        if (!promptExtra.isNullOrBlank()) {
+            val rawMode = intent.getStringExtra("mode") ?: intent.getStringExtra("com.aniob.app.ROUTER_MODE")
+            val modeExtra = rawMode?.trim()?.removeSurrounding("'")?.removeSurrounding("\"")?.trim()
+            if (!modeExtra.isNullOrBlank()) {
+                android.util.Log.i("MainActivity", "Setting autoRouterMode: $modeExtra")
+                viewModel.setAutoRouterMode(modeExtra)
+            }
+            android.util.Log.i("MainActivity", "Submitting prompt: $promptExtra")
+            viewModel.submitTask(promptExtra)
+            return
+        }
         val sharedContent = app.incomingContentReader.parse(intent)
         if (sharedContent != null) {
             viewModel.handleIncomingShare(sharedContent)
@@ -74,8 +88,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        // Memory safety: release local SLM native memory when device is under memory pressure
-        AniobLocalLlmClient.release()
+        // Memory safety: release local SLM native memory only under severe memory pressure,
+        // never merely because the UI is hidden (which happens on every background task start).
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL &&
+            level != android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN
+        ) {
+            AniobLocalLlmClient.release()
+        }
     }
 
     override fun onDestroy() {

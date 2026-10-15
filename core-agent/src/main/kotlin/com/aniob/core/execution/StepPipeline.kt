@@ -207,7 +207,14 @@ class StepPipeline(
         currentCoroutineContext().ensureActive()
 
         // VERIFY
-        val verification = if (action is AniobAction.Finish) {
+        val verification = if (proposal is Proposal.DirectIntent) {
+            val summary = (action as? AniobAction.Finish)?.summary ?: action.describeAction()
+            DeterministicVerifier.VerificationResult(
+                isExpected = true,
+                durationMs = 0L,
+                reason = "Direct intent dispatched: $summary"
+            )
+        } else if (action is AniobAction.Finish) {
             DeterministicVerifier.verifyFinish(ctx.successCriteria, screenAfter, ctx.stepIndex + 1)
         } else {
             DeterministicVerifier.verify(action, observed, screenAfter)

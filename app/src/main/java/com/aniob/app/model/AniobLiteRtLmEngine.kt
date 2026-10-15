@@ -3,12 +3,12 @@ package com.aniob.app.model
 import android.util.Log
 import com.aniob.core.providers.AniobNativeLlmEngine
 import com.google.ai.edge.litertlm.Backend
-import com.google.ai.edge.litertlm.Conversation
-import com.google.ai.edge.litertlm.ConversationConfig
-import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.InputData
 import com.google.ai.edge.litertlm.SamplerConfig
+import com.google.ai.edge.litertlm.Session
+import com.google.ai.edge.litertlm.SessionConfig
 
 /**
  * Real on-device LLM engine backed by Google AI Edge LiteRT-LM.
@@ -60,7 +60,7 @@ class AniobLiteRtLmEngine(
      * contract unchanged.
      */
     private val systemPrompt: String = "",
-    private val sampler: SamplerConfig = SamplerConfig(topK = 64, topP = 0.95, temperature = 0.3)
+    private val sampler: SamplerConfig = SamplerConfig(topK = 1, topP = 0.9, temperature = 0.0)
 ) : AniobNativeLlmEngine {
 
     @Volatile private var engine: Engine? = null
@@ -151,23 +151,21 @@ class AniobLiteRtLmEngine(
             Log.w(TAG, "generate() called before a successful load(); returning null")
             return null
         }
-        var conversation: Conversation? = null
+        var session: Session? = null
+        val t0 = System.currentTimeMillis()
+        Log.i(TAG, "generate() start: prompt='${prompt.take(60)}...' (len=${prompt.length})")
+
         return try {
-            conversation = eng.createConversation(
-                ConversationConfig(
-                    systemInstruction = Contents.of(systemPrompt),
-                    samplerConfig = sampler
-                )
-            )
-            // sendMessage returns a Message wrapper, not a String; the text lives in its Contents.
-            val response = conversation.sendMessage(prompt)
-            response.contents?.toString()?.trim().orEmpty().takeIf { it.isNotEmpty() }
+            val sessionConfig = SessionConfig(samplerConfig = sampler)
+            session = eng.createSession(sessionConfig)
+            val result = session.generateContent(listOf(InputData.Text(prompt))).trim()
+            Log.i(TAG, "generate() finished in ${System.currentTimeMillis() - t0}ms, chars=${result.length}, result='$result'")
+            result.takeIf { it.isNotEmpty() }
         } catch (e: Throwable) {
-            Log.e(TAG, "LiteRT-LM generation failed: ${e.javaClass.simpleName}: ${e.message}")
+            Log.e(TAG, "LiteRT-LM generation failed after ${System.currentTimeMillis() - t0}ms: ${e.javaClass.simpleName}: ${e.message}")
             null
         } finally {
-            // Always release the conversation's KV cache, even on failure.
-            try { conversation?.close() } catch (e: Throwable) { Log.w(TAG, "conversation close failed: ${e.message}") }
+            try { session?.close() } catch (e: Throwable) { Log.w(TAG, "session close failed: ${e.message}") }
         }
     }
 
