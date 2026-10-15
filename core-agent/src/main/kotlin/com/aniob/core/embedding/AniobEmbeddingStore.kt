@@ -69,7 +69,10 @@ class AniobEmbeddingStore {
     }
 
     companion object {
-        private val TOKEN_SPLIT_REGEX = Regex("\\W+")
+        private val TOKEN_SPLIT_REGEX = Regex("[^a-zA-Z0-9]+")
+        private val STOPWORDS = setOf(
+            "a", "an", "the", "to", "in", "on", "of", "and", "or", "for", "with", "via", "by", "at", "from", "as", "is"
+        )
 
         /**
          * Numerically stable cosine similarity using 64-bit Double accumulation and [-1, 1] clamping.
@@ -93,7 +96,7 @@ class AniobEmbeddingStore {
         }
 
         /**
-         *Murmur3-inspired 64-bit avalanche mixer for independent bucket & sign bit extraction.
+         * Murmur3-inspired 64-bit avalanche mixer for independent bucket & sign bit extraction.
          */
         private fun mix64(hash: Int, salt: Long): Long {
             var z = (hash.toLong() and 0xFFFFFFFFL) xor salt
@@ -104,13 +107,18 @@ class AniobEmbeddingStore {
 
         private fun accumulateSignedFeature(vec: FloatArray, dim: Int, featureHash: Int, salt: Long, weight: Float) {
             val mixed = mix64(featureHash, salt)
-            val idx = ((mixed ushr 1) % dim.toLong()).toInt()
+            // Fold upper and lower 32 bits before modulo so power-of-2 dimensions use all 64 bits
+            val folded = ((mixed ushr 32) xor (mixed and 0x7FFFFFFFL)) and 0x7FFFFFFFL
+            val idx = (folded % dim.toLong()).toInt()
             val sign = if ((mixed and 1L) == 0L) 1f else -1f
             vec[idx] += sign * weight
         }
 
         /**
-         * Signed Feature-Hashing Pseudo-Embedding with Sublinear Log-TF, Word Bigrams, and Character 3-Grams.
+         * Signed Feature-Hashing Pseudo-Embedding with:
+         * - Sublinear Log-TF word unigrams & stopword down-weighting (prevents norm dilution on long descriptions)
+         * - Energy-normalized character 3-grams (0.25 / sqrt(numTrigrams)) for morphological & typo invariance
+         * - Word bigrams (0.35) for local phrase-order sensitivity
          * Produces a [dim]-dimensional L2-normalized vector from text tokens in O(L) time and 0 model weights.
          */
         fun generatePseudoEmbedding(text: String, dim: Int = 64): FloatArray {
@@ -119,29 +127,33 @@ class AniobEmbeddingStore {
             val tokens = text.lowercase().split(TOKEN_SPLIT_REGEX).filter { it.isNotBlank() }
             if (tokens.isEmpty()) return vec
 
-            // 1. Word Unigrams with sublinear TF scaling: 1 + ln(tf)
-            val termFreqs = HashMap<String, Int>(tokens.size)
+            // 1. Word Unigrams with sublinear TF scaling: (1 + ln(tf)) * idfPrior
+            val termFreqs = HashMap<String, Int>(tokens.size * 2)
             for (t in tokens) {
                 termFreqs[t] = (termFreqs[t] ?: 0) + 1
             }
             for ((token, tf) in termFreqs) {
-                val sublinearTf = (1.0 + ln(tf.toDouble())).toFloat()
+                val idfWeight = if (token in STOPWORDS) 0.15f else 1.0f
+                val sublinearTf = (1.0 + ln(tf.toDouble())).toFloat() * idfWeight
                 accumulateSignedFeature(vec, dim, token.hashCode(), 0x9E3779B97F4A7C15UL.toLong(), sublinearTf)
 
-                // 2. Character 3-grams (<token>) for morphological & typo resilience (weight 0.35)
-                if (token.length >= 3) {
+                // 2. Energy-normalized Character 3-grams (<token>) for morphological & typo resilience
+                if (token.length >= 3 && token !in STOPWORDS) {
                     val padded = "<$token>"
-                    for (i in 0..padded.length - 3) {
+                    val numTrigrams = padded.length - 2
+                    val trigramWeight = (0.25 / sqrt(numTrigrams.toDouble())).toFloat()
+                    for (i in 0 until numTrigrams) {
                         val trigramHash = (padded[i].code * 31 + padded[i + 1].code) * 31 + padded[i + 2].code
-                        accumulateSignedFeature(vec, dim, trigramHash, 0xBF58476D1CE4E5B9UL.toLong(), 0.35f)
+                        accumulateSignedFeature(vec, dim, trigramHash, 0xBF58476D1CE4E5B9UL.toLong(), trigramWeight)
                     }
                 }
             }
 
-            // 3. Word Bigrams for local phrase-order sensitivity (weight 0.60)
-            for (i in 0 until tokens.size - 1) {
-                val bigramHash = tokens[i].hashCode() * 31 + tokens[i + 1].hashCode()
-                accumulateSignedFeature(vec, dim, bigramHash, 0x94D049BB133111EBUL.toLong(), 0.60f)
+            // 3. Content-Word Bigrams for local phrase-order sensitivity
+            val contentTokens = tokens.filter { it !in STOPWORDS }
+            for (i in 0 until contentTokens.size - 1) {
+                val bigramHash = contentTokens[i].hashCode() * 31 + contentTokens[i + 1].hashCode()
+                accumulateSignedFeature(vec, dim, bigramHash, 0x94D049BB133111EBUL.toLong(), 0.35f)
             }
 
             // L2 Normalization in 64-bit precision

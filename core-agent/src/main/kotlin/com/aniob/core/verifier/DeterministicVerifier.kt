@@ -74,7 +74,23 @@ object DeterministicVerifier {
 
             is AniobAction.InputText -> {
                 val targetAfter = screenAfter.nodes.firstOrNull { action.target.matches(it) }
-                if (targetAfter != null && targetAfter.text.contains(action.text, ignoreCase = true)) {
+                val targetBefore = screenBefore?.nodes?.firstOrNull { action.target.matches(it) }
+                val shiftedTargetAfter = if (targetAfter != null && targetAfter.text.contains(action.text, ignoreCase = true)) {
+                    targetAfter
+                } else if (targetBefore != null) {
+                    // Handle dynamic SoM index shifts after typing (e.g., clear button or autocomplete rows inserted)
+                    screenAfter.nodes.firstOrNull { cand ->
+                        cand.isEditable &&
+                            cand.text.contains(action.text, ignoreCase = true) &&
+                            ((targetBefore.viewId.isNotBlank() && cand.viewId == targetBefore.viewId) ||
+                                !cand.bounds.intersect(targetBefore.bounds).isEmpty)
+                    }
+                } else null
+
+                val passwordConfirmed = (targetAfter?.isPassword == true || targetBefore?.isPassword == true) &&
+                    screenBefore != null && screenBefore.treeHash != screenAfter.treeHash
+
+                if (shiftedTargetAfter != null || passwordConfirmed) {
                     true to "InputText confirmed: text present in target node."
                 } else {
                     false to "InputText failed: text '${action.text}' not found in target."

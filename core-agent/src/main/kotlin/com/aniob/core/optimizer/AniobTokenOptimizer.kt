@@ -24,7 +24,10 @@ object AniobTokenOptimizer {
             .filter { it.isVisibleToUser }
             .filter { !it.bounds.isEmpty && it.bounds.area > 50 } // eliminate zero or tiny artifacts
             .filter { isInteractiveOrInformative(it) }
-            .distinctBy { "${it.bounds.left},${it.bounds.top},${it.bounds.right},${it.bounds.bottom},${it.text}" }
+            // Prefer interactive nodes before deduplicating identical bounds+text+contentDesc so an
+            // outer non-clickable layout wrapper never shadows an inner clickable control.
+            .sortedWith(compareByDescending<AniobNode> { it.isEditable || it.isClickable })
+            .distinctBy { "${it.bounds.left},${it.bounds.top},${it.bounds.right},${it.bounds.bottom},${it.text},${it.contentDescription}" }
             .toList()
 
         val selected = if (candidates.size <= MAX_ACTIONABLE_NODES) {

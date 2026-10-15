@@ -36,19 +36,20 @@ object AniobScreenDiff {
         currentNodes: List<AniobNode>,
         previousScreen: AniobScreenState?
     ): WaterfallResult {
-        // Compute new structural tree hash covering all observed nodes and attributes
-        val currentFingerprint = computeTreeHash(currentNodes)
-
-        // Level 1: Event-Driven Skip (0ms)
+        // Level 1: Event-Driven Skip (O(1) zero-iteration skip when previous treeHash is known)
         if (previousScreen != null && !hasAccessibilityContentChanged) {
+            val cachedHash = previousScreen.treeHash.ifBlank { computeTreeHash(currentNodes) }
             return WaterfallResult(
                 waterfallLevelUsed = 1,
                 shouldCaptureFullScreenshot = false,
                 changedRegion = null,
-                treeHash = currentFingerprint,
+                treeHash = cachedHash,
                 isIdenticalToPrevious = true
             )
         }
+
+        // Compute new structural tree hash covering all observed nodes and attributes
+        val currentFingerprint = computeTreeHash(currentNodes)
 
         // Level 2: Perceptual Tree Hash Match (0ms capture)
         if (previousScreen != null && previousScreen.treeHash == currentFingerprint) {

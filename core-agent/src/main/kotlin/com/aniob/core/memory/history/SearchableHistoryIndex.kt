@@ -1,6 +1,7 @@
 package com.aniob.core.memory.history
 
-import java.util.concurrent.ConcurrentHashMap
+import java.util.Comparator
+import java.util.concurrent.ConcurrentSkipListMap
 
 /**
  * Plan-4.7: Searchable History Index.
@@ -9,7 +10,8 @@ import java.util.concurrent.ConcurrentHashMap
  * history is bounded by compression, not by a step limit.
  *
  * Thread-safe because entries are written from the summary pool (2 threads) while the loop reads.
- * Recall is CAPPED — an uncapped search re-inflates the very context the scrub edges just freed.
+ * Backed by a descending [ConcurrentSkipListMap] with pre-lowercased content so [recall] executes
+ * in a single zero-allocation descending pass without per-query string lowercasing or sorting.
  */
 class SearchableHistoryIndex {
 
@@ -17,7 +19,8 @@ class SearchableHistoryIndex {
         val stepNumber: Int,
         val fullContent: String,
         val screenshotPath: String?,
-        val tokenCount: Int
+        val tokenCount: Int,
+        internal val lowerContent: String = fullContent.lowercase()
     )
 
     data class RecallResult(
@@ -26,7 +29,7 @@ class SearchableHistoryIndex {
         val truncated: Boolean
     )
 
-    private val steps = ConcurrentHashMap<Int, IndexedStep>()
+    private val steps = ConcurrentSkipListMap<Int, IndexedStep>(Comparator.reverseOrder())
 
     fun indexStep(stepNumber: Int, content: String, screenshotPath: String? = null, tokenCount: Int = 500) {
         steps[stepNumber] = IndexedStep(stepNumber, content, screenshotPath, tokenCount)
@@ -45,26 +48,27 @@ class SearchableHistoryIndex {
         maxTokens: Int = MAX_RECALL_TOKENS
     ): RecallResult {
         val query = keyword?.trim()?.lowercase()
-        val all = steps.values
-            .filter { step ->
-                val inRange = stepRange == null || step.stepNumber in stepRange
-                val matches = query.isNullOrEmpty() || step.fullContent.lowercase().contains(query)
-                inRange && matches
-            }
-            .sortedByDescending { it.stepNumber }
-
         val picked = mutableListOf<Int>()
         var tokens = 0
-        for (s in all) {
-            if (picked.size >= maxResults) break
-            if (tokens + s.tokenCount > maxTokens && picked.isNotEmpty()) break
-            picked += s.stepNumber
-            tokens += s.tokenCount
+        var totalMatches = 0
+
+        for (step in steps.values) {
+            val inRange = stepRange == null || step.stepNumber in stepRange
+            if (!inRange) continue
+            val matches = query.isNullOrEmpty() || step.lowerContent.contains(query)
+            if (!matches) continue
+
+            totalMatches++
+            if (picked.size < maxResults && (tokens + step.tokenCount <= maxTokens || picked.isEmpty())) {
+                picked += step.stepNumber
+                tokens += step.tokenCount
+            }
         }
+
         return RecallResult(
             stepNumbers = picked.sorted(),
-            totalMatches = all.size,
-            truncated = all.size > picked.size
+            totalMatches = totalMatches,
+            truncated = totalMatches > picked.size
         )
     }
 
