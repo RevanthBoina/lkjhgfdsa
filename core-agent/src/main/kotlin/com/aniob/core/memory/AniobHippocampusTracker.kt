@@ -99,15 +99,17 @@ class AniobHippocampusTracker(
         if (steps.isEmpty() || steps.any { !it.verified }) return null
         if (hasCanaryText()) return null
 
-        val skillName = "learned_" + prompt.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_').take(24)
+        val slug = prompt.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_').take(24)
+        if (slug.isBlank()) return null
+        val skillName = "learned_$slug"
         val riskTier = deriveRiskTier(steps.map { it.action })
         val yaml = buildSkillYaml(skillName = skillName, prompt = prompt, riskTier = riskTier)
 
         skillsDir.mkdirs()
-        File(skillsDir, "$skillName.yaml").writeText(yaml)
+        writeAtomically(File(skillsDir, "$skillName.yaml"), yaml)
         assetSkillsDir?.let { dir ->
             dir.mkdirs()
-            File(dir, "$skillName.yaml").writeText(yaml)
+            writeAtomically(File(dir, "$skillName.yaml"), yaml)
         }
 
         val signature = prompt.trim().lowercase()
@@ -121,18 +123,53 @@ class AniobHippocampusTracker(
         return skillName
     }
 
+    private fun writeAtomically(target: File, content: String) {
+        val tmp = File(target.parentFile, "${target.name}.tmp")
+        tmp.writeText(content, Charsets.UTF_8)
+        if (target.exists()) target.delete()
+        if (!tmp.renameTo(target)) {
+            target.writeText(content, Charsets.UTF_8)
+            tmp.delete()
+        }
+    }
+
     private fun hasCanaryText(): Boolean {
+        if (com.aniob.core.safety.AniobInjectionCanary.containsDelimiter(currentPrompt) ||
+            CANARY_INJECTION_PATTERNS.any { it.containsMatchIn(currentPrompt) }
+        ) {
+            return true
+        }
         for (step in steps) {
-            val candidateText = when (val a = step.action) {
-                is AniobAction.InputText -> a.text
-                is AniobAction.ConfirmWithUser -> a.message
-                else -> step.thought
+            val surfaces = buildList {
+                add(step.thought)
+                add(step.action.thought)
+                when (val a = step.action) {
+                    is AniobAction.InputText -> {
+                        add(a.text)
+                        add(targetText(a.target))
+                    }
+                    is AniobAction.Tap -> add(targetText(a.target))
+                    is AniobAction.LongPress -> add(targetText(a.target))
+                    is AniobAction.OpenApp -> add(a.packageName)
+                    is AniobAction.ConfirmWithUser -> add(a.message)
+                    else -> Unit
+                }
             }
-            for (pattern in CANARY_INJECTION_PATTERNS) {
-                if (pattern.containsMatchIn(candidateText)) return true
+            for (surface in surfaces) {
+                if (com.aniob.core.safety.AniobInjectionCanary.containsDelimiter(surface)) return true
+                for (pattern in CANARY_INJECTION_PATTERNS) {
+                    if (pattern.containsMatchIn(surface)) return true
+                }
             }
         }
         return false
+    }
+
+    private fun targetText(target: SemanticTarget): String = when (target) {
+        is SemanticTarget.Text -> target.text
+        is SemanticTarget.ContentDesc -> target.desc
+        is SemanticTarget.ResourceId -> target.id
+        is SemanticTarget.SomIndex -> ""
     }
 
     private fun sanitize(s: String): String {

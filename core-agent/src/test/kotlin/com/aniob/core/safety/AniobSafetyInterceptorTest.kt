@@ -183,4 +183,35 @@ class AniobSafetyInterceptorTest {
         assertTrue("High-risk skill must require confirmation", result.requiresConfirmation)
         assertEquals("HIGH", result.riskTier)
     }
+
+    @Test
+    fun testConsequenceClassifierRaisesConfirmationForSendAndDeleteControls() {
+        val sendNode = AniobNode(
+            id = 7,
+            className = "Button",
+            text = "Send",
+            bounds = AniobRect(0, 0, 100, 50),
+            isClickable = true
+        )
+        val sendRes = AniobSafetyInterceptor.evaluateAction(
+            action = AniobAction.Tap(SemanticTarget.SomIndex(7)),
+            targetNode = sendNode,
+            screenState = screen(),
+            screenFingerprint = "fp_send"
+        )
+        assertTrue(sendRes.isAllowed)
+        assertTrue("Tapping Send must require confirmation via consequence classifier", sendRes.requiresConfirmation)
+        assertEquals("MEDIUM", sendRes.riskTier)
+
+        val deleteNode = sendNode.copy(id = 8, text = "Delete")
+        val deleteRes = AniobSafetyInterceptor.evaluateAction(
+            action = AniobAction.Tap(SemanticTarget.SomIndex(8)),
+            targetNode = deleteNode,
+            screenState = screen(),
+            screenFingerprint = "fp_delete"
+        )
+        assertTrue(deleteRes.isAllowed)
+        assertTrue("Tapping Delete must require confirmation via consequence classifier", deleteRes.requiresConfirmation)
+        assertEquals("HIGH", deleteRes.riskTier)
+    }
 }

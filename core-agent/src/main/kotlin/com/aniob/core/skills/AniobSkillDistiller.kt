@@ -65,18 +65,38 @@ class AniobSkillDistiller {
 
         val sample = dominantGroup.value.first()
 
-        // Security Canary Check: Check all text fields for prompt injection
+        // Security Canary Check: Inspect all text, thought, and target selector fields for prompt injection
+        if (com.aniob.core.safety.AniobInjectionCanary.containsDelimiter(prompt) ||
+            CANARY_INJECTION_PATTERNS.any { it.containsMatchIn(prompt) }
+        ) {
+            return null
+        }
         for (step in sample.steps) {
-            val candidateText = when (val a = step.action) {
-                is AniobAction.InputText -> a.text
-                is AniobAction.ConfirmWithUser -> a.message
-                else -> ""
+            val surfaces = buildList {
+                add(step.action.thought)
+                add(step.selectorShape)
+                when (val a = step.action) {
+                    is AniobAction.InputText -> {
+                        add(a.text)
+                        add(a.target.toString())
+                    }
+                    is AniobAction.Tap -> add(a.target.toString())
+                    is AniobAction.LongPress -> add(a.target.toString())
+                    is AniobAction.OpenApp -> add(a.packageName)
+                    is AniobAction.ConfirmWithUser -> add(a.message)
+                    else -> Unit
+                }
             }
 
-            for (pattern in CANARY_INJECTION_PATTERNS) {
-                if (pattern.containsMatchIn(candidateText)) {
-                    // Security canary tripped! Reject distillation
+            for (candidateText in surfaces) {
+                if (com.aniob.core.safety.AniobInjectionCanary.containsDelimiter(candidateText)) {
                     return null
+                }
+                for (pattern in CANARY_INJECTION_PATTERNS) {
+                    if (pattern.containsMatchIn(candidateText)) {
+                        // Security canary tripped! Reject distillation
+                        return null
+                    }
                 }
             }
         }

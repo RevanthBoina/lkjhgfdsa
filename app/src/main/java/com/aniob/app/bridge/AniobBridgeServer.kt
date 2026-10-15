@@ -26,6 +26,24 @@ class AniobBridgeServer(
     @Volatile private var isRunning = false
     private val scope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
     @Volatile private var activeSessionToken: String? = null
+    private val clientSemaphore = java.util.concurrent.Semaphore(MAX_CONCURRENT_CLIENTS)
+
+    companion object {
+        private const val MAX_CONCURRENT_CLIENTS = 8
+        private const val MAX_HEADERS = 32
+        private const val MAX_LINE_LENGTH = 8192
+    }
+
+    private fun readBoundedLine(reader: BufferedReader, maxChars: Int = MAX_LINE_LENGTH): String? {
+        val sb = StringBuilder()
+        while (sb.length < maxChars) {
+            val ch = reader.read()
+            if (ch == -1) return if (sb.isEmpty()) null else sb.toString()
+            if (ch == '\n'.code) break
+            if (ch != '\r'.code) sb.append(ch.toChar())
+        }
+        return sb.toString()
+    }
 
     /**
      * Host pushes the session token at session start. Requests without this token return 401.
@@ -66,41 +84,48 @@ class AniobBridgeServer(
     }
 
     private fun handleClient(socket: Socket) {
+        if (!clientSemaphore.tryAcquire()) {
+            runCatching { socket.close() }
+            return
+        }
         scope.launch {
-            socket.use { client ->
-                try {
-                    client.soTimeout = 5_000
-                    val reader = BufferedReader(InputStreamReader(client.getInputStream()))
-                    val writer = PrintWriter(client.getOutputStream(), true)
+            try {
+                socket.use { client ->
+                    try {
+                        client.soTimeout = 5_000
+                        val reader = BufferedReader(InputStreamReader(client.getInputStream(), Charsets.UTF_8))
+                        val writer = PrintWriter(client.getOutputStream(), true)
 
-                    val firstLine = reader.readLine().orEmpty()
-                    if (firstLine.isBlank()) {
-                        return@use
-                    }
-
-                    val responseStr: String
-                    if (firstLine.startsWith("GET ") || firstLine.startsWith("POST ")) {
-                        // HTTP-style request
-                        val parts = firstLine.split(" ")
-                        val fullPath = parts.getOrNull(1).orEmpty()
-                        val pathAndQuery = fullPath.split("?", limit = 2)
-                        val path = pathAndQuery[0]
-                        val query = pathAndQuery.getOrNull(1)
-
-                        var headerToken: String? = null
-                        var contentLength = 0
-                        var line: String? = reader.readLine()
-                        while (!line.isNullOrEmpty()) {
-                            val lower = line.lowercase()
-                            if (lower.startsWith("x-session-token:")) {
-                                headerToken = line.substringAfter(":").trim()
-                            } else if (lower.startsWith("authorization: bearer ")) {
-                                headerToken = line.substringAfter("Bearer ").trim()
-                            } else if (lower.startsWith("content-length:")) {
-                                contentLength = line.substringAfter(":").trim().toIntOrNull() ?: 0
-                            }
-                            line = reader.readLine()
+                        val firstLine = readBoundedLine(reader).orEmpty()
+                        if (firstLine.isBlank()) {
+                            return@use
                         }
+
+                        val responseStr: String
+                        if (firstLine.startsWith("GET ") || firstLine.startsWith("POST ")) {
+                            // HTTP-style request
+                            val parts = firstLine.split(" ")
+                            val fullPath = parts.getOrNull(1).orEmpty()
+                            val pathAndQuery = fullPath.split("?", limit = 2)
+                            val path = pathAndQuery[0]
+                            val query = pathAndQuery.getOrNull(1)
+
+                            var headerToken: String? = null
+                            var contentLength = 0
+                            var headerCount = 0
+                            var line: String? = readBoundedLine(reader)
+                            while (!line.isNullOrEmpty() && headerCount < MAX_HEADERS) {
+                                headerCount++
+                                val lower = line.lowercase()
+                                if (lower.startsWith("x-session-token:")) {
+                                    headerToken = line.substringAfter(":").trim()
+                                } else if (lower.startsWith("authorization: bearer ")) {
+                                    headerToken = line.substringAfter("Bearer ").trim()
+                                } else if (lower.startsWith("content-length:")) {
+                                    contentLength = line.substringAfter(":").trim().toIntOrNull() ?: 0
+                                }
+                                line = readBoundedLine(reader)
+                            }
 
                         var body = ""
                         val boundedContentLength = contentLength.coerceIn(0, 1_048_576)
@@ -165,6 +190,9 @@ class AniobBridgeServer(
                 } catch (e: Exception) {
                     // Socket handling error; closed by client.use
                 }
+            }
+            } finally {
+                clientSemaphore.release()
             }
         }
     }

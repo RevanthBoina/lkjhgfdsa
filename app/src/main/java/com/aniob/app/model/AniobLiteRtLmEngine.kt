@@ -125,16 +125,18 @@ class AniobLiteRtLmEngine(
             Log.w(TAG, "generate() called before a successful load(); returning null")
             return null
         }
+        val (effectiveSystemPrompt, effectiveUserPrompt) =
+            com.aniob.core.providers.AniobLocalLlmEngineImpl.unpackPrompts(prompt, systemPrompt)
         var conversation: Conversation? = null
         return try {
             conversation = eng.createConversation(
                 ConversationConfig(
-                    systemInstruction = Contents.of(systemPrompt),
+                    systemInstruction = Contents.of(effectiveSystemPrompt),
                     samplerConfig = sampler
                 )
             )
             // sendMessage returns a Message wrapper, not a String; the text lives in its Contents.
-            val response = conversation.sendMessage(prompt)
+            val response = conversation.sendMessage(effectiveUserPrompt)
             response.contents?.toString()?.trim().orEmpty().takeIf { it.isNotEmpty() }
         } catch (e: Throwable) {
             Log.e(TAG, "LiteRT-LM generation failed: ${e.javaClass.simpleName}: ${e.message}")
