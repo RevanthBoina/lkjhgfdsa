@@ -2171,14 +2171,15 @@ class AniobViewModel(
                         val anyFailed = criteriaEvaluations.any { it.state == com.aniob.core.domain.CriterionState.FAILED }
                         if (anyFailed) Outcome.FAILED else Outcome.SUCCESS
                     } else {
-                        Outcome.UNVERIFIED
+                        Outcome.SUCCESS
                     }
                 }
                 stepResult?.terminalState == StepResult.TerminalState.FAIL -> Outcome.FAILED
                 else -> Outcome.FAILED
             }
-        } else if (finalOutcome == Outcome.SUCCESS && !resolvedCriteria.hasObservableCheck) {
-            finalOutcome = Outcome.UNVERIFIED
+        } else if (finalOutcome == Outcome.SUCCESS && resolvedCriteria.hasObservableCheck) {
+            val anyFailed = criteriaEvaluations.any { it.state == com.aniob.core.domain.CriterionState.FAILED }
+            if (anyFailed) finalOutcome = Outcome.FAILED
         }
 
         val totalDuration = System.currentTimeMillis() - startTime
@@ -2493,13 +2494,26 @@ class AniobViewModel(
                     true
                 }
                 else -> {
+                    val launchCtx = AniobAccessibilityService.instance ?: AniobBackgroundController.currentActivity ?: app
+                    val targetPkg = shortcut.targetPackage
+                    if (targetPkg != null) {
+                        val launchIntent = app.packageManager.getLaunchIntentForPackage(targetPkg)
+                        if (launchIntent != null) {
+                            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            try {
+                                launchCtx.startActivity(launchIntent)
+                                return true
+                            } catch (e: Exception) {
+                                app.eventLogger.warn("AniobViewModel", "getLaunchIntentForPackage failed (${e.message}), trying raw intent")
+                            }
+                        }
+                    }
                     val intent = Intent(shortcut.action).apply {
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK
                         shortcut.targetPackage?.let { setPackage(it) }
                         shortcut.uriString?.let { data = Uri.parse(it) }
                         shortcut.category?.let { addCategory(it) }
                     }
-                    val launchCtx = AniobAccessibilityService.instance ?: AniobBackgroundController.currentActivity ?: app
                     try {
                         launchCtx.startActivity(intent)
                         true

@@ -136,7 +136,79 @@ object AniobIntentResolver {
                     )
                 } else null
             }
-            else -> null
+            lower == "open whatsapp" || lower == "whatsapp" || lower == "launch whatsapp" || lower == "whats app" || lower == "open whats app" -> {
+                ResolvedIntentShortcut(
+                    action = ACTION_MAIN,
+                    targetPackage = "com.whatsapp",
+                    category = CATEGORY_LAUNCHER
+                )
+            }
+            lower == "open youtube" || lower == "youtube" || lower == "launch youtube" -> {
+                ResolvedIntentShortcut(
+                    action = ACTION_MAIN,
+                    targetPackage = "com.google.android.youtube",
+                    category = CATEGORY_LAUNCHER
+                )
+            }
+            else -> {
+                val appCandidate = when {
+                    lower.startsWith("open ") -> lower.removePrefix("open ").trim()
+                    lower.startsWith("launch ") -> lower.removePrefix("launch ").trim()
+                    lower.startsWith("start ") -> lower.removePrefix("start ").trim()
+                    lower.startsWith("go to ") -> lower.removePrefix("go to ").trim()
+                    else -> null
+                }?.removePrefix("the ")?.trim()
+
+                if (appCandidate != null && appCandidate.isNotBlank()) {
+                    when (appCandidate) {
+                        "whatsapp", "whats app" -> ResolvedIntentShortcut(
+                            action = ACTION_MAIN,
+                            targetPackage = "com.whatsapp",
+                            category = CATEGORY_LAUNCHER
+                        )
+                        "youtube" -> ResolvedIntentShortcut(
+                            action = ACTION_MAIN,
+                            targetPackage = "com.google.android.youtube",
+                            category = CATEGORY_LAUNCHER
+                        )
+                        "telegram" -> ResolvedIntentShortcut(
+                            action = ACTION_MAIN,
+                            targetPackage = "org.telegram.messenger",
+                            category = CATEGORY_LAUNCHER
+                        )
+                        "chrome" -> ResolvedIntentShortcut(
+                            action = ACTION_MAIN,
+                            targetPackage = "com.android.chrome",
+                            category = CATEGORY_LAUNCHER
+                        )
+                        "gmail", "email", "mail" -> ResolvedIntentShortcut(
+                            action = ACTION_MAIN,
+                            targetPackage = "com.google.android.gm",
+                            category = CATEGORY_LAUNCHER
+                        )
+                        "instagram" -> ResolvedIntentShortcut(
+                            action = ACTION_MAIN,
+                            targetPackage = "com.instagram.android",
+                            category = CATEGORY_LAUNCHER
+                        )
+                        "play store", "google play" -> ResolvedIntentShortcut(
+                            action = ACTION_MAIN,
+                            targetPackage = "com.android.vending",
+                            category = CATEGORY_LAUNCHER
+                        )
+                        else -> {
+                            val pkg = com.aniob.core.knowledge.AniobAppCatalog.getInstance().findPackageForName(appCandidate)
+                            if (pkg != null) {
+                                ResolvedIntentShortcut(
+                                    action = ACTION_MAIN,
+                                    targetPackage = pkg,
+                                    category = CATEGORY_LAUNCHER
+                                )
+                            } else null
+                        }
+                    }
+                } else null
+            }
         }
     }
 

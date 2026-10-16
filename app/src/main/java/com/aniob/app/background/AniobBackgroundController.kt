@@ -63,6 +63,16 @@ object AniobBackgroundController {
     fun onTaskFinished(context: Context, summary: String, isSuccess: Boolean = true) {
         pill?.showDoneAndDismiss()
         pill = null
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            try {
+                android.widget.Toast.makeText(
+                    context,
+                    if (isSuccess) "✓ $summary" else "Task ended: $summary",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            } catch (_: Exception) {
+            }
+        }
         // Quiet Return: notification-only completion. No background activity start (UX-6).
         AniobForegroundService.finishWithNotification(context, summary, isSuccess)
     }

@@ -92,4 +92,41 @@ class AniobIntentResolverTest {
         assertNotNull(spotify)
         assertEquals("com.spotify.music", spotify?.targetPackage)
     }
+
+    @Test
+    fun testOpenWhatsAppAndYouTubeResolveDirectly() {
+        val wa1 = AniobIntentResolver.resolve("Open WhatsApp")
+        assertNotNull(wa1)
+        assertEquals("com.whatsapp", wa1?.targetPackage)
+        assertEquals(AniobIntentResolver.ACTION_MAIN, wa1?.action)
+
+        val wa2 = AniobIntentResolver.resolve("launch whatsapp")
+        assertNotNull(wa2)
+        assertEquals("com.whatsapp", wa2?.targetPackage)
+
+        val yt = AniobIntentResolver.resolve("Open YouTube")
+        assertNotNull(yt)
+        assertEquals("com.google.android.youtube", yt?.targetPackage)
+
+        val tg = AniobIntentResolver.resolve("launch telegram")
+        assertNotNull(tg)
+        assertEquals("org.telegram.messenger", tg?.targetPackage)
+    }
+
+    @Test
+    fun testDynamicAppCatalogResolution() {
+        val catalog = com.aniob.core.knowledge.AniobAppCatalog.getInstance()
+        catalog.registerApp(
+            com.aniob.core.knowledge.AppCatalogEntry(
+                packageName = "com.sample.customapp",
+                appName = "Custom App",
+                aliases = listOf("sample app")
+            )
+        )
+
+        val res = AniobIntentResolver.resolve("Open Custom App")
+        assertNotNull(res)
+        assertEquals("com.sample.customapp", res?.targetPackage)
+        assertEquals(AniobIntentResolver.ACTION_MAIN, res?.action)
+    }
 }
