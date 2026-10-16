@@ -81,15 +81,16 @@ class AniobOmniRouteProvider(
                 .post(payload.toString().toRequestBody("application/json".toMediaType()))
                 .build()
 
-            val response = client.newCall(request).execute()
-            val body = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                return@withContext "Error from Omniroute Cloud (${response.code}): $body"
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    return@withContext "Error from Omniroute Cloud (${response.code}): $body"
+                }
+                val rootJson = JSONObject(body)
+                val fullContent = rootJson.getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content")
+                AniobEgressLedger.record(name, model, prompt.length + systemPrompt.length, fullContent.length, System.currentTimeMillis() - startTime)
+                fullContent
             }
-            val rootJson = JSONObject(body)
-            val fullContent = rootJson.getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content")
-            AniobEgressLedger.record(name, model, prompt.length + systemPrompt.length, fullContent.length, System.currentTimeMillis() - startTime)
-            fullContent
         } catch (e: Exception) {
             "Request failed: ${e.message}"
         }
@@ -304,7 +305,7 @@ enum class OmniRouteConnectionStatus {
 
 suspend fun testOmniRouteConnection(apiKey: String, baseUrl: String): OmniRouteConnectionStatus = withContext(Dispatchers.IO) {
     if (apiKey.isBlank()) return@withContext OmniRouteConnectionStatus.BAD_KEY
-    val client = OkHttpClient.Builder()
+    val client = AniobHttpClientSingleton.client.newBuilder()
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS)
         .build()

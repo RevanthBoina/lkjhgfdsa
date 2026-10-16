@@ -24,6 +24,21 @@ class AniobSemanticSkillMatcher(
         }
     }
 
+    @Synchronized
+    fun loadAndIndexDirectory(dir: java.io.File): Int {
+        val loaded = skillEngine.loadFromDirectory(dir)
+        if (loaded > 0) indexSkills()
+        return loaded
+    }
+
+    @Synchronized
+    fun removeSkill(name: String) {
+        if (skillEngine.removeSkill(name)) {
+            embeddingStore.clear()
+            indexSkills()
+        }
+    }
+
     fun getLoadedSkills(): List<AniobSkill> = skillEngine.getLoadedSkills()
 
     fun findBestSkill(prompt: String, disabledSkills: Set<String> = emptySet()): AniobSkillMatcher.MatchResult {

@@ -63,6 +63,7 @@ class AniobLiteRtLmEngine(
     private val sampler: SamplerConfig = SamplerConfig(topK = 1, topP = 0.9, temperature = 0.0)
 ) : AniobNativeLlmEngine {
 
+    private val engineLock = Any()
     @Volatile private var engine: Engine? = null
     @Volatile private var loadedPath: String? = null
 
@@ -75,13 +76,13 @@ class AniobLiteRtLmEngine(
      *
      * @return true when the engine is initialised and ready to generate.
      */
-    override fun load(path: String): Boolean {
+    override fun load(modelPath: String): Boolean = synchronized(engineLock) {
         // Fast path: already loaded from this exact file.
-        engine?.let { if (loadedPath == path) return true }
+        engine?.let { if (loadedPath == modelPath) return true }
 
-        val f = java.io.File(path)
+        val f = java.io.File(modelPath)
         if (!f.exists() || f.length() == 0L) {
-            Log.w(TAG, "model file missing or empty, refusing to initialise engine: $path")
+            Log.w(TAG, "model file missing or empty, refusing to initialise engine: $modelPath")
             return false
         }
 
@@ -97,7 +98,7 @@ class AniobLiteRtLmEngine(
                 try {
                     Log.i(TAG, "Negotiating platform-native GPU OpenCL backend for ${f.name}...")
                     val gpuConfig = EngineConfig(
-                        modelPath = path,
+                        modelPath = modelPath,
                         backend = Backend.GPU(),
                         maxNumTokens = maxNumTokens,
                         cacheDir = cacheDir.absolutePath
@@ -116,7 +117,7 @@ class AniobLiteRtLmEngine(
 
             if (created == null) {
                 val cpuConfig = EngineConfig(
-                    modelPath = path,
+                    modelPath = modelPath,
                     backend = Backend.CPU(),
                     maxNumTokens = maxNumTokens,
                     cacheDir = cacheDir.absolutePath
@@ -126,14 +127,14 @@ class AniobLiteRtLmEngine(
             }
 
             engine = created
-            loadedPath = path
+            loadedPath = modelPath
             Log.i(TAG, "LiteRT-LM engine ready: ${f.name} backend=$activeBackend")
             true
         } catch (e: Throwable) {
             // Includes UnsatisfiedLinkError if the native library is ever stripped from the build,
             // and OOM on low-RAM devices. Degrade to "not ready" so AniobHybridEngineRouter can fall
             // back to cloud instead of crashing the app.
-            Log.e(TAG, "LiteRT-LM engine failed to load $path: ${e.javaClass.simpleName}: ${e.message}")
+            Log.e(TAG, "LiteRT-LM engine failed to load $modelPath: ${e.javaClass.simpleName}: ${e.message}")
             engine = null
             loadedPath = null
             false
@@ -146,7 +147,7 @@ class AniobLiteRtLmEngine(
      * ready or the call failed — matching the contract's nullable return so callers treat failure as
      * "fall back to cloud" rather than an exception.
      */
-    override fun generate(prompt: String): String? {
+    override fun generate(prompt: String): String? = synchronized(engineLock) {
         val eng = engine ?: run {
             Log.w(TAG, "generate() called before a successful load(); returning null")
             return null
@@ -170,7 +171,7 @@ class AniobLiteRtLmEngine(
     }
 
     /** Releases native model memory. Safe to call repeatedly and before any [load]. */
-    override fun release() {
+    override fun release() = synchronized(engineLock) {
         val eng = engine
         engine = null
         loadedPath = null

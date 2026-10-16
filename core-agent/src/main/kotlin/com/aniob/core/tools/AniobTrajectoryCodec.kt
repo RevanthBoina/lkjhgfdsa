@@ -22,11 +22,55 @@ object AniobTrajectoryCodec {
     private const val HEADER = "HEADER"
     private const val STEP = "STEP"
 
+    private fun escapeField(value: String): String =
+        value.replace("\\", "\\\\")
+            .replace("|", "\\p")
+            .replace("\r", "\\r")
+            .replace("\n", "\\n")
+
+    private fun unescapeField(value: String): String {
+        val sb = StringBuilder(value.length)
+        var i = 0
+        while (i < value.length) {
+            val ch = value[i]
+            if (ch == '\\' && i + 1 < value.length) {
+                when (val next = value[i + 1]) {
+                    '\\' -> sb.append('\\')
+                    'p' -> sb.append('|')
+                    'r' -> sb.append('\r')
+                    'n' -> sb.append('\n')
+                    else -> {
+                        sb.append(ch)
+                        sb.append(next)
+                    }
+                }
+                i += 2
+            } else {
+                sb.append(ch)
+                i++
+            }
+        }
+        return sb.toString()
+    }
+
     fun encode(trajectories: List<AniobReplayEngine.ReplayTrajectory>): String = buildString {
         trajectories.forEach { t ->
-            appendLine(listOf(HEADER, t.taskSignature, t.packageName, t.steps.size.toString()).joinToString("|"))
+            appendLine(
+                listOf(
+                    HEADER,
+                    escapeField(t.taskSignature),
+                    escapeField(t.packageName),
+                    t.steps.size.toString()
+                ).joinToString("|")
+            )
             t.steps.forEach { s ->
-                appendLine(listOf(STEP, s.expectedFingerprint, AniobActionSchema.toActionJson(s.action)).joinToString("|"))
+                appendLine(
+                    listOf(
+                        STEP,
+                        escapeField(s.expectedFingerprint),
+                        AniobActionSchema.toActionJson(s.action)
+                    ).joinToString("|")
+                )
             }
         }
     }
@@ -44,8 +88,8 @@ object AniobTrajectoryCodec {
                     val parts = line.split('|')
                     if (parts.size >= 4) {
                         current = AniobReplayEngine.ReplayTrajectory(
-                            taskSignature = parts[1],
-                            packageName = parts[2],
+                            taskSignature = unescapeField(parts[1]),
+                            packageName = unescapeField(parts[2]),
                             steps = emptyList()
                         ).let { result.add(it); it }
                     }
@@ -60,7 +104,7 @@ object AniobTrajectoryCodec {
                         if (existing != null) {
                             val updated = existing.copy(
                                 steps = existing.steps + AniobReplayEngine.ReplayStep(
-                                    expectedFingerprint = parts[1],
+                                    expectedFingerprint = unescapeField(parts[1]),
                                     action = action
                                 )
                             )

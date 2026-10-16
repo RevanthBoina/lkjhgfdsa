@@ -89,6 +89,17 @@ class Plan7TrustTest {
         assertEquals(TerminationStage.ExitRoute.BLOCKED_BY_SAFETY, o.route)
     }
 
+    @Test
+    fun `reset allows termination stage to be reused for subsequent tasks`() {
+        val t = TerminationStage()
+        t.terminate("first task", TerminationStage.DeviceResidue(), emptyList(), emptyList())
+        assertTrue(t.isTerminated)
+        t.reset()
+        assertFalse(t.isTerminated)
+        val second = t.terminate("second task", TerminationStage.DeviceResidue(), emptyList(), emptyList())
+        assertEquals(TerminationStage.ExitRoute.GOAL_MET, second.route)
+    }
+
     // -------------------------------------------------- 7.2 state visibility
 
     private val manifest = StateVisibilityManifest(

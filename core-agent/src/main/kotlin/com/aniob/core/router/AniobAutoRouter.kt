@@ -171,6 +171,40 @@ object AniobAutoRouter {
             return RouteDecision(RouteTarget.OMNIROUTE_CLOUD, "Local failed $lastLocalFailCount times -> escalate to cloud")
         }
 
+        // Multi-hop / High UI Entropy complexity escalation check
+        val screenEntropy = computeScreenEntropy(screenState)
+        val isMultiHopCrossApp = isMultiHopCrossAppPrompt(taskPrompt)
+        if (isMultiHopCrossApp && screenEntropy >= 0.82f && screenState.nodes.size > 45) {
+            return RouteDecision(
+                RouteTarget.OMNIROUTE_CLOUD,
+                "High complexity multi-hop prompt with dense UI entropy (${"%.2f".format(screenEntropy)}) -> escalate to cloud",
+                requiresVision = false
+            )
+        }
+
         return RouteDecision(RouteTarget.LOCAL_SLM, "Default local-first for 8GB RAM phones, model ${installedModelId ?: "SLM"}", false, installedModelId)
+    }
+
+    /**
+     * Normalized Shannon class-diversity & density entropy in [0.0, 1.0].
+     */
+    internal fun computeScreenEntropy(screenState: AniobScreenState): Float {
+        val nodes = screenState.nodes
+        if (nodes.size <= 1) return 0f
+        val counts = nodes.groupingBy { it.className }.eachCount()
+        val n = nodes.size.toDouble()
+        var entropy = 0.0
+        for (c in counts.values) {
+            val p = c.toDouble() / n
+            if (p > 0.0) entropy -= p * kotlin.math.ln(p)
+        }
+        val maxEntropy = kotlin.math.ln(n).coerceAtLeast(1.0)
+        return (entropy / maxEntropy).toFloat().coerceIn(0f, 1f)
+    }
+
+    private fun isMultiHopCrossAppPrompt(prompt: String): Boolean {
+        val lower = prompt.lowercase()
+        val conjunctions = listOf(" and then ", " then send ", " copy ", " forward to ", " compare ")
+        return conjunctions.count { lower.contains(it) } >= 2
     }
 }

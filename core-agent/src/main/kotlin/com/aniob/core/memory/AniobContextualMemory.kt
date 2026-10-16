@@ -11,19 +11,19 @@ class AniobContextualMemory(private val maxMessages: Int = 20) {
         val timestamp: Long = System.currentTimeMillis()
     )
 
-    private val messageBuffer = mutableListOf<Message>()
+    private val messageBuffer = ArrayDeque<Message>(maxMessages + 1)
 
     @Synchronized
     fun addMessage(role: String, content: String) {
-        messageBuffer.add(Message(role = role, content = content))
-        if (messageBuffer.size > maxMessages) {
-            messageBuffer.removeAt(0)
+        if (messageBuffer.size >= maxMessages && messageBuffer.isNotEmpty()) {
+            messageBuffer.removeFirst()
         }
+        messageBuffer.addLast(Message(role = role, content = content))
     }
 
     @Synchronized
     fun getRecentHistory(): List<Message> {
-        return ArrayList(messageBuffer)
+        return messageBuffer.toList()
     }
 
     @Synchronized

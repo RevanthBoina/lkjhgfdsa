@@ -17,10 +17,17 @@ class WorkflowPayloadStore(private val context: Context) {
     private val stagingDir = File(context.filesDir, "workflow_staging").apply { mkdirs() }
     private val exportsDir = File(context.cacheDir, "workflow_exports").apply { mkdirs() }
 
+    private fun requireSafeFileToken(token: String) {
+        require(token.isNotBlank() && !token.contains("..") && !token.contains('/') && !token.contains('\\')) {
+            "Unsafe file token: $token"
+        }
+    }
+
     /**
      * Atomically saves brief text into private draft storage.
      */
     fun saveDraft(taskId: String, briefText: String): PayloadReference {
+        requireSafeFileToken(taskId)
         val bytes = briefText.toByteArray(Charsets.UTF_8)
         require(bytes.size <= WorkflowLimits.TEXT_BRIEF_MAX_BYTES) {
             "Brief exceeds limit of ${WorkflowLimits.TEXT_BRIEF_MAX_BYTES} bytes (actual: ${bytes.size})"
@@ -67,6 +74,8 @@ class WorkflowPayloadStore(private val context: Context) {
         input: InputStream,
         expectedLength: Long
     ): PayloadReference {
+        requireSafeFileToken(taskId)
+        requireSafeFileToken(attachmentId)
         val taskDir = File(stagingDir, taskId).apply { mkdirs() }
         val currentAttachments = taskDir.listFiles()?.size ?: 0
         require(currentAttachments < WorkflowLimits.MAX_ATTACHMENTS) {
@@ -115,6 +124,7 @@ class WorkflowPayloadStore(private val context: Context) {
      * Creates an export file in cacheDir/workflow_exports/ for FileProvider sharing.
      */
     fun createExportCopy(filename: String, bytes: ByteArray): File {
+        requireSafeFileToken(filename)
         val exportFile = File(exportsDir, filename)
         exportFile.writeBytes(bytes)
         return exportFile

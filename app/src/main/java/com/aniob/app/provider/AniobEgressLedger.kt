@@ -14,9 +14,14 @@ data class EgressEvent(
 )
 
 object AniobEgressLedger {
+    private const val MAX_LEDGER_EVENTS = 500
+    private val ringBuffer = ArrayDeque<EgressEvent>(MAX_LEDGER_EVENTS + 1)
+    private var runningPromptChars: Long = 0L
+    private var runningCompletionChars: Long = 0L
     private val _events = MutableStateFlow<List<EgressEvent>>(emptyList())
     val events: StateFlow<List<EgressEvent>> = _events.asStateFlow()
 
+    @Synchronized
     fun record(provider: String, model: String, promptChars: Int, completionChars: Int, latencyMs: Long) {
         val event = EgressEvent(
             provider = provider,
@@ -25,13 +30,31 @@ object AniobEgressLedger {
             completionChars = completionChars,
             latencyMs = latencyMs
         )
-        _events.value = _events.value + event
+        if (ringBuffer.size >= MAX_LEDGER_EVENTS && ringBuffer.isNotEmpty()) {
+            val evicted = ringBuffer.removeFirst()
+            runningPromptChars = (runningPromptChars - evicted.promptChars).coerceAtLeast(0L)
+            runningCompletionChars = (runningCompletionChars - evicted.completionChars).coerceAtLeast(0L)
+        }
+        ringBuffer.addLast(event)
+        runningPromptChars += promptChars
+        runningCompletionChars += completionChars
+        _events.value = ringBuffer.toList()
     }
 
-    fun getTotalEgressCount(): Int = _events.value.size
-    fun getTotalPromptChars(): Int = _events.value.sumOf { it.promptChars }
-    fun getTotalCompletionChars(): Int = _events.value.sumOf { it.completionChars }
+    @Synchronized
+    fun getTotalEgressCount(): Int = ringBuffer.size
+
+    @Synchronized
+    fun getTotalPromptChars(): Int = runningPromptChars.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
+
+    @Synchronized
+    fun getTotalCompletionChars(): Int = runningCompletionChars.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
+
+    @Synchronized
     fun clear() {
+        ringBuffer.clear()
+        runningPromptChars = 0L
+        runningCompletionChars = 0L
         _events.value = emptyList()
     }
 }

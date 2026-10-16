@@ -93,6 +93,7 @@ class MainActivity : ComponentActivity() {
         if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL &&
             level != android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN
         ) {
+            (application as? AniobApplication)?.onMemoryTrimListener?.invoke(level)
             AniobLocalLlmClient.release()
         }
     }

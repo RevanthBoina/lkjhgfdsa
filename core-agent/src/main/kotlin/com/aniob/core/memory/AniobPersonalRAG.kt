@@ -40,26 +40,34 @@ class AniobPersonalRAG(
             }
         }
 
-        // Fallback: Check shared knowledge store keys and values
+        // Fallback: Check shared knowledge store keys and values using pre-compiled token splitting & O(1) set lookup
         val allKnowledge = sharedKnowledgeStore.getAll()
-        val queryTokens = prompt.lowercase().split(Regex("\\W+")).filter { it.length > 2 }
-        val fallbackList = mutableListOf<RetrievedMemoryItem>()
+        if (allKnowledge.isEmpty()) return emptyList()
+        val queryTokenSet = prompt.lowercase().split(TOKEN_REGEX).filterTo(HashSet()) { it.length > 2 }
+        if (queryTokenSet.isEmpty()) return emptyList()
 
+        val fallbackList = mutableListOf<RetrievedMemoryItem>()
         for ((k, v) in allKnowledge) {
-            val keyTokens = k.lowercase().split(Regex("\\W+"))
-            val overlap = queryTokens.count { it in keyTokens }
+            val keyTokens = k.lowercase().split(TOKEN_REGEX).filter { it.isNotBlank() }
+            val valTokens = v.lowercase().split(TOKEN_REGEX).filter { it.isNotBlank() }
+            val overlap = keyTokens.count { it in queryTokenSet } * 2 + valTokens.count { it in queryTokenSet }
             if (overlap > 0) {
+                val normScore = (0.5f + 0.1f * overlap).coerceAtMost(0.95f)
                 fallbackList.add(
                     RetrievedMemoryItem(
                         title = k,
                         content = v,
-                        score = 0.7f,
+                        score = normScore,
                         source = "SHARED_STORE"
                     )
                 )
             }
         }
 
-        return fallbackList.take(topK)
+        return fallbackList.sortedByDescending { it.score }.take(topK)
+    }
+
+    private companion object {
+        val TOKEN_REGEX = Regex("[^a-zA-Z0-9]+")
     }
 }

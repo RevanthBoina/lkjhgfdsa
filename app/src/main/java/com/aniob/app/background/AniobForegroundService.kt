@@ -143,6 +143,7 @@ class AniobForegroundService : Service() {
 
         private fun notifyFinished(context: Context, summary: String) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+            ensureChannels(context, nm)
             val intent = Intent(context, MainActivity::class.java).apply {
                 action = Intent.ACTION_VIEW
                 data = Uri.parse("aniob://result")
@@ -232,6 +233,7 @@ class AniobForegroundService : Service() {
                 .setStyle(NotificationCompat.BigTextStyle().bigText("${request.what}\n${request.why}"))
                 .setSmallIcon(R.drawable.ic_stat_aniob)
                 .setContentIntent(fullScreenPi)
+                .setFullScreenIntent(fullScreenPi, true)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setAutoCancel(false)
                 .addAction(0, "Approve once", approvePi)
@@ -385,9 +387,14 @@ class AniobForegroundService : Service() {
 
         when (intent?.action) {
             ACTION_PAUSE -> {
-                isPaused = !isPaused
-                onPauseToggleFromNotification?.invoke()
-                refreshNotification()
+                val toggleHandler = onPauseToggleFromNotification
+                if (toggleHandler != null) {
+                    // ViewModel.togglePause() flips pauseRequested and calls setPaused(pauseRequested)
+                    toggleHandler.invoke()
+                } else {
+                    isPaused = !isPaused
+                    refreshNotification()
+                }
                 return START_STICKY
             }
             ACTION_CONFIRM_APPROVE -> {

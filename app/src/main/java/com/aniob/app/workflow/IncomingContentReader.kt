@@ -19,8 +19,13 @@ data class ParsedIncomingContent(
  */
 class IncomingContentReader(private val context: Context) {
 
-    private val seenIntentTokens = mutableSetOf<String>()
+    private val seenIntentTokens = object : LinkedHashMap<String, Boolean>(MAX_SEEN_TOKENS, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean {
+            return size > MAX_SEEN_TOKENS
+        }
+    }
 
+    @Synchronized
     fun parse(intent: Intent?): ParsedIncomingContent? {
         if (intent == null) return null
         val action = intent.action ?: return null
@@ -29,40 +34,64 @@ class IncomingContentReader(private val context: Context) {
             return null
         }
 
-        // Generate intent fingerprint to prevent duplicate handling on recreation
-        val token = "${intent.action}|${intent.type}|${intent.dataString}|${intent.getStringExtra(Intent.EXTRA_TEXT)?.hashCode()}|${intent.flags}"
-        if (seenIntentTokens.contains(token)) {
+        val rawText = intent.getStringExtra(Intent.EXTRA_TEXT)
+        val textDigest = rawText?.let { WorkflowPayloadStore.sha256(it.toByteArray(Charsets.UTF_8)).take(16) } ?: "null"
+
+        // Generate collision-resistant intent fingerprint to prevent duplicate handling on recreation
+        val token = "${intent.action}|${intent.type}|${intent.dataString}|$textDigest|${intent.flags}"
+        if (seenIntentTokens.containsKey(token)) {
             return null
         }
-        seenIntentTokens.add(token)
+        seenIntentTokens[token] = true
 
         val mimeType = intent.type ?: "text/plain"
+        val boundedText = rawText?.let {
+            WorkflowPayloadStore.boundUtf8Bytes(it, WorkflowLimits.TEXT_BRIEF_MAX_BYTES)
+        }
 
         if (action == Intent.ACTION_SEND) {
-            val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.take(WorkflowLimits.TEXT_BRIEF_MAX_BYTES)
-            val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+            val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)?.takeIf { isSafeExternalUri(it) }
             val uris = if (uri != null) listOf(uri) else emptyList()
             return ParsedIncomingContent(
                 mimeType = mimeType,
-                text = text,
+                text = boundedText,
                 uris = uris,
                 isMultiple = false
             )
         } else {
             // ACTION_SEND_MULTIPLE
             val uris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM) ?: emptyList()
-            val boundedUris = uris.take(WorkflowLimits.MAX_ATTACHMENTS)
-            val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.take(WorkflowLimits.TEXT_BRIEF_MAX_BYTES)
+            val boundedUris = uris.filter { isSafeExternalUri(it) }.take(WorkflowLimits.MAX_ATTACHMENTS)
             return ParsedIncomingContent(
                 mimeType = mimeType,
-                text = text,
+                text = boundedText,
                 uris = boundedUris,
                 isMultiple = true
             )
         }
     }
 
+    /**
+     * Blocks confused-deputy self-file exfiltration: rejects raw file:// URIs and any URI
+     * resolving into the application's private data directory.
+     */
+    private fun isSafeExternalUri(uri: Uri): Boolean {
+        val scheme = uri.scheme?.lowercase() ?: return false
+        if (scheme == "file") return false
+        if (scheme != "content") return false
+        val path = uri.path ?: return true
+        val dataDir = runCatching { context.applicationInfo?.dataDir }.getOrNull()
+        if (!dataDir.isNullOrBlank() && path.contains(dataDir)) return false
+        if (path.contains("..")) return false
+        return true
+    }
+
+    @Synchronized
     fun clearSeenTokens() {
         seenIntentTokens.clear()
+    }
+
+    companion object {
+        private const val MAX_SEEN_TOKENS = 128
     }
 }

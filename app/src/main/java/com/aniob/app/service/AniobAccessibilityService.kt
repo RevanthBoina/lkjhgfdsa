@@ -19,7 +19,9 @@ import android.view.accessibility.AccessibilityWindowInfo
 import com.aniob.core.execution.AniobActionExecutor
 import com.aniob.core.execution.DispatchCommand
 import com.aniob.core.optimizer.AniobTokenOptimizer
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
@@ -46,6 +48,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         private const val TAG = "AniobA11yService"
         private const val MAX_IDLE_WAIT_MS = 1000L
         private const val IDLE_POLL_INTERVAL_MS = 50L
+        private val XML_CONTROL_CHARS_REGEX = Regex("[^\\u0009\\u000A\\u000D\\u0020-\\uD7FF\\uE000-\\uFFFD]")
         var instance: AniobAccessibilityService? = null
             private set
         var isServiceConnected: Boolean = false
@@ -80,39 +83,43 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
 
     private val spotlightOverlay by lazy { com.aniob.app.overlay.AniobSpotlightOverlay(this) }
     private var bridgeServer: com.aniob.app.bridge.AniobBridgeServer? = null
-    private var contentChangedSinceLastStep: Boolean = true
-    private var lastScreenState: AniobScreenState? = null
+    private val serviceScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
+    @Volatile private var contentChangedSinceLastStep: Boolean = true
+    @Volatile private var lastScreenState: AniobScreenState? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
         isServiceConnected = true
         notifySystemState()
-        // Build AppCatalog with toast like reference
-        try {
-            android.widget.Toast.makeText(this, "Building app catalog...", android.widget.Toast.LENGTH_SHORT).show()
-            val catalog = com.aniob.core.knowledge.AniobAppCatalog.getInstance()
-            val pm = packageManager
-            val apps = pm.getInstalledApplications(0)
-            for (appInfo in apps) {
-                val appName = pm.getApplicationLabel(appInfo).toString()
-                val isSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
-                catalog.registerApp(com.aniob.core.knowledge.AppCatalogEntry(appInfo.packageName, appName, isSystem))
+        // Build AppCatalog off the main thread to avoid ANR on devices with hundreds of apps
+        serviceScope.launch {
+            try {
+                val catalog = com.aniob.core.knowledge.AniobAppCatalog.getInstance()
+                val pm = packageManager
+                val apps = pm.getInstalledApplications(0)
+                for (appInfo in apps) {
+                    val appName = pm.getApplicationLabel(appInfo).toString()
+                    val isSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                    catalog.registerApp(com.aniob.core.knowledge.AppCatalogEntry(appInfo.packageName, appName, isSystem))
+                }
+                val jsonFile = java.io.File(filesDir, "app_catalog.json")
+                val mdFile = java.io.File(filesDir, "apps/app-registry.md")
+                mdFile.parentFile?.mkdirs()
+                catalog.saveToFile(jsonFile, mdFile)
+                Log.i(TAG, "AppCatalog built ${catalog.getAll().size} apps")
+            } catch (e: Exception) {
+                Log.e(TAG, "Catalog build failed", e)
             }
-            val jsonFile = java.io.File(filesDir, "app_catalog.json")
-            val mdFile = java.io.File(filesDir, "apps/app-registry.md")
-            mdFile.parentFile?.mkdirs()
-            catalog.saveToFile(jsonFile, mdFile)
-            Log.i(TAG, "AppCatalog built ${catalog.getAll().size} apps")
-        } catch (e: Exception) {
-            Log.e(TAG, "Catalog build failed", e)
         }
-        try {
-            bridgeServer = com.aniob.app.bridge.AniobBridgeServer()
-            bridgeServer?.start()
-            Log.i(TAG, "AniobBridgeServer started on port 8765")
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to start AniobBridgeServer", e)
+        if (com.aniob.app.BuildConfig.DEBUG) {
+            try {
+                bridgeServer = com.aniob.app.bridge.AniobBridgeServer()
+                bridgeServer?.start()
+                Log.i(TAG, "AniobBridgeServer started on port 8765")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to start AniobBridgeServer", e)
+            }
         }
         Log.i(TAG, "AniobAccessibilityService successfully connected and ready.")
     }
@@ -193,6 +200,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         } catch (e: Exception) {
             Log.w(TAG, "Failed to stop bridgeServer", e)
         }
+        serviceScope.cancel()
         notifySystemState()
     }
 
@@ -343,6 +351,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
             isEditable = node.isEditable,
             isScrollable = node.isScrollable,
             isSelected = node.isSelected,
+            isChecked = node.isChecked,
             isEnabled = node.isEnabled,
             isVisibleToUser = isVisible,
             isPassword = node.isPassword,
@@ -366,7 +375,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
     }
 
     private fun String.sanitizeForXml(): String =
-        replace(Regex("[^\u0009\u000A\u000D\u0020-\uD7FF\uE000-\uFFFD]|"), "").trim()
+        replace(XML_CONTROL_CHARS_REGEX, "").trim()
 
     /**
      * Real screenshot capture on Android 30+ using AccessibilityService.takeScreenshot.
@@ -401,10 +410,15 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
                             val colorSpace = screenshot.colorSpace
                             val timestamp = screenshot.timestamp
                             val wrapped = android.graphics.Bitmap.wrapHardwareBuffer(hardwareBuffer, colorSpace)
-                            val copy = wrapped?.copy(android.graphics.Bitmap.Config.ARGB_8888, false)
-                            hardwareBuffer.close()
+                            val copy = try {
+                                wrapped?.copy(android.graphics.Bitmap.Config.ARGB_8888, false)
+                            } finally {
+                                wrapped?.recycle()
+                                hardwareBuffer.close()
+                            }
                             if (copy != null) {
                                 if (continuation.isActive) continuation.resume(ScreenshotCaptureResult(copy, timestamp, ScreenshotStatus.SUCCESS))
+                                else copy.recycle()
                             } else {
                                 if (continuation.isActive) continuation.resume(ScreenshotCaptureResult(status = ScreenshotStatus.FAILED))
                             }
@@ -505,19 +519,27 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         if (root != null && targetNode != null) {
             val found = findAccessibilityNodeByBounds(root, targetNode.bounds)
             if (found != null) {
-                if (command.clearFirst) {
-                    val clearArgs = Bundle()
-                    clearArgs.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
-                    found.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs)
+                try {
+                    if (command.clearFirst) {
+                        val clearArgs = Bundle()
+                        clearArgs.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+                        found.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs)
+                    }
+                    val arguments = Bundle()
+                    arguments.putCharSequence(
+                        AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                        command.text
+                    )
+                    callback(found.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments))
+                } finally {
+                    if (found !== root) found.recycle()
+                    root.recycle()
                 }
-                val arguments = Bundle()
-                arguments.putCharSequence(
-                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                    command.text
-                )
-                callback(found.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments))
                 return
             }
+            root.recycle()
+        } else {
+            root?.recycle()
         }
         callback(false)
     }
@@ -669,7 +691,11 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         for (i in 0 until root.childCount) {
             val child = root.getChild(i) ?: continue
             val found = findAccessibilityNodeByBounds(child, targetRect)
-            if (found != null) return found
+            if (found != null) {
+                if (found !== child) child.recycle()
+                return found
+            }
+            child.recycle()
         }
         return null
     }

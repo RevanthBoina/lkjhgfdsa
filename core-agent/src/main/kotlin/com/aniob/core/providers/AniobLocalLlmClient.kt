@@ -87,14 +87,11 @@ class AniobLocalLlmEngineImpl(
     }
 
     override fun generateStep(systemPrompt: String, userPrompt: String): String {
-        val prompt = if (userPrompt.trim().startsWith(systemPrompt.trim())) userPrompt else "$systemPrompt\n$userPrompt"
-        return provider.chatStreaming(prompt) { /* stream delta */ }
+        return provider.chatStreaming(packPrompts(systemPrompt, userPrompt)) { /* stream delta */ }
     }
 
-    override fun generateStepResult(systemPrompt: String, userPrompt: String): AniobGenerationResult {
-        val prompt = if (userPrompt.trim().startsWith(systemPrompt.trim())) userPrompt else "$systemPrompt\n$userPrompt"
-        return provider.chatStreamingResult(prompt) { /* stream delta */ }
-    }
+    override fun generateStepResult(systemPrompt: String, userPrompt: String): AniobGenerationResult =
+        provider.chatStreamingResult(packPrompts(systemPrompt, userPrompt)) { /* stream delta */ }
 
     override fun isAvailable(): Boolean = provider.isAvailable()
 
@@ -102,5 +99,23 @@ class AniobLocalLlmEngineImpl(
 
     override fun release() {
         provider.release()
+    }
+
+    companion object {
+        const val SYSTEM_USER_DELIMITER = "\n<<ANIOB_SYSTEM_PROMPT_BOUNDARY>>\n"
+
+        fun packPrompts(systemPrompt: String, userPrompt: String): String =
+            if (systemPrompt.isBlank()) userPrompt
+            else if (userPrompt.trim().startsWith(systemPrompt.trim())) userPrompt
+            else "$systemPrompt\n$userPrompt"
+
+        fun unpackPrompts(combined: String, defaultSystemPrompt: String = ""): Pair<String, String> {
+            val idx = combined.indexOf(SYSTEM_USER_DELIMITER)
+            return if (idx >= 0) {
+                combined.substring(0, idx) to combined.substring(idx + SYSTEM_USER_DELIMITER.length)
+            } else {
+                defaultSystemPrompt to combined
+            }
+        }
     }
 }

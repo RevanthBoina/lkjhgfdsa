@@ -62,6 +62,9 @@ interface LogEventDao {
 
     @Insert
     suspend fun insertLog(log: LogEventEntity): Long
+
+    @Query("DELETE FROM event_logs WHERE id NOT IN (SELECT id FROM event_logs ORDER BY timestamp DESC LIMIT :keepCount)")
+    suspend fun pruneOldLogs(keepCount: Int = 1000)
 }
 
 @Dao

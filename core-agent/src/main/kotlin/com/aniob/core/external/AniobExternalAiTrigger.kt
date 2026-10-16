@@ -143,12 +143,37 @@ class AniobExternalAiTrigger(
                 val fullAnswer = cloudProvider!!.generateStreaming(prompt, systemPrompt) { delta ->
                     onDelta(delta)
                 }
-                ExternalAiResult.Success(
-                    answer = fullAnswer,
-                    provider = cloudProvider.name,
-                    intent = intent,
-                    latencyMs = System.currentTimeMillis() - startMs
-                )
+                val isProviderError = fullAnswer.startsWith("Omniroute API key is not configured") ||
+                    fullAnswer.startsWith("Error from Omniroute Cloud") ||
+                    fullAnswer.startsWith("Request failed:")
+                if (isProviderError) {
+                    if (isLocalReady) {
+                        val fallbackAnswer = localProvider!!.chatStreaming(prompt) { delta ->
+                            onDelta(delta)
+                        }
+                        ExternalAiResult.Success(
+                            answer = fallbackAnswer,
+                            provider = "LOCAL_SLM",
+                            intent = intent,
+                            latencyMs = System.currentTimeMillis() - startMs
+                        )
+                    } else {
+                        ExternalAiResult.Error(
+                            answer = fullAnswer,
+                            provider = "ERROR",
+                            intent = intent,
+                            latencyMs = System.currentTimeMillis() - startMs,
+                            cause = fullAnswer
+                        )
+                    }
+                } else {
+                    ExternalAiResult.Success(
+                        answer = fullAnswer,
+                        provider = cloudProvider.name,
+                        intent = intent,
+                        latencyMs = System.currentTimeMillis() - startMs
+                    )
+                }
             } else if (isLocalReady) {
                 val fullAnswer = localProvider!!.chatStreaming(prompt) { delta ->
                     onDelta(delta)
@@ -183,9 +208,9 @@ class AniobExternalAiTrigger(
             )
         }
 
-        // Only save preference into vault when successfully answered
+        // Only save preference into vault when successfully answered and user asked to remember
         if (result is ExternalAiResult.Success) {
-            if (prompt.contains("remember", ignoreCase = true) || intent == AniobIntent.VAULT_QUERY) {
+            if (prompt.contains("remember", ignoreCase = true) || prompt.contains("save my", ignoreCase = true)) {
                 sharedKnowledgeStore.put(prompt.lowercase(), result.answer)
             }
         }

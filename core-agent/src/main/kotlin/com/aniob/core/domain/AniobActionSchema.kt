@@ -44,14 +44,22 @@ Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT
 
     /** Fields that would smuggle pixel coordinates into the action vocabulary. */
     private val COORDINATE_FIELDS = listOf("x", "y", "startx", "starty", "endx", "endy", "bounds", "target_node_id", "targetnodeid", "node_id")
+    private val COORDINATE_FIELD_REGEXES = COORDINATE_FIELDS.associateWith { Regex("\"$it\"\\s*:") }
 
-    private val TOOL_OBJECT = Regex("\\{[^{}]*\"tool\"\\s*:\\s*\"[^\"]+\"[^{}]*\\}", RegexOption.DOT_MATCHES_ALL)
-    private val STRING_FIELD: (String) -> Regex = { field ->
-        Regex("\"$field\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
-    }
-    private val INT_FIELD: (String) -> Regex = { field ->
-        Regex("\"$field\"\\s*:\\s*(-?\\d+)")
-    }
+    private val TOOL_OBJECT = Regex("\\{(?:[^{}]|\\{[^{}]*\\})*\"tool\"\\s*:\\s*\"[^\"]+\"(?:[^{}]|\\{[^{}]*\\})*}", RegexOption.DOT_MATCHES_ALL)
+    private val TARGET_BLOCK_REGEX = Regex("\"target\"\\s*:\\s*\\{([^{}]*)}")
+    private val STRING_FIELD_CACHE = java.util.concurrent.ConcurrentHashMap<String, Regex>()
+    private val INT_FIELD_CACHE = java.util.concurrent.ConcurrentHashMap<String, Regex>()
+    private val BOOL_FIELD_CACHE = java.util.concurrent.ConcurrentHashMap<String, Regex>()
+
+    private fun stringFieldRegex(field: String): Regex =
+        STRING_FIELD_CACHE.computeIfAbsent(field) { Regex("\"$it\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"") }
+
+    private fun intFieldRegex(field: String): Regex =
+        INT_FIELD_CACHE.computeIfAbsent(field) { Regex("\"$it\"\\s*:\\s*(-?\\d+)") }
+
+    private fun boolFieldRegex(field: String): Regex =
+        BOOL_FIELD_CACHE.computeIfAbsent(field) { Regex("\"$it\"\\s*:\\s*(true|false)") }
 
     class ActionSchemaException(message: String) : IllegalArgumentException(message)
 
@@ -140,7 +148,7 @@ Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT
     fun toActionJson(action: AniobAction): String = when (action) {
         is AniobAction.Tap -> """{"thought":"${esc(action.thought)}","tool":"TAP","target":${targetJson(action.target)}}"""
         is AniobAction.LongPress -> """{"thought":"${esc(action.thought)}","tool":"LONG_PRESS","target":${targetJson(action.target)},"duration_ms":${action.durationMs}}"""
-        is AniobAction.InputText -> """{"thought":"${esc(action.thought)}","tool":"INPUT_TEXT","target":${targetJson(action.target)},"text":"${esc(action.text)}"}"""
+        is AniobAction.InputText -> """{"thought":"${esc(action.thought)}","tool":"INPUT_TEXT","target":${targetJson(action.target)},"text":"${esc(action.text)}","clear_first":${action.clearFirst}}"""
         is AniobAction.Swipe -> """{"thought":"${esc(action.thought)}","tool":"SWIPE","direction":"${action.direction}","distance_px":${action.distancePx}}"""
         is AniobAction.OpenApp -> """{"thought":"${esc(action.thought)}","tool":"OPEN_APP","package_name":"${esc(action.packageName)}"}"""
         is AniobAction.SystemKey -> """{"thought":"${esc(action.thought)}","tool":"SYSTEM_KEY","key":"${action.key}"}"""
@@ -165,7 +173,7 @@ Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT
         parseTarget(json) ?: throw ActionSchemaException("$tool requires a 'target' with kind and value")
 
     private fun parseTarget(json: String): SemanticTarget? {
-        val block = Regex("\"target\"\\s*:\\s*\\{([^{}]*)}").find(json)?.groupValues?.get(1)
+        val block = TARGET_BLOCK_REGEX.find(json)?.groupValues?.get(1)
         if (block != null) {
             val kind = str(block, "kind")?.trim()?.lowercase()
             if (kind == "coord") {
@@ -201,7 +209,9 @@ Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT
         val lower = json.lowercase()
         // Match the field *name* (quoted and followed by a colon) so a thought value of "x"
         // or "y" is not mistaken for a coordinate field.
-        val offending = COORDINATE_FIELDS.filter { Regex("\"$it\"\\s*:").containsMatchIn(lower) }
+        val offending = COORDINATE_FIELD_REGEXES.entries
+            .filter { (_, regex) -> regex.containsMatchIn(lower) }
+            .map { it.key }
         if (offending.isNotEmpty()) {
             throw ActionSchemaException(
                 "coordinate field(s) ${offending.joinToString(", ")} are not allowed; " +
@@ -217,19 +227,64 @@ Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT
     }
 
     private fun str(json: String, field: String): String? {
-        val match = STRING_FIELD(field).find(json) ?: return null
-        return match.groupValues[1]
-            .replace("\\\"", "\"")
-            .replace("\\\\", "\\")
-            .replace("\\n", "\n")
-            .replace("\\t", "\t")
+        val match = stringFieldRegex(field).find(json) ?: return null
+        return unescapeJsonString(match.groupValues[1])
+    }
+
+    /**
+     * Single-pass deterministic state-machine JSON string unescaper.
+     * Prevents double-unescaping corruption on literal "\\n" sequences.
+     */
+    private fun unescapeJsonString(raw: String): String {
+        if (!raw.contains('\\')) return raw
+        val sb = StringBuilder(raw.length)
+        var i = 0
+        while (i < raw.length) {
+            val ch = raw[i]
+            if (ch == '\\' && i + 1 < raw.length) {
+                when (val next = raw[i + 1]) {
+                    '\"' -> { sb.append('\"'); i += 2 }
+                    '\\' -> { sb.append('\\'); i += 2 }
+                    '/' -> { sb.append('/'); i += 2 }
+                    'n' -> { sb.append('\n'); i += 2 }
+                    'r' -> { sb.append('\r'); i += 2 }
+                    't' -> { sb.append('\t'); i += 2 }
+                    'b' -> { sb.append('\b'); i += 2 }
+                    'f' -> { sb.append('\u000C'); i += 2 }
+                    'u' -> {
+                        if (i + 5 < raw.length) {
+                            val hex = raw.substring(i + 2, i + 6)
+                            val code = hex.toIntOrNull(16)
+                            if (code != null) {
+                                sb.append(code.toChar())
+                                i += 6
+                            } else {
+                                sb.append(ch)
+                                i++
+                            }
+                        } else {
+                            sb.append(ch)
+                            i++
+                        }
+                    }
+                    else -> {
+                        sb.append(next)
+                        i += 2
+                    }
+                }
+            } else {
+                sb.append(ch)
+                i++
+            }
+        }
+        return sb.toString()
     }
 
     private fun int(json: String, field: String): Int? =
-        INT_FIELD(field).find(json)?.groupValues?.get(1)?.toIntOrNull()
+        intFieldRegex(field).find(json)?.groupValues?.get(1)?.toIntOrNull()
 
     private fun bool(json: String, field: String): Boolean? =
-        Regex("\"$field\"\\s*:\\s*(true|false)").find(json)?.groupValues?.get(1)?.toBooleanStrictOrNull()
+        boolFieldRegex(field).find(json)?.groupValues?.get(1)?.toBooleanStrictOrNull()
 
     private fun swipeDirection(raw: String): SwipeDirection? =
         SwipeDirection.entries.firstOrNull { it.name.equals(raw.trim(), ignoreCase = true) }
@@ -238,5 +293,9 @@ Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT
         KeyType.entries.firstOrNull { it.name.equals(raw.trim(), ignoreCase = true) }
 
     private fun esc(s: String): String =
-        s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+        s.replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\r", "\\r")
+            .replace("\n", "\\n")
+            .replace("\t", "\\t")
 }

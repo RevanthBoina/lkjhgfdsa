@@ -54,7 +54,12 @@ class StepPipeline(
             override val providerLabel: String = "FASTPATH"
         }
 
-        data class Skill(override val action: AniobAction, val skillName: String = "") : Proposal {
+        data class Skill(
+            override val action: AniobAction,
+            val skillName: String = "",
+            val riskTier: String = "LOW",
+            val requiresConfirmation: Boolean = false
+        ) : Proposal {
             override val providerLabel: String = "SKILL"
         }
 
@@ -98,7 +103,9 @@ class StepPipeline(
         val latencyMs: Long,
         val tokensUsed: Int,
         val textEvidence: String? = null,
-        val targetBounds: AniobRect? = resolvedNode?.bounds
+        val targetBounds: AniobRect? = resolvedNode?.bounds,
+        val blockedBySafety: Boolean = false,
+        val blockedFingerprint: String? = null
     )
 
     suspend fun executeStep(
@@ -127,13 +134,49 @@ class StepPipeline(
 
         currentCoroutineContext().ensureActive()
 
+        // Plan-7.5: Prompt Injection Canary check on state-mutating actions
+        val isMutating = action is AniobAction.Tap || action is AniobAction.LongPress ||
+            action is AniobAction.InputText || action is AniobAction.OpenApp || action is AniobAction.Swipe
+        val canaryParams = buildMap {
+            if (action is AniobAction.InputText && !ctx.instruction.contains(action.text, ignoreCase = true)) {
+                put("text", action.text)
+            }
+            if (action is AniobAction.OpenApp && !ctx.instruction.contains(action.packageName, ignoreCase = true)) {
+                put("package_name", action.packageName)
+            }
+            if (com.aniob.core.safety.AniobInjectionCanary.containsDelimiter(action.thought)) {
+                put("thought", action.thought)
+            }
+        }
+        val canaryVerdict = com.aniob.core.safety.AniobInjectionCanary.evaluate(
+            toolName = action.toolName,
+            isStateMutating = isMutating,
+            params = canaryParams,
+            lastTwoObservations = listOf(
+                planningScreen.nodes.joinToString("\n") { "${it.text} | ${it.contentDescription}" },
+                observed.nodes.joinToString("\n") { "${it.text} | ${it.contentDescription}" }
+            )
+        )
+        if (canaryVerdict.blocked) {
+            val reason = canaryVerdict.message ?: "Blocked by prompt injection canary"
+            val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, NeutralWordingContract.neutralize(reason)).withFailure()
+            return finish(
+                action, proposal, nextCtx, observed, null,
+                StepResult.TerminalState.FAIL, reason, start,
+                verification = null, dispatched = false
+            )
+        }
+
         // GATE: safety sees the *resolved node*, not a substring of toString()
         val resolvedNode = targetNode ?: AniobActionExecutor.resolveTarget(action, observed)?.node
+        val skillProposal = proposal as? Proposal.Skill
         val intercept = AniobSafetyInterceptor.evaluateAction(
             action = action,
             targetNode = resolvedNode,
             screenState = observed,
-            screenFingerprint = observed.treeHash
+            screenFingerprint = observed.treeHash,
+            skillRisk = skillProposal?.riskTier,
+            skillRequiresConfirmation = skillProposal?.requiresConfirmation == true
         )
         if (!intercept.isAllowed) {
             val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, NeutralWordingContract.neutralize("blocked before execution: ${intercept.reason}"))
@@ -141,11 +184,15 @@ class StepPipeline(
             return finish(
                 action, proposal, nextCtx, observed, resolvedNode,
                 StepResult.TerminalState.FAIL, intercept.reason, start,
-                verification = null, dispatched = false
+                verification = null, dispatched = false,
+                blockedBySafety = true,
+                blockedFingerprint = observed.treeHash.takeIf { it.isNotBlank() }
             )
         }
 
         // Plan-6.4: Pre-Execution Physical Safety Net Gate (Gate B)
+        var effectiveAction = action
+        var effectiveNode = resolvedNode
         if (resolvedNode != null) {
             val gateB = com.aniob.core.gates.AniobPhysicalSafetyNetGate.evaluate(
                 targetNode = resolvedNode,
@@ -165,17 +212,28 @@ class StepPipeline(
                     verification = null, dispatched = false
                 )
             }
+            val healed = gateB.healedTarget
+            if (healed != null && healed.id != resolvedNode.id) {
+                effectiveNode = healed
+                val healedTarget = com.aniob.core.domain.SemanticTarget.SomIndex(healed.id)
+                effectiveAction = when (action) {
+                    is AniobAction.Tap -> action.copy(target = healedTarget)
+                    is AniobAction.LongPress -> action.copy(target = healedTarget)
+                    is AniobAction.InputText -> action.copy(target = healedTarget)
+                    else -> action
+                }
+            }
         }
 
         if (intercept.requiresConfirmation) {
             currentCoroutineContext().ensureActive()
-            val approved = confirm(action.describeAction())
+            val approved = confirm(effectiveAction.describeAction())
             currentCoroutineContext().ensureActive()
             if (!approved) {
-                val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, "the user declined: ${action.describeAction()}")
+                val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, "the user declined: ${effectiveAction.describeAction()}")
                     .withFailure()
                 return finish(
-                    action, proposal, nextCtx, observed, resolvedNode,
+                    effectiveAction, proposal, nextCtx, observed, effectiveNode,
                     StepResult.TerminalState.FAIL, "User declined confirmation", start,
                     verification = null, dispatched = false
                 )
@@ -184,16 +242,16 @@ class StepPipeline(
 
         // DISPATCH: grounding is redone against the live tree inside the seam; a miss is never a tap.
         currentCoroutineContext().ensureActive()
-        val outcome = runCatching { dispatch(action) }
+        val outcome = runCatching { dispatch(effectiveAction) }
             .getOrElse { DispatchOutcome(dispatched = false, reason = "dispatch threw: ${it.message}") }
 
-        val liveCommand = AniobActionExecutor.planDispatch(action, observed)
+        val liveCommand = AniobActionExecutor.planDispatch(effectiveAction, observed)
 
         // DispatchOutcome.dispatched=false must prevent a verified action
         if (!outcome.dispatched) {
             val nextCtx = ctx.withStep(ctx.stepIndex + 1, observed, NeutralWordingContract.neutralize("dispatch did not complete: ${outcome.reason}")).withFailure()
             return finish(
-                action, proposal, nextCtx, observed, resolvedNode,
+                effectiveAction, proposal, nextCtx, observed, effectiveNode,
                 StepResult.TerminalState.FAIL, outcome.reason.ifBlank { "Action not dispatched" },
                 start, verification = null, dispatch = liveCommand, dispatched = false
             )
@@ -202,33 +260,33 @@ class StepPipeline(
         currentCoroutineContext().ensureActive()
 
         // SETTLE: idle-gate instead of a fixed sleep
-        val screenAfter = outcome.screenAfter ?: runCatching { settle(action, capture) }.getOrDefault(observed)
+        val screenAfter = outcome.screenAfter ?: runCatching { settle(effectiveAction, capture) }.getOrDefault(observed)
 
         currentCoroutineContext().ensureActive()
 
         // VERIFY
         val verification = if (proposal is Proposal.DirectIntent) {
-            val summary = (action as? AniobAction.Finish)?.summary ?: action.describeAction()
+            val summary = (effectiveAction as? AniobAction.Finish)?.summary ?: effectiveAction.describeAction()
             DeterministicVerifier.VerificationResult(
                 isExpected = true,
                 durationMs = 0L,
                 reason = "Direct intent dispatched: $summary"
             )
-        } else if (action is AniobAction.Finish) {
+        } else if (effectiveAction is AniobAction.Finish) {
             DeterministicVerifier.verifyFinish(ctx.successCriteria, screenAfter, ctx.stepIndex + 1)
         } else {
-            DeterministicVerifier.verify(action, observed, screenAfter)
+            DeterministicVerifier.verify(effectiveAction, observed, screenAfter)
         }
 
         // REFLECT
-        var nextCtx = ctx.withStep(ctx.stepIndex + 1, screenAfter, historyEntry(action, verification, proposal))
-            .withAction(action)
+        var nextCtx = ctx.withStep(ctx.stepIndex + 1, screenAfter, historyEntry(effectiveAction, verification, proposal))
+            .withAction(effectiveAction)
         var reflection: ReflectionOutcome? = null
         var terminal = StepResult.TerminalState.CONTINUE
 
-        if (action is AniobAction.Fail) {
+        if (effectiveAction is AniobAction.Fail) {
             terminal = StepResult.TerminalState.FAIL
-        } else if (action is AniobAction.Finish) {
+        } else if (effectiveAction is AniobAction.Finish) {
             // Finish is PROVISIONAL: it only becomes SUCCESS with evidence
             val verdict = if (verification.isExpected) {
                 ReflectionOutcome.confirmed(verification.reason)
@@ -253,25 +311,35 @@ class StepPipeline(
             }
         } else if (!verification.isExpected) {
             nextCtx = nextCtx.withFailure()
-            val legacy = reflectionAgent.reflect(observed, screenAfter, action, verifiedSuccess = false)
+            val legacy = reflectionAgent.reflect(observed, screenAfter, effectiveAction, verifiedSuccess = false)
             reflection = ReflectionOutcome(
                 confirmed = false,
                 reason = legacy.reason,
                 feedback = legacy.reason,
                 recoveryStrategy = legacy.remedialAction?.describeAction()
             )
-            if (nextCtx.consecutiveFailures >= limits.watchdogLoopThreshold) {
+            if (legacy.remedialAction is AniobAction.Fail) {
+                terminal = StepResult.TerminalState.FAIL
+            } else if (nextCtx.consecutiveFailures >= limits.watchdogLoopThreshold) {
                 // Loop guard: hand back a remedial action rather than spinning on the same miss.
                 // Repeated failure must NOT call withSuccess() to reset the counter!
+                nextCtx = nextCtx.withStep(
+                    nextCtx.stepIndex,
+                    screenAfter,
+                    NeutralWordingContract.neutralize(
+                        "watchdog threshold (${limits.watchdogLoopThreshold}) reached: ${legacy.remedialAction?.describeAction() ?: "backtrack recommended"}"
+                    )
+                )
             }
         } else {
             nextCtx = nextCtx.withSuccess()
         }
 
         return finish(
-            action, proposal, nextCtx, screenAfter, resolvedNode,
+            effectiveAction, proposal, nextCtx, screenAfter, effectiveNode,
             terminal, verification.reason, start, verification, reflection, liveCommand,
-            dispatched = true
+            dispatched = true,
+            learningScreen = observed
         )
     }
 
@@ -287,7 +355,10 @@ class StepPipeline(
         verification: DeterministicVerifier.VerificationResult?,
         reflection: ReflectionOutcome? = null,
         dispatch: DispatchCommand? = null,
-        dispatched: Boolean = true
+        dispatched: Boolean = true,
+        learningScreen: AniobScreenState = screen,
+        blockedBySafety: Boolean = false,
+        blockedFingerprint: String? = null
     ): StepResult {
         val verified = verification?.isExpected == true && terminal != StepResult.TerminalState.FAIL && dispatched
         val computedTokens = (action.describeAction().length + screen.treeHash.length) / 4 + 50
@@ -302,12 +373,14 @@ class StepPipeline(
             latencyMs = System.currentTimeMillis() - start,
             tokensUsed = computedTokens,
             textEvidence = verification?.textEvidence,
-            targetBounds = resolvedNode?.bounds
+            targetBounds = resolvedNode?.bounds,
+            blockedBySafety = blockedBySafety,
+            blockedFingerprint = blockedFingerprint
         )
         // RECORD: one call site, verified-only for learning (failures must never distill).
         recordStep(record)
         if (verified && dispatched) {
-            learning.onVerifiedStep(nextCtx, action, screen)
+            learning.onVerifiedStep(nextCtx, action, learningScreen)
             if (terminal == StepResult.TerminalState.SUCCESS) {
                 learning.onTaskSuccess(nextCtx, nextCtx.trajectory)
             }

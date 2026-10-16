@@ -89,20 +89,24 @@ class AniobExecutionRouter(
         if (trajectory != null) {
             val cachedAction = replayEngine.nextAction(trajectory, stepIndex, screenState)
             if (cachedAction != null) {
-                // If the action names an element not currently on screen, try scroll-until-found
+                // If the action names an element not currently on screen, self-heal via semantic token overlap or scroll
                 val target = cachedAction.semanticTarget()
-                if (target is SemanticTarget.SomIndex && screenState.nodes.none { it.id == target.index }) {
-                    val scrollResult = com.aniob.core.tools.AniobScrollHelper.scrollUntilFound(
-                        screenState = screenState,
-                        targetPredicate = { it.id == target.index || it.text.contains(taskPrompt, true) },
-                        taskPrompt = taskPrompt,
-                        capture = { screenState },
-                        executeSwipe = { true }
-                    )
-                    if (scrollResult.found && scrollResult.node != null) {
+                if (target is SemanticTarget.SomIndex && screenState.findNodeById(target.index) == null) {
+                    val fallbackNode = findSemanticFallbackNode(taskPrompt, screenState)
+                    if (fallbackNode != null) {
                         return ExecutionPlanResult.FastPathStep(
-                            action = AniobAction.Tap(SemanticTarget.SomIndex(scrollResult.node.id)),
-                            reason = "Scroll-until-found success after ${scrollResult.swipes} swipes"
+                            action = AniobAction.Tap(SemanticTarget.SomIndex(fallbackNode.id)),
+                            reason = "FastPath fallback matched node ${fallbackNode.id} by semantic token overlap"
+                        )
+                    }
+                    if (screenState.nodes.any { it.isScrollable }) {
+                        return ExecutionPlanResult.FastPathStep(
+                            action = AniobAction.Swipe(
+                                direction = com.aniob.core.domain.SwipeDirection.DOWN,
+                                distancePx = 600,
+                                thought = "Scroll down to reveal off-screen FastPath target ${target.index}"
+                            ),
+                            reason = "FastPath target ${target.index} off-screen; scrolling to reveal"
                         )
                     }
                 }
@@ -126,18 +130,24 @@ class AniobExecutionRouter(
             if (step != null) {
                 val action = step.toAniobAction()
                 val target = action.semanticTarget()
-                if (target is SemanticTarget.SomIndex && screenState.nodes.none { it.id == target.index }) {
-                    val scrollResult = com.aniob.core.tools.AniobScrollHelper.scrollUntilFound(
-                        screenState = screenState,
-                        targetPredicate = { it.id == target.index || it.text.contains(taskPrompt, true) },
-                        taskPrompt = taskPrompt,
-                        capture = { screenState },
-                        executeSwipe = { true }
-                    )
-                    if (scrollResult.found && scrollResult.node != null) {
-                        return ExecutionPlanResult.FastPathStep(
-                            action = AniobAction.Tap(SemanticTarget.SomIndex(scrollResult.node.id)),
-                            reason = "Scroll-until-found success after ${scrollResult.swipes} swipes"
+                if (target is SemanticTarget.SomIndex && screenState.findNodeById(target.index) == null) {
+                    val fallbackNode = findSemanticFallbackNode(taskPrompt, screenState)
+                    if (fallbackNode != null) {
+                        return ExecutionPlanResult.SkillStepExecution(
+                            action = AniobAction.Tap(SemanticTarget.SomIndex(fallbackNode.id)),
+                            skill = skill,
+                            reason = "Skill fallback matched node ${fallbackNode.id} by semantic token overlap"
+                        )
+                    }
+                    if (screenState.nodes.any { it.isScrollable }) {
+                        return ExecutionPlanResult.SkillStepExecution(
+                            action = AniobAction.Swipe(
+                                direction = com.aniob.core.domain.SwipeDirection.DOWN,
+                                distancePx = 600,
+                                thought = "Scroll down to reveal off-screen skill target ${target.index}"
+                            ),
+                            skill = skill,
+                            reason = "Skill target ${target.index} off-screen; scrolling to reveal"
                         )
                     }
                 }
@@ -190,6 +200,56 @@ class AniobExecutionRouter(
             decision = decision,
             progressSummary = progress?.summary,
             progress = progress
+        )
+    }
+
+    /**
+     * Stopword-filtered token-salience fallback resolver.
+     * Prevents false-positive substring matches on short stop-words ("on", "in", "to", "a")
+     * and requires the candidate node to be visible, enabled, and interactive.
+     */
+    internal fun findSemanticFallbackNode(
+        taskPrompt: String,
+        screenState: AniobScreenState
+    ): com.aniob.core.domain.AniobNode? {
+        val promptTokens = extractSalientTokens(taskPrompt)
+        if (promptTokens.isEmpty()) return null
+
+        var bestNode: com.aniob.core.domain.AniobNode? = null
+        var bestScore = 0.0
+
+        for (node in screenState.nodes) {
+            if (!node.isVisibleToUser || !node.isEnabled || (!node.isClickable && !node.isEditable)) continue
+            val label = node.text.ifBlank { node.contentDescription }
+            if (label.isBlank()) continue
+            val nodeTokens = extractSalientTokens(label)
+            if (nodeTokens.isEmpty()) continue
+
+            val intersection = nodeTokens.count { it in promptTokens }
+            if (intersection == 0) continue
+
+            val recall = intersection.toDouble() / nodeTokens.size.toDouble()
+            val precision = intersection.toDouble() / promptTokens.size.toDouble()
+            val f1 = (2.0 * precision * recall) / (precision + recall)
+            if (recall >= 0.5 && f1 > bestScore) {
+                bestScore = f1
+                bestNode = node
+            }
+        }
+        return bestNode
+    }
+
+    private fun extractSalientTokens(text: String): Set<String> =
+        text.lowercase()
+            .split(TOKEN_SPLIT_REGEX)
+            .filter { it.length >= 3 && it !in STOPWORDS }
+            .toSet()
+
+    companion object {
+        private val TOKEN_SPLIT_REGEX = Regex("\\W+")
+        private val STOPWORDS = setOf(
+            "the", "and", "for", "with", "from", "into", "onto", "tap", "click",
+            "open", "press", "button", "app", "please", "can", "you"
         )
     }
 }

@@ -14,15 +14,38 @@ class AniobSkillEngine {
         loadDefaultBuiltinSkills()
     }
 
+    @Synchronized
     fun getLoadedSkills(): List<AniobSkill> = loadedSkills.toList()
 
+    @Synchronized
     fun getActiveCatalog(): List<AniobSkill> = loadedSkills.filter { it.status == SkillStatus.ACTIVE && !it.isDraft }
 
+    @Synchronized
     fun getDraftCatalog(): List<AniobSkill> = loadedSkills.filter { it.status == SkillStatus.DRAFT || it.isDraft }
 
+    @Synchronized
     fun registerSkill(skill: AniobSkill) {
         loadedSkills.removeAll { it.name.equals(skill.name, ignoreCase = true) }
         loadedSkills.add(skill)
+    }
+
+    @Synchronized
+    fun removeSkill(name: String): Boolean =
+        loadedSkills.removeAll { it.name.equals(name, ignoreCase = true) }
+
+    @Synchronized
+    fun loadFromDirectory(dir: java.io.File): Int {
+        if (!dir.exists() || !dir.isDirectory) return 0
+        var count = 0
+        dir.listFiles { f -> f.isFile && (f.extension == "yaml" || f.extension == "yml" || f.extension == "json") }
+            ?.forEach { file ->
+                runCatching {
+                    val skill = parseYaml(file.readText())
+                    registerSkill(skill)
+                    count++
+                }
+            }
+        return count
     }
 
     /**

@@ -15,6 +15,7 @@ data class AniobNode(
     val isEditable: Boolean = false,
     val isScrollable: Boolean = false,
     val isSelected: Boolean = false,
+    val isChecked: Boolean = false,
     val isEnabled: Boolean = true,
     val isVisibleToUser: Boolean = true,
     val isPassword: Boolean = false,

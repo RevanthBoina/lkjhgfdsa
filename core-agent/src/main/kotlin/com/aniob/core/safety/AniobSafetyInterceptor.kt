@@ -23,7 +23,7 @@ typealias InterceptionResult = InterceptResult
 object AniobSafetyInterceptor {
 
     private val OTP_PATTERN = Regex("\\b\\d{4,6}\\b")
-    private val FINANCIAL_KEYWORDS = Regex("(?i)(?:pay|purchase|checkout|payment|transaction|credit\\s*card|debit\\s*card|cvv|upi://|wallet|bank\\s*transfer|billing|password|otp)")
+    private val FINANCIAL_KEYWORDS = Regex("(?i)(?:\\b(?:pay|purchase|checkout|payment|transaction|credit\\s*card|debit\\s*card|cvv|wallet|bank\\s*transfer|billing|password|otp)\\b|upi://)")
     private val DESTRUCTIVE_KEYWORDS = Regex("(?i)(?:delete\\s*account|erase\\s*all|factory\\s*reset|format\\s*storage|wipe\\s*data)")
     private val MESSAGE_SEND_KEYWORDS = Regex("(?i)(?:send\\s*sms|send\\s*message|delete\\s*file|transfer\\s*funds)")
 
@@ -33,11 +33,14 @@ object AniobSafetyInterceptor {
 
     private val paymentBlocklist = listOf("upi://", "com.android.vending.BILLING", "checkout", "purchase", "payment", "transaction")
     private val sensitiveBlocklist = listOf("otp", "cvv", "password", "pin")
+    private val SENSITIVE_BLOCKLIST_REGEX = sensitiveBlocklist.joinToString("|") { Regex.escape(it) }
+        .let { Regex("\\b(?:$it)\\b") }
     private val destructiveBlocklist = listOf("delete account", "erase all", "factory reset", "format storage", "wipe data")
     private val unknownContactKeywords = listOf("unknown", "add new", "new contact", "create contact", "???")
     private val blockedFingerprints = mutableSetOf<String>()
     private val blockedTimestamps = mutableMapOf<String, Long>()
 
+    @Synchronized
     fun evaluateAction(
         action: AniobAction,
         targetNode: AniobNode?,
@@ -51,6 +54,10 @@ object AniobSafetyInterceptor {
         }
 
         val actionStr = action.toString().lowercase()
+        val typedOrThoughtText = when (action) {
+            is AniobAction.InputText -> "${action.text} ${action.thought}"
+            else -> action.thought
+        }.lowercase()
 
         // 1. Hard prohibitions: UPI schemes, Google Billing, destructive wipe actions
         if (actionStr.contains("upi://") || targetNode?.text?.contains("upi://", ignoreCase = true) == true) {
@@ -76,9 +83,7 @@ object AniobSafetyInterceptor {
         }
 
         // Sensitive data on editable fields
-        val sensitiveRegex = sensitiveBlocklist.joinToString("|") { Regex.escape(it) }
-            .let { Regex("\\b(?:$it)\\b") }
-        if (targetNode?.isEditable == true && (sensitiveRegex.containsMatchIn(actionStr) || OTP_PATTERN.containsMatchIn(actionStr))) {
+        if (targetNode?.isEditable == true && (SENSITIVE_BLOCKLIST_REGEX.containsMatchIn(actionStr) || OTP_PATTERN.containsMatchIn(typedOrThoughtText))) {
             blockedFingerprints.add(screenFingerprint)
             blockedTimestamps[screenFingerprint] = System.currentTimeMillis()
             return InterceptResult(isAllowed = false, reason = "Sensitive data blocked", riskTier = "HIGH")
@@ -144,27 +149,36 @@ object AniobSafetyInterceptor {
             )
         }
 
-        return InterceptResult(isAllowed = true, reason = "Allowed", riskTier = "LOW")
+        // 5. Plan-7.8 Consequence & Reversibility Classifier on resolved target label
+        val baseResult = InterceptResult(isAllowed = true, reason = "Allowed", riskTier = "LOW")
+        val consequenceAssessment = AniobConsequenceClassifier.classify(action, targetNode)
+        return AniobConsequenceClassifier.mergeWithInterceptor(baseResult, consequenceAssessment)
     }
 
+    @Synchronized
     fun isFingerprintBlocked(fingerprint: String): Boolean = blockedFingerprints.contains(fingerprint)
 
+    @Synchronized
     fun clearBlockedFingerprints() {
         blockedFingerprints.clear()
         blockedTimestamps.clear()
     }
 
+    @Synchronized
     fun unblockFingerprint(fingerprint: String) {
         blockedFingerprints.remove(fingerprint)
         blockedTimestamps.remove(fingerprint)
     }
 
+    @Synchronized
     fun clearTaskBlockedFingerprints(fingerprints: Set<String>) {
         fingerprints.forEach { unblockFingerprint(it) }
     }
 
+    @Synchronized
     fun getBlockedFingerprints(): Set<String> = blockedFingerprints.toSet()
 
+    @Synchronized
     fun getBlockedFingerprintTimestamp(fingerprint: String): Long =
         blockedTimestamps[fingerprint] ?: System.currentTimeMillis()
 }

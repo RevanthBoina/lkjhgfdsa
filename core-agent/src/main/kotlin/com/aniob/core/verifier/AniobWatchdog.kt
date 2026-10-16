@@ -48,6 +48,7 @@ class AniobWatchdog(
     private val roundHistory = ArrayDeque<ActionRound>()
     private var consecutiveIneffectiveRounds = 0
 
+    @Synchronized
     fun record(
         screenHash: String,
         action: AniobAction,
@@ -92,6 +93,7 @@ class AniobWatchdog(
      * Plan-3.3: Detects identical repeats or cycle patterns (A->B->A->B).
      * Honors planned loop exemptions (Plan-3.4).
      */
+    @Synchronized
     fun isLoopDetected(): Boolean {
         if (roundHistory.size < 2) return false
 
@@ -122,9 +124,11 @@ class AniobWatchdog(
      * Plan-3.3: Detects A->B->A->B cycle:
      * fp[n-4] == fp[n-2] && fp[n-3] == fp[n-1] && fp[n-4] != fp[n-3]
      */
+    @Synchronized
     fun isOscillating(): Boolean {
         if (roundHistory.size < 4) return false
-        val keys = roundHistory.map { it.argsFingerprint }
+        val rounds = roundHistory.toList()
+        val keys = rounds.map { it.argsFingerprint }
         val n = keys.size
 
         // Direct check for A->B->A->B
@@ -135,21 +139,22 @@ class AniobWatchdog(
 
         if (a1 == a2 && b1 == b2 && a1 != b1) {
             // Check if this cycle is an exempted list inspection (e.g. tap item -> press back -> tap next)
-            val rounds = roundHistory.toList()
             val hasExemption = rounds.takeLast(4).any { it.plannedLoop?.type == PlannedLoopType.LIST_INSPECTION }
-            if (!hasExemption) {
-                return true
-            }
+            return !hasExemption
         }
 
         // Subsequence oscillation for cycle length 2 or 3
         for (cycleLen in 2..3) {
             val windowSize = cycleLen * 2
             if (keys.size >= windowSize) {
+                val windowRounds = rounds.takeLast(windowSize)
+                if (windowRounds.any { it.plannedLoop?.type == PlannedLoopType.LIST_INSPECTION }) {
+                    continue
+                }
                 val window = keys.takeLast(windowSize)
                 val firstHalf = window.take(cycleLen)
                 val secondHalf = window.takeLast(cycleLen)
-                if (firstHalf == secondHalf) {
+                if (firstHalf == secondHalf && firstHalf.distinct().size > 1) {
                     return true
                 }
             }
@@ -157,6 +162,7 @@ class AniobWatchdog(
         return false
     }
 
+    @Synchronized
     fun getConsecutiveIneffectiveRounds(): Int = consecutiveIneffectiveRounds
 
     /**

@@ -167,7 +167,9 @@ fun AniobTrackerScreen(
                         step = step,
                         autoExpand = !step.verifiedSuccess,
                         onCopyJson = {
-                            val json = """{"step":${step.stepIndex},"action":"${step.action.toolName}","success":${step.verifiedSuccess},"latencyMs":${step.latencyMs},"failure":"${step.failureReason ?: "none"}"}"""
+                            val escapedAction = step.action.toolName.replace("\\", "\\\\").replace("\"", "\\\"")
+                            val escapedFailure = (step.failureReason ?: "none").replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+                            val json = """{"step":${step.stepIndex},"action":"$escapedAction","success":${step.verifiedSuccess},"latencyMs":${step.latencyMs},"failure":"$escapedFailure"}"""
                             clipboardManager.setText(AnnotatedString(json))
                             Toast.makeText(context, "Copied step JSON to clipboard", Toast.LENGTH_SHORT).show()
                         }
@@ -235,7 +237,7 @@ fun ExpandableStepRow(
     autoExpand: Boolean,
     onCopyJson: () -> Unit
 ) {
-    var expanded by remember { mutableStateOf(autoExpand) }
+    var expanded by remember(step.stepIndex, autoExpand) { mutableStateOf(autoExpand) }
 
     Card(
         colors = CardDefaults.cardColors(

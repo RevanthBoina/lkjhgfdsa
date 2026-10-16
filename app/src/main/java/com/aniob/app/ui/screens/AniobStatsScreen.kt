@@ -94,7 +94,8 @@ fun AniobStatsScreen(
                         val csv = buildString {
                             appendLine("id,prompt,status,steps,durationMs,tokens,provider")
                             scores.forEach {
-                                appendLine("${it.id},\"${it.userPrompt}\",${it.status},${it.totalSteps},${it.durationMs},${it.tokensUsed},${it.providerUsed}")
+                                val escapedPrompt = it.userPrompt.replace("\"", "\"\"")
+                                appendLine("${it.id},\"$escapedPrompt\",${it.status},${it.totalSteps},${it.durationMs},${it.tokensUsed},${it.providerUsed}")
                             }
                         }
                         clipboardManager.setText(AnnotatedString(csv))
@@ -310,7 +311,7 @@ fun AniobStatsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
                 ) {
-                    val fastPathCount = scores.count { it.providerUsed == "FAST_PATH" || it.providerUsed == "INTENT" }
+                    val fastPathCount = scores.count { it.providerUsed == "FAST_PATH" || it.providerUsed == "FASTPATH" || it.providerUsed == "INTENT" }
                     val localCount = scores.count { it.providerUsed == "LOCAL_SLM" }
                     val cloudCount = scores.count { it.providerUsed == "OMNIROUTE_CLOUD" }
                     Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

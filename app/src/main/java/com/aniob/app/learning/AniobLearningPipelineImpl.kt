@@ -9,6 +9,8 @@ import com.aniob.core.learning.LearningPipeline
 import com.aniob.core.tools.AniobFingerprint
 import com.aniob.core.tools.AniobReplayEngine
 import com.aniob.core.tools.AniobTrajectoryCodec
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -35,10 +37,10 @@ class AniobLearningPipelineImpl(
 ) : LearningPipeline {
 
     /** Per-task rehearsal buffer: the screen fingerprint observed *before* each verified step. */
-    private val rehearsal = mutableMapOf<String, MutableList<ReplayPoint>>()
-    private val signatureCounts = mutableMapOf<String, Int>()
+    private val rehearsal = ConcurrentHashMap<String, CopyOnWriteArrayList<ReplayPoint>>()
+    private val signatureCounts = ConcurrentHashMap<String, Int>()
     private val hydrationMutex = Mutex()
-    private var isHydrated: Boolean = false
+    @Volatile private var isHydrated: Boolean = false
     private val hydrationDeferred = CompletableDeferred<Int>()
 
     private data class ReplayPoint(
@@ -48,14 +50,15 @@ class AniobLearningPipelineImpl(
 
     override fun onVerifiedStep(ctx: TaskContext, action: AniobAction, screen: AniobScreenState) {
         val key = ctx.taskId.ifBlank { ctx.instruction.lowercase() }
-        rehearsal.getOrPut(key) { mutableListOf() }
+        rehearsal.computeIfAbsent(key) { CopyOnWriteArrayList() }
             .add(ReplayPoint(action, AniobFingerprint.computeScreenFingerprint(screen)))
     }
 
     override fun onTaskSuccess(ctx: TaskContext, trajectory: List<AniobAction>) {
         val key = ctx.taskId.ifBlank { ctx.instruction.lowercase() }
         val signature = ctx.instruction.lowercase()
-        val points = rehearsal[key].orEmpty()
+        val points = rehearsal.remove(key)?.toList().orEmpty()
+        rehearsal.remove(key.lowercase())
         if (points.isEmpty()) return
 
         // 1. FastPath: persist an executable, fingerprinted trajectory so a cold start replays it
@@ -67,26 +70,30 @@ class AniobLearningPipelineImpl(
         )
         replayEngine.registerTrajectory(replayTrajectory)
 
-        val count = (signatureCounts[signature] ?: 0) + 1
-        signatureCounts[signature] = count
-
-        kotlinx.coroutines.runBlocking {
-            val existing = database.appKnowledgeBaseDao().findBySignature(signature)
-            database.appKnowledgeBaseDao().saveMacro(
-                AppKnowledgeBaseEntity(
-                    taskSignature = signature,
-                    packageName = replayTrajectory.packageName,
-                    macroStepsJson = AniobTrajectoryCodec.encode(replayTrajectory),
-                    successCount = (existing?.successCount ?: 0) + 1
+        val inMemCount = signatureCounts.merge(signature, 1, Int::plus) ?: 1
+        val persistedCount = runCatching {
+            kotlinx.coroutines.runBlocking {
+                val existing = database.appKnowledgeBaseDao().findBySignature(signature)
+                val nextCount = maxOf(inMemCount, (existing?.successCount ?: 0) + 1)
+                database.appKnowledgeBaseDao().saveMacro(
+                    AppKnowledgeBaseEntity(
+                        taskSignature = signature,
+                        packageName = replayTrajectory.packageName,
+                        macroStepsJson = AniobTrajectoryCodec.encode(replayTrajectory),
+                        successCount = nextCount
+                    )
                 )
-            )
-        }
+                nextCount
+            }
+        }.getOrDefault(inMemCount)
+
+        val count = maxOf(inMemCount, persistedCount)
+        signatureCounts[signature] = count
 
         // 2. Distill candidacy: three matching verified runs are the threshold for a skill draft.
         if (count >= DISTILL_THRESHOLD) {
             onDistillCandidate(signature, points.map { it.action })
         }
-        endTask(key)
     }
 
     override fun onTaskEnd(taskId: String) {
