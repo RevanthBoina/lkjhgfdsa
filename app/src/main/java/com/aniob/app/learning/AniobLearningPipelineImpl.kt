@@ -61,6 +61,11 @@ class AniobLearningPipelineImpl(
         rehearsal.remove(key.lowercase())
         if (points.isEmpty()) return
 
+        // Invariant: Unverified outcomes cannot enter success-only learning.
+        if (ctx.successCriteria == null || !ctx.successCriteria.hasObservableCheck) {
+            return
+        }
+
         // 1. FastPath: persist an executable, fingerprinted trajectory so a cold start replays it
         //    with zero model tokens.
         val replayTrajectory = AniobReplayEngine.ReplayTrajectory(

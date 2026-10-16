@@ -105,11 +105,12 @@ class AniobExternalAiTrigger(
             else -> "You are Aniob."
         }
 
+        val isLocalModeOnly = autoMode.lowercase() == "local-only"
         val isLocalReady = localProvider != null && localProvider.isAvailable()
-        val isCloudReady = powerState.isNetworkAvailable && cloudProvider != null && cloudProvider.isConfigured
+        val isCloudReady = !isLocalModeOnly && powerState.isNetworkAvailable && cloudProvider != null && cloudProvider.isConfigured
 
         val useLocal = when (autoMode.lowercase()) {
-            "local-only" -> isLocalReady
+            "local-only" -> true
             "cloud-only" -> false
             "local-first" -> isLocalReady || !isCloudReady
             "balanced", "auto" -> {
@@ -129,7 +130,30 @@ class AniobExternalAiTrigger(
         }
 
         val result: ExternalAiResult = try {
-            if (useLocal && isLocalReady) {
+            if (isLocalModeOnly) {
+                if (isLocalReady) {
+                    val fullAnswer = localProvider!!.chatStreaming(prompt) { delta ->
+                        onDelta(delta)
+                    }
+                    ExternalAiResult.Success(
+                        answer = fullAnswer,
+                        provider = "LOCAL_SLM",
+                        intent = intent,
+                        latencyMs = System.currentTimeMillis() - startMs
+                    )
+                } else {
+                    val reason = "Local-only mode active: local model is missing or not installed"
+                    val answer = "⚠️ $reason"
+                    onDelta(answer)
+                    ExternalAiResult.Unavailable(
+                        answer = answer,
+                        provider = "NO_PROVIDER",
+                        intent = intent,
+                        latencyMs = System.currentTimeMillis() - startMs,
+                        reason = reason
+                    )
+                }
+            } else if (useLocal && isLocalReady) {
                 val fullAnswer = localProvider!!.chatStreaming(prompt) { delta ->
                     onDelta(delta)
                 }

@@ -1951,7 +1951,7 @@ class AniobViewModel(
                             )
                             totalTokens += ((systemPrompt.length + activePrompt.length) / 4).coerceAtLeast(80)
                             if (gen is AniobGenerationResult.Ready) {
-                                android.util.Log.i("AniobViewModel", "Local SLM raw output: '${gen.fullText}'")
+                                android.util.Log.i("AniobViewModel", "Local SLM generated output (len=${gen.fullText.length})")
                             }
                             val structured = AniobLocalActionResolver.resolveStructured(gen, currentScreen)
                             if (structured.usedFallback) {
@@ -2167,19 +2167,23 @@ class AniobViewModel(
                     Outcome.FAILED
                 }
                 stepResult?.terminalState == StepResult.TerminalState.SUCCESS -> {
-                    if (resolvedCriteria.hasObservableCheck) {
-                        val anyFailed = criteriaEvaluations.any { it.state == com.aniob.core.domain.CriterionState.FAILED }
-                        if (anyFailed) Outcome.FAILED else Outcome.SUCCESS
+                    if (resolvedCriteria != null && resolvedCriteria.hasObservableCheck) {
+                        val anyNonPassed = criteriaEvaluations.any { it.state != com.aniob.core.domain.CriterionState.PASSED }
+                        if (anyNonPassed || criteriaEvaluations.isEmpty()) Outcome.FAILED else Outcome.SUCCESS
                     } else {
-                        Outcome.SUCCESS
+                        Outcome.UNVERIFIED
                     }
                 }
                 stepResult?.terminalState == StepResult.TerminalState.FAIL -> Outcome.FAILED
                 else -> Outcome.FAILED
             }
-        } else if (finalOutcome == Outcome.SUCCESS && resolvedCriteria.hasObservableCheck) {
-            val anyFailed = criteriaEvaluations.any { it.state == com.aniob.core.domain.CriterionState.FAILED }
-            if (anyFailed) finalOutcome = Outcome.FAILED
+        } else if (finalOutcome == Outcome.SUCCESS) {
+            if (resolvedCriteria != null && resolvedCriteria.hasObservableCheck) {
+                val anyNonPassed = criteriaEvaluations.any { it.state != com.aniob.core.domain.CriterionState.PASSED }
+                if (anyNonPassed || criteriaEvaluations.isEmpty()) finalOutcome = Outcome.FAILED
+            } else {
+                finalOutcome = Outcome.UNVERIFIED
+            }
         }
 
         val totalDuration = System.currentTimeMillis() - startTime

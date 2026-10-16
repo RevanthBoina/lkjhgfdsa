@@ -59,7 +59,7 @@ class MainActivity : ComponentActivity() {
         if (intent == null) return
         val app = application as AniobApplication
         val rawPrompt = intent.getStringExtra("prompt") ?: intent.getStringExtra("com.aniob.app.PROMPT")
-        android.util.Log.i("MainActivity", "handleIncomingIntent: rawPrompt=$rawPrompt action=${intent.action}")
+        android.util.Log.i("MainActivity", "handleIncomingIntent: promptLen=${rawPrompt?.length ?: 0} action=${intent.action}")
         val promptExtra = rawPrompt?.trim()?.removeSurrounding("'")?.removeSurrounding("\"")?.trim()
         if (!promptExtra.isNullOrBlank()) {
             val rawMode = intent.getStringExtra("mode") ?: intent.getStringExtra("com.aniob.app.ROUTER_MODE")
@@ -68,7 +68,7 @@ class MainActivity : ComponentActivity() {
                 android.util.Log.i("MainActivity", "Setting autoRouterMode: $modeExtra")
                 viewModel.setAutoRouterMode(modeExtra)
             }
-            android.util.Log.i("MainActivity", "Submitting prompt: $promptExtra")
+            android.util.Log.i("MainActivity", "Submitting prompt (len=${promptExtra.length})")
             viewModel.submitTask(promptExtra)
             return
         }

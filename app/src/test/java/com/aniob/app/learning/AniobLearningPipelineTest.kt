@@ -7,6 +7,7 @@ import com.aniob.core.domain.AniobNode
 import com.aniob.core.domain.AniobRect
 import com.aniob.core.domain.AniobScreenState
 import com.aniob.core.domain.SemanticTarget
+import com.aniob.core.domain.SuccessCriteria
 import com.aniob.core.domain.TaskContext
 import com.aniob.core.tools.AniobReplayEngine
 import kotlinx.coroutines.runBlocking
@@ -51,7 +52,8 @@ class AniobLearningPipelineTest {
         val taskId = "task_uuid_123"
         val ctx = TaskContext(
             instruction = "Open settings and tap display",
-            taskId = taskId
+            taskId = taskId,
+            successCriteria = SuccessCriteria(mustContainText = listOf("Display"))
         )
         val action1 = AniobAction.Tap(SemanticTarget.Text("Display"))
         val screen1 = sampleScreen("Display")

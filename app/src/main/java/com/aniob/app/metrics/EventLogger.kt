@@ -95,11 +95,12 @@ class EventLogger(private val database: AniobDatabase) {
     }
 
     private fun log(level: String, tag: String, message: String) {
+        val sanitized = sanitize(message)
         when (level) {
-            "WARN" -> Log.w(tag, message)
-            "ERROR" -> Log.e(tag, message)
-            "DEBUG" -> Log.d(tag, message)
-            else -> Log.i(tag, message)
+            "WARN" -> Log.w(tag, sanitized)
+            "ERROR" -> Log.e(tag, sanitized)
+            "DEBUG" -> Log.d(tag, sanitized)
+            else -> Log.i(tag, sanitized)
         }
         scope.launch {
             try {
@@ -107,7 +108,7 @@ class EventLogger(private val database: AniobDatabase) {
                     LogEventEntity(
                         level = level,
                         tag = tag,
-                        message = message
+                        message = sanitized
                     )
                 )
                 if (insertCount.incrementAndGet() % PRUNE_INTERVAL == 0) {
@@ -118,4 +119,19 @@ class EventLogger(private val database: AniobDatabase) {
             }
         }
     }
+
+    internal fun sanitize(raw: String): String {
+        var s = raw
+        // Redact Authorization headers and Bearer tokens
+        s = BEARER_REGEX.replace(s, "Bearer [REDACTED]")
+        // Redact standard API key patterns (sk-..., or key=...)
+        s = API_KEY_REGEX.replace(s, "$1[REDACTED]")
+        // Redact common secret key assignments
+        s = SECRET_ASSIGN_REGEX.replace(s, "$1=[REDACTED]")
+        return s
+    }
+
+    private val BEARER_REGEX = Regex("(?i)bearer\\s+[a-zA-Z0-9_\\-\\.]+")
+    private val API_KEY_REGEX = Regex("(?i)(sk-[a-zA-Z0-9_\\-]{10,})")
+    private val SECRET_ASSIGN_REGEX = Regex("(?i)(api_?key|auth_?token|secret|password|otp|pin)=[^\\s,;]+")
 }

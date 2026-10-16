@@ -1,9 +1,6 @@
 package com.aniob.core.verifier
 
-import com.aniob.core.domain.AniobAction
-import com.aniob.core.domain.AniobScreenState
-import com.aniob.core.domain.SuccessCriteria
-import com.aniob.core.domain.matches
+import com.aniob.core.domain.*
 
 /**
  * High-speed deterministic action verifier (<10ms, ZERO LLM calls).
@@ -171,12 +168,12 @@ object DeterministicVerifier {
             )
         }
         val evaluations = criteria.evaluateCriteria(finalScreen, steps)
-        val failures = evaluations.filter { it.state == com.aniob.core.domain.CriterionState.FAILED }
+        val nonPassed = evaluations.filter { it.state != com.aniob.core.domain.CriterionState.PASSED }
         val duration = System.currentTimeMillis() - start
         val passedEvidence = evaluations.filter { it.state == com.aniob.core.domain.CriterionState.PASSED && it.textEvidence != null }
             .joinToString("; ") { "${it.description}: ${it.textEvidence}" }
             .ifBlank { null }
-        return if (failures.isEmpty()) {
+        return if (nonPassed.isEmpty() && evaluations.isNotEmpty()) {
             VerificationResult(
                 isExpected = true,
                 durationMs = duration,
@@ -188,7 +185,7 @@ object DeterministicVerifier {
             VerificationResult(
                 isExpected = false,
                 durationMs = duration,
-                reason = "Unmet criteria: ${failures.joinToString("; ") { "${it.description}: ${it.detail}" }}",
+                reason = "Unmet or inconclusive criteria: ${nonPassed.joinToString("; ") { "${it.description}: ${it.detail.ifBlank { it.state.name }}" }}",
                 textEvidence = passedEvidence,
                 evaluations = evaluations
             )

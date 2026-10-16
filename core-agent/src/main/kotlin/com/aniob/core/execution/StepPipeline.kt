@@ -267,11 +267,15 @@ class StepPipeline(
         // VERIFY
         val verification = if (proposal is Proposal.DirectIntent) {
             val summary = (effectiveAction as? AniobAction.Finish)?.summary ?: effectiveAction.describeAction()
-            DeterministicVerifier.VerificationResult(
-                isExpected = true,
-                durationMs = 0L,
-                reason = "Direct intent dispatched: $summary"
-            )
+            if (ctx.successCriteria != null && ctx.successCriteria.hasObservableCheck) {
+                DeterministicVerifier.verifyFinish(ctx.successCriteria, screenAfter, ctx.stepIndex + 1)
+            } else {
+                DeterministicVerifier.VerificationResult(
+                    isExpected = false,
+                    durationMs = 0L,
+                    reason = "Direct intent dispatched: $summary (unverified: no observable completion evidence)"
+                )
+            }
         } else if (effectiveAction is AniobAction.Finish) {
             DeterministicVerifier.verifyFinish(ctx.successCriteria, screenAfter, ctx.stepIndex + 1)
         } else {
@@ -305,7 +309,7 @@ class StepPipeline(
             } else {
                 nextCtx = nextCtx.withRejectedFinish(verdict.feedback)
                     .withFailure()
-                if (nextCtx.rejectedFinishCount >= MAX_REJECTED_FINISHES) {
+                if (nextCtx.rejectedFinishCount >= MAX_REJECTED_FINISHES || proposal is Proposal.DirectIntent) {
                     terminal = StepResult.TerminalState.FAIL
                 }
             }

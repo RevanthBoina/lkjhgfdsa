@@ -128,6 +128,7 @@ class AniobLiteRtLmEngine(
 
             engine = created
             loadedPath = modelPath
+            OnDeviceEngineLock.claimExclusive(this, "LiteRT-LM")
             Log.i(TAG, "LiteRT-LM engine ready: ${f.name} backend=$activeBackend")
             true
         } catch (e: Throwable) {
@@ -154,13 +155,13 @@ class AniobLiteRtLmEngine(
         }
         var session: Session? = null
         val t0 = System.currentTimeMillis()
-        Log.i(TAG, "generate() start: prompt='${prompt.take(60)}...' (len=${prompt.length})")
+        Log.i(TAG, "generate() start: chars=${prompt.length}")
 
         return try {
             val sessionConfig = SessionConfig(samplerConfig = sampler)
             session = eng.createSession(sessionConfig)
             val result = session.generateContent(listOf(InputData.Text(prompt))).trim()
-            Log.i(TAG, "generate() finished in ${System.currentTimeMillis() - t0}ms, chars=${result.length}, result='$result'")
+            Log.i(TAG, "generate() finished in ${System.currentTimeMillis() - t0}ms, chars=${result.length}")
             result.takeIf { it.isNotEmpty() }
         } catch (e: Throwable) {
             Log.e(TAG, "LiteRT-LM generation failed after ${System.currentTimeMillis() - t0}ms: ${e.javaClass.simpleName}: ${e.message}")
@@ -178,6 +179,7 @@ class AniobLiteRtLmEngine(
         if (eng != null) {
             try { eng.close() } catch (e: Throwable) { Log.w(TAG, "engine close failed: ${e.message}") }
         }
+        OnDeviceEngineLock.releaseExclusive(this)
     }
 
     private companion object {
