@@ -170,6 +170,8 @@ class AniobHippocampusTracker(
         is SemanticTarget.ContentDesc -> target.desc
         is SemanticTarget.ResourceId -> target.id
         is SemanticTarget.SomIndex -> ""
+        is SemanticTarget.NormalizedCoordinate -> ""
+        is SemanticTarget.BoundingBox -> ""
     }
 
     private fun sanitize(s: String): String {

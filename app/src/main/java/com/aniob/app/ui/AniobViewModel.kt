@@ -1716,8 +1716,8 @@ class AniobViewModel(
                     targetBounds = stepRecord.targetBounds
                 )
                 addStepRecord(uiStep)
-                if (stepRecord.blockedBySafety && !stepRecord.blockedFingerprint.isNullOrBlank()) {
-                    val fp = stepRecord.blockedFingerprint
+                val fp = stepRecord.blockedFingerprint
+                if (stepRecord.blockedBySafety && !fp.isNullOrBlank()) {
                     taskBlockedFingerprints.add(fp)
                     val record = BlockedRecord(
                         fingerprint = fp,

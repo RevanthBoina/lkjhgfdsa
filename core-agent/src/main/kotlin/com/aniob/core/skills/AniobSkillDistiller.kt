@@ -166,6 +166,14 @@ class AniobSkillDistiller {
                 sb.appendLine("      value: \"${target.desc.replace("\"", "\\\"")}\"")
                 sb.appendLine("      exact: ${target.exact}")
             }
+            is com.aniob.core.domain.SemanticTarget.NormalizedCoordinate -> {
+                sb.appendLine("      kind: \"coord\"")
+                sb.appendLine("      value: \"${target.normX},${target.normY}\"")
+            }
+            is com.aniob.core.domain.SemanticTarget.BoundingBox -> {
+                sb.appendLine("      kind: \"box\"")
+                sb.appendLine("      value: \"${target.left},${target.top},${target.right},${target.bottom}\"")
+            }
         }
     }
 }
