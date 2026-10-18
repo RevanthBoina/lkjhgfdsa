@@ -87,6 +87,21 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
     @Volatile private var contentChangedSinceLastStep: Boolean = true
     @Volatile private var lastScreenState: AniobScreenState? = null
 
+    /**
+     * Research ablation switch for the event-driven capture skip (waterfall level 1).
+     *
+     * When false, every capture recomputes the tree hash instead of trusting the cached one, which
+     * is the "no fast a11y delta verify" condition of BASELINE / INTENT_SHORTCUT_ONLY. Defaults to
+     * true so ordinary use keeps today's behaviour. Verification semantics are unchanged: this only
+     * removes the zero-work short-circuit.
+     */
+    @Volatile private var researchFastDeltaVerify: Boolean = true
+
+    /** Set once per task by the ViewModel from the active ablation mode. */
+    fun setResearchFastDeltaVerify(enabled: Boolean) {
+        researchFastDeltaVerify = enabled
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
@@ -288,7 +303,9 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         val fusedIndex = AniobFusedIndex(optimizedNodes)
 
         val waterfall = AniobScreenDiff.evaluateWaterfall(
-            hasAccessibilityContentChanged = contentChangedSinceLastStep,
+            // Forcing a change when the ablation mode disables the fast delta path makes level 1
+            // unreachable, so the hash is always recomputed.
+            hasAccessibilityContentChanged = contentChangedSinceLastStep || !researchFastDeltaVerify,
             currentNodes = optimizedNodes,
             previousScreen = lastScreenState
         )

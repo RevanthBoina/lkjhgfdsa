@@ -118,6 +118,42 @@ The product name **OmniRoute** is allowed here even though internal identifiers
 | Thinking dialog cloud | Cloud: ready (model) / Cloud: not set up |
 | Brain step body | On-device (private) or cloud (fast). Cloud setup lives in Settings. |
 
+## Research mode (study build)
+
+The ablation selector is a study surface, not a consumer setting: the labels name the exact
+condition so a run in `research_runs.csv` can be traced back to what the agent did. Mode ids
+(`BASELINE`, `INTENT_SHORTCUT_ONLY`, `MOTIF_AND_FAST_A11Y`, `FULL_HUMAN_SPEED`) stay internal —
+they appear only in the CSV, the log tag and the bracketed HUD prefix, never as prose.
+
+| Slot | Copy |
+|---|---|
+| Settings card title | Research mode |
+| Settings card body | Pick the condition before a test batch. It changes how the agent works, not what it can do. |
+| Settings card footer | Each finished task is appended to research_runs.csv; averages are kept in research_summary_table.csv inside the app's files folder. |
+| Mode label — baseline | Baseline |
+| Mode body — baseline | Full observation every step, one action per model call. No shortcuts, no replay. |
+| Mode label — shortcuts | Shortcuts only |
+| Mode body — shortcuts | Direct intent shortcuts are on; every remaining step uses the standard loop. |
+| Mode label — motif | Motif + fast capture |
+| Mode body — motif | Shortcuts, multi-action bursts and the event-driven capture skip. |
+| Mode label — full | Full human speed |
+| Mode body — full | Every mechanism, including verified replay from remembered tasks. |
+| Stats card title | Research metrics |
+| Stats empty | No task measured yet in this install. |
+| Stats mean latency | Mean latency |
+| Stats mean calls | Mean model requests per task |
+| Stats success | Task success rate |
+| Stats runs | Runs in this mode |
+| Stats verdict manual | Last verdict was set manually. |
+| Stats verdict auto | Last verdict came from automatic verification. |
+| Stats override pass | Mark pass |
+| Stats override fail | Mark fail |
+| Stats clear | Clear saved runs |
+
+End-of-task HUD (Stats line and the one-shot Toast), format fixed for the paper:
+
+`[MODE] Latency: 12.35s | LLM Calls: 2 | Success Rate: 66.7%`
+
 ## Learning & Progress (UX-5)
 
 | Slot | Copy |

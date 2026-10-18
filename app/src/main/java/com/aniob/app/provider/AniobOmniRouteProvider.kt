@@ -43,7 +43,13 @@ class AniobOmniRouteProvider(
     private val apiKey: String,
     private val baseUrl: String = AniobProviderConfig.OMNIROUTE_DEFAULT_BASE_URL,
     private val model: String = "auto",
-    private val jsonMode: Boolean = false
+    private val jsonMode: Boolean = false,
+    /**
+     * Invoked once per outbound generation request, immediately before the socket is opened.
+     * `AniobViewModel` wires this to `ResearchTelemetryManager.recordLlmCall()`; the default no-op
+     * keeps tests and one-off callers unchanged. The Settings connection probe does not use it.
+     */
+    private val onLlmRequest: () -> Unit = {}
 ) : AniobCloudLlmProvider {
     override val name: String = "OMNIROUTE_CLOUD"
     override val isConfigured: Boolean get() = apiKey.isNotBlank()
@@ -85,6 +91,7 @@ class AniobOmniRouteProvider(
                 .post(payload.toString().toRequestBody("application/json".toMediaType()))
                 .build()
 
+            onLlmRequest()
             client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
@@ -121,7 +128,8 @@ class AniobOmniRouteProvider(
         apiKey = apiKey,
         baseUrl = baseUrl,
         model = model,
-        jsonMode = true
+        jsonMode = true,
+        onLlmRequest = onLlmRequest
     )
 
     private suspend fun streamingResult(
@@ -155,6 +163,7 @@ class AniobOmniRouteProvider(
                 .post(payload.toString().toRequestBody("application/json".toMediaType()))
                 .build()
 
+            onLlmRequest()
             call = client.newCall(request)
             call.execute().use { response: Response ->
                 val body = response.body?.string().orEmpty()
@@ -256,6 +265,7 @@ class AniobOmniRouteProvider(
                 .post(payload.toString().toRequestBody("application/json".toMediaType()))
                 .build()
 
+            onLlmRequest()
             val call = client.newCall(request)
             suspendCancellableCoroutine<Result<String>> { continuation ->
                 continuation.invokeOnCancellation {

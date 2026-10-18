@@ -51,6 +51,16 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
         reducedMotion = AniobMotion.isReducedMotionEnabled(context)
     }
 
+    // Research HUD: one toast per finished task, fired by the sequence counter so recomposition
+    // cannot repeat it. The line is produced by ResearchTelemetryManager, not composed here.
+    LaunchedEffect(uiState.researchRunSequence) {
+        if (uiState.researchRunSequence > 0L) {
+            uiState.researchStatusLine?.let { line ->
+                Toast.makeText(context, line, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     // UX-0: BackHandler only pops the stack; double-back exits only when already at root CHAT.
     BackHandler {
         if (viewModel.navigateBack()) {
@@ -222,7 +232,9 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
 
             AniobRoute.STATS -> AniobStatsScreen(
                 uiState = uiState,
-                onBack = { viewModel.navigateBack() }
+                onBack = { viewModel.navigateBack() },
+                onResearchOverride = { success -> viewModel.overrideResearchOutcome(success) },
+                onClearResearch = { viewModel.clearResearchData() }
             )
 
             AniobRoute.MODELS -> AniobModelDownloadScreen(
@@ -235,6 +247,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                 onTestConnection = { key, address -> viewModel.testCloudConnection(key, address) },
                 onCloudInputChanged = { viewModel.clearCloudTestResult() },
                 onAutoRouterModeChanged = { mode -> viewModel.setAutoRouterMode(mode) },
+                onAblationModeChanged = { mode -> viewModel.setAblationMode(mode) },
                 onFastPathChanged = { viewModel.setFastPathEnabled(it) },
                 onSafetyGateChanged = { viewModel.setSafetyGateEnabled(it) },
                 onBack = { viewModel.navigateBack() },
