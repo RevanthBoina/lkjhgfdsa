@@ -29,7 +29,7 @@ class ResearchTelemetryTest {
     fun csvRoundTripPreservesCommasQuotesAndNewlines() {
         val run = ResearchRun(
             timestampMs = 1_700_000_000_000,
-            mode = AblationMode.MOTIF_AND_FAST_OBSERVE,
+            mode = AblationMode.BURST_AND_FAST_OBSERVE,
             goal = "Send \"hello, Ana\"\nto the group",
             latencySeconds = 12.345, // CSV keeps millisecond precision
             llmCalls = 4,
@@ -106,23 +106,23 @@ class ResearchTelemetryTest {
     @Test
     fun ablationFlagsMatchTheDocumentedTable() {
         assertFalse(AblationMode.BASELINE.intentShortcuts)
-        assertFalse(AblationMode.BASELINE.motifBursts)
+        assertFalse(AblationMode.BASELINE.actionBursts)
         assertFalse(AblationMode.BASELINE.fastDeltaVerify)
         assertFalse(AblationMode.BASELINE.fastObservation)
         assertFalse(AblationMode.BASELINE.rememberReplay)
 
         assertTrue(AblationMode.INTENT_SHORTCUT_ONLY.intentShortcuts)
-        assertFalse(AblationMode.INTENT_SHORTCUT_ONLY.motifBursts)
+        assertFalse(AblationMode.INTENT_SHORTCUT_ONLY.actionBursts)
         assertFalse(AblationMode.INTENT_SHORTCUT_ONLY.rememberReplay)
 
-        assertTrue(AblationMode.MOTIF_AND_FAST_OBSERVE.intentShortcuts)
-        assertTrue(AblationMode.MOTIF_AND_FAST_OBSERVE.motifBursts)
-        assertTrue(AblationMode.MOTIF_AND_FAST_OBSERVE.fastDeltaVerify)
-        assertTrue(AblationMode.MOTIF_AND_FAST_OBSERVE.fastObservation)
-        assertFalse(AblationMode.MOTIF_AND_FAST_OBSERVE.rememberReplay)
+        assertTrue(AblationMode.BURST_AND_FAST_OBSERVE.intentShortcuts)
+        assertTrue(AblationMode.BURST_AND_FAST_OBSERVE.actionBursts)
+        assertTrue(AblationMode.BURST_AND_FAST_OBSERVE.fastDeltaVerify)
+        assertTrue(AblationMode.BURST_AND_FAST_OBSERVE.fastObservation)
+        assertFalse(AblationMode.BURST_AND_FAST_OBSERVE.rememberReplay)
 
         assertTrue(AblationMode.FULL_HUMAN_SPEED.intentShortcuts)
-        assertTrue(AblationMode.FULL_HUMAN_SPEED.motifBursts)
+        assertTrue(AblationMode.FULL_HUMAN_SPEED.actionBursts)
         assertTrue(AblationMode.FULL_HUMAN_SPEED.fastObservation)
         assertTrue(AblationMode.FULL_HUMAN_SPEED.rememberReplay)
 
@@ -235,9 +235,9 @@ class ResearchTelemetryTest {
     @Test
     fun modeIsPersistedAcrossManagerInstances() {
         val first = ResearchTelemetryManager(context, logger = {})
-        first.mode = AblationMode.MOTIF_AND_FAST_OBSERVE
+        first.mode = AblationMode.BURST_AND_FAST_OBSERVE
         val second = ResearchTelemetryManager(context, logger = {})
-        assertEquals(AblationMode.MOTIF_AND_FAST_OBSERVE, second.mode)
+        assertEquals(AblationMode.BURST_AND_FAST_OBSERVE, second.mode)
     }
 
     @Test

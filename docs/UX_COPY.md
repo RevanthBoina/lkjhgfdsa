@@ -122,7 +122,7 @@ The product name **OmniRoute** is allowed here even though internal identifiers
 
 The ablation selector is a study surface, not a consumer setting: the labels name the exact
 condition so a run in `research_runs.csv` can be traced back to what the agent did. Mode ids
-(`BASELINE`, `INTENT_SHORTCUT_ONLY`, `MOTIF_AND_FAST_OBSERVE`, `FULL_HUMAN_SPEED`) stay internal —
+(`BASELINE`, `INTENT_SHORTCUT_ONLY`, `BURST_AND_FAST_OBSERVE`, `FULL_HUMAN_SPEED`) stay internal —
 they appear only in the CSV, the log tag and the bracketed HUD prefix, never as prose.
 
 | Slot | Copy |
@@ -134,8 +134,8 @@ they appear only in the CSV, the log tag and the bracketed HUD prefix, never as 
 | Mode body — baseline | Full observation every step, one action per model call. No shortcuts, no replay. |
 | Mode label — shortcuts | Shortcuts only |
 | Mode body — shortcuts | Direct intent shortcuts are on; every remaining step uses the standard loop. |
-| Mode label — motif | Motif + fast capture |
-| Mode body — motif | Shortcuts, multi-action bursts and the event-driven capture skip. |
+| Mode label — burst | Burst + fast capture |
+| Mode body — burst | Shortcuts, multi-action bursts and the event-driven capture skip. |
 | Mode label — full | Full human speed |
 | Mode body — full | Every mechanism, including verified replay from remembered tasks. |
 | Stats card title | Research metrics |

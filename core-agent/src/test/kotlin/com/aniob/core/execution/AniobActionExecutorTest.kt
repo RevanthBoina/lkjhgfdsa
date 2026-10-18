@@ -49,6 +49,19 @@ class AniobActionExecutorTest {
     }
 
     @Test
+    fun `planDispatch carries the grounded prompt id for node actions`() {
+        val action = AniobAction.Tap(SemanticTarget.Text("Submit"))
+        val tap = AniobActionExecutor.planDispatch(action, sampleScreen) as DispatchCommand.TapAt
+        assertEquals("the compact pipeline can act on the node itself", 1, tap.nodeId)
+
+        val press = AniobActionExecutor.planDispatch(
+            AniobAction.LongPress(SemanticTarget.Text("Submit")),
+            sampleScreen
+        ) as DispatchCommand.LongPressAt
+        assertEquals(1, press.nodeId)
+    }
+
+    @Test
     fun `planDispatch on missing target yields NoOp with grounding miss reason`() {
         val action = AniobAction.Tap(SemanticTarget.Text("NonExistentButton"))
         val command = AniobActionExecutor.planDispatch(action, sampleScreen)

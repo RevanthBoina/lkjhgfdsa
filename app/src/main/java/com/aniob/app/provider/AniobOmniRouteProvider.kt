@@ -222,7 +222,9 @@ class AniobOmniRouteProvider(
     suspend fun getNextActionRaw(
         systemPrompt: String,
         userPrompt: String,
-        screenshotBase64: String? = null
+        screenshotBase64: String? = null,
+        /** Output budget for this call; burst replies are capped so decode latency stays low. */
+        maxTokens: Int = 512
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
             val messages = JSONArray()
@@ -252,7 +254,7 @@ class AniobOmniRouteProvider(
                 put("model", model)
                 put("messages", messages)
                 put("temperature", 0.1)
-                put("max_tokens", 512)
+                put("max_tokens", maxTokens)
                 put("response_format", JSONObject().apply {
                     put("type", "json_object")
                 })

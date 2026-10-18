@@ -12,13 +12,24 @@ import com.aniob.core.domain.SemanticTarget
 sealed interface DispatchCommand {
     val targetDescription: String
 
-    data class TapAt(val x: Int, val y: Int, override val targetDescription: String) : DispatchCommand
+    /**
+     * [nodeId] is the prompt id the target was grounded to. A compact observation keeps a live
+     * node handle for it, so the platform layer can act on the node directly and use the
+     * coordinates only as the gesture fallback.
+     */
+    data class TapAt(
+        val x: Int,
+        val y: Int,
+        override val targetDescription: String,
+        val nodeId: Int? = null
+    ) : DispatchCommand
 
     data class LongPressAt(
         val x: Int,
         val y: Int,
         val durationMs: Long,
-        override val targetDescription: String
+        override val targetDescription: String,
+        val nodeId: Int? = null
     ) : DispatchCommand
 
     data class SetText(

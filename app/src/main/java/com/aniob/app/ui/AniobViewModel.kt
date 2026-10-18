@@ -936,7 +936,7 @@ class AniobViewModel(
         executionRouter.intentShortcutsEnabled = mode.intentShortcuts
         executionRouter.fastPathEnabled = mode.rememberReplay && _uiState.value.fastPathEnabled
         observationPolicy.setBurstLimit(
-            if (mode.motifBursts) OBSERVATION_BURST_LIMIT else OBSERVATION_BURST_LIMIT_SINGLE_STEP
+            if (mode.actionBursts) OBSERVATION_BURST_LIMIT else OBSERVATION_BURST_LIMIT_SINGLE_STEP
         )
         // Static flag: the service may connect after this call, and the first capture of the run
         // must already use the condition that was selected for it.
@@ -2135,7 +2135,7 @@ class AniobViewModel(
                     taskProgress = ladderResult.progress ?: taskProgress
                 }
 
-                val proposal: StepPipeline.Proposal
+                var proposal: StepPipeline.Proposal
                 var targetNode: AniobNode? = null
                 when (ladderResult) {
                     is AniobExecutionRouter.ExecutionPlanResult.DirectIntent -> {
@@ -2216,15 +2216,28 @@ class AniobViewModel(
                             }
                         }
 
+                        // The cloud path can parse a burst; the local resolver is single-action, so
+                        // the local prompt keeps the one-action shape.
+                        val burstEnabled = researchMode.actionBursts && !localCanDrive
                         val executorRequest = taskContext.buildExecutorRequest(
                             screen = currentScreen,
                             activeSubgoal = taskProgress?.summary,
                             lastAction = taskContext.trajectory.lastOrNull()?.describeAction(),
-                            lastResult = taskContext.condensedHistory.lastOrNull()
+                            lastResult = taskContext.condensedHistory.lastOrNull(),
+                            burstMode = burstEnabled
                         )
                         val executorPrompt = executorRequest.toPromptString()
                         val baseSystemPrompt = configLoader.prompt("system_prompt.txt") ?: "System: Android Agent. Reply with a single JSON tool call."
-                        val systemPrompt = if (baseSystemPrompt.contains("ACTION_JSON_SCHEMA")) {
+                        val systemPrompt = if (burstEnabled) {
+                            // The bundled prompt insists on one action per reply; the burst
+                            // contract is appended so it overrides that line instead of fighting it.
+                            baseSystemPrompt +
+                                "\n\nBURST MODE: ignore the single-action rule above. Reply with ONE compact JSON " +
+                                "object and nothing else:\n" +
+                                "{\"thought\": \"brief 10-word plan\", \"is_complete\": false, " +
+                                "\"actions\": [{\"type\": \"tap|input|scroll|back\", \"id\": 2, \"text\": \"optional input\"}]}\n" +
+                                "1-3 actions, only targets already visible, no pixel coordinates, under 60 tokens."
+                        } else if (baseSystemPrompt.contains("ACTION_JSON_SCHEMA")) {
                             baseSystemPrompt
                         } else {
                             "$baseSystemPrompt\n\nSchema:\n${com.aniob.core.domain.AniobActionSchema.ACTION_JSON_SCHEMA}"
@@ -2239,6 +2252,7 @@ class AniobViewModel(
                         )
                         val activePrompt = assembledPrompt.text
 
+                        var plannedBurst: ActionBurst? = null
                         val plannedAction = if (localCanDrive) {
                             app.researchTelemetry.recordLocalInference()
                             val gen = localLlmClient.generateStepResult(
@@ -2258,7 +2272,11 @@ class AniobViewModel(
                             AniobAction.Fail("Local model is not capable or ready: ${localCaps?.reason ?: "model not loaded"}")
                         } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD && isCloudConfigured()) {
                             val omniroute = getOmniRouteProvider()
-                            val needsVision = (localFailCount > 0) || task.rawPrompt.contains(Regex("(?i)look|see|inspect|read|image|photo|visual"))
+                            // Pixels are only *required* when the goal itself is visual. A local
+                            // model hiccup is already covered by the failed-verify branch below.
+                            val promptAsksForVisualInspection = task.rawPrompt.contains(
+                                Regex("(?i)look|see|inspect|read|image|photo|visual")
+                            )
                             val isSensitiveScreen = currentScreen.nodes.any {
                                 it.isPassword || it.viewId.contains(Regex("(?i)password|pwd|otp|pin|cvv|card_number"))
                             }
@@ -2273,7 +2291,7 @@ class AniobViewModel(
                                     fastObservation = researchMode.fastObservation,
                                     labeledInteractiveNodes = labeledInteractive,
                                     previousStepFailed = previousStepFailed,
-                                    visionRequested = needsVision
+                                    visionRequested = promptAsksForVisualInspection
                                 )
                             val screenshotBase64 = if (wantsPixels && !isSensitiveScreen && accessibility != null) {
                                 val snap = accessibility.captureScreenshotAsync()
@@ -2287,39 +2305,61 @@ class AniobViewModel(
                                     }
                                 }
                             } else null
-                            val raw = omniroute.getNextActionRaw(systemPrompt, activePrompt, screenshotBase64)
+                            // A burst reply is a handful of tokens; a tight budget keeps the
+                            // decode short and stops a chatty model from padding the plan.
+                            val raw = omniroute.getNextActionRaw(
+                                systemPrompt,
+                                activePrompt,
+                                screenshotBase64,
+                                maxTokens = if (burstEnabled) BURST_MAX_OUTPUT_TOKENS else 512
+                            )
                             totalTokens += ((systemPrompt.length + activePrompt.length) / 4).coerceAtLeast(150)
                             raw.fold(
                                 onSuccess = { text ->
                                     totalTokens += (text.length / 4).coerceAtLeast(1)
-                                    val executorDecode = AniobDecodeConfig.forRole(AniobDecodeConfig.Role.EXECUTOR)
-                                    var structured = AniobStructuredOutput.parseOrRepair(
-                                        raw = text,
-                                        screenState = currentScreen,
-                                        decode = executorDecode
-                                    )
-                                    if (structured.usedFallback) {
-                                        val repairMsg = "${AniobStructuredOutput.repairPrompt(text)}\n\nOriginal Request:\n$executorPrompt"
-                                        val repaired = runCatching {
-                                            omniroute.getNextActionRaw(
-                                                systemPrompt,
-                                                repairMsg,
-                                                screenshotBase64
-                                            ).getOrNull()
-                                        }.getOrNull()
-                                        if (repaired != null) {
-                                            totalTokens += ((repairMsg.length + repaired.length) / 4).coerceAtLeast(1)
-                                            structured = AniobStructuredOutput.parseOrRepair(
-                                                raw = repaired,
-                                                screenState = currentScreen,
-                                                decode = executorDecode
-                                            )
+                                    // Burst reply: several actions for the screen we just observed.
+                                    val burst = if (burstEnabled) {
+                                        com.aniob.core.domain.AniobActionSchema.parseActionBurstOrNull(text)
+                                    } else {
+                                        null
+                                    }
+                                    if (burst != null) {
+                                        plannedBurst = burst
+                                        if (burst.isComplete) {
+                                            AniobAction.Finish(burst.thought.ifBlank { "Burst complete" })
+                                        } else {
+                                            burst.actions.last()
                                         }
+                                    } else {
+                                        val executorDecode = AniobDecodeConfig.forRole(AniobDecodeConfig.Role.EXECUTOR)
+                                        var structured = AniobStructuredOutput.parseOrRepair(
+                                            raw = text,
+                                            screenState = currentScreen,
+                                            decode = executorDecode
+                                        )
+                                        if (structured.usedFallback) {
+                                            val repairMsg = "${AniobStructuredOutput.repairPrompt(text)}\n\nOriginal Request:\n$executorPrompt"
+                                            val repaired = runCatching {
+                                                omniroute.getNextActionRaw(
+                                                    systemPrompt,
+                                                    repairMsg,
+                                                    screenshotBase64
+                                                ).getOrNull()
+                                            }.getOrNull()
+                                            if (repaired != null) {
+                                                totalTokens += ((repairMsg.length + repaired.length) / 4).coerceAtLeast(1)
+                                                structured = AniobStructuredOutput.parseOrRepair(
+                                                    raw = repaired,
+                                                    screenState = currentScreen,
+                                                    decode = executorDecode
+                                                )
+                                            }
+                                        }
+                                        if (structured.usedFallback) {
+                                            app.eventLogger.warn("AniobViewModel", "Cloud output unusable: ${structured.reason}")
+                                        }
+                                        structured.action
                                     }
-                                    if (structured.usedFallback) {
-                                        app.eventLogger.warn("AniobViewModel", "Cloud output unusable: ${structured.reason}")
-                                    }
-                                    structured.action
                                 },
                                 onFailure = { error ->
                                     AniobAction.Fail("Cloud action generation failed: ${error.message ?: "network error"}")
@@ -2408,6 +2448,83 @@ class AniobViewModel(
                     )
                     val decision = requestConfirmation(confirmReq)
                     decision == ConfirmDecision.APPROVE_ONCE || decision == ConfirmDecision.APPROVE_FOR_TASK
+                }
+
+                // ---------------------------------------------------------------------------
+                // Act: run the burst head before the step pipeline sees the last action.
+                // Each action is re-grounded on a fresh observation, and the burst stops as soon
+                // as the screen navigates away or a target disappears.
+                // ---------------------------------------------------------------------------
+                var burstAbort: String? = null
+                if (plannedBurst != null && plannedBurst!!.head.isNotEmpty()) {
+                    val burst = plannedBurst!!
+                    var burstScreen = currentScreen
+                    for ((offset, burstAction) in burst.head.withIndex()) {
+                        if (taskGeneration != activeGeneration || !_uiState.value.isRunning) {
+                            burstAbort = "run ended"
+                            break
+                        }
+                        // The first action uses the observation the plan was built on. Later
+                        // actions re-read the window: ids are re-assigned on every capture.
+                        val liveScreen = if (offset == 0) {
+                            burstScreen
+                        } else {
+                            accessibility?.captureCurrentScreenState() ?: burstScreen
+                        }
+                        if (offset > 0) {
+                            val verdict = com.aniob.core.perception.BurstTargetGuard
+                                .check(burstAction, currentScreen, liveScreen)
+                            if (!verdict.allowed) {
+                                burstAbort = verdict.reason
+                                break
+                            }
+                        }
+                        val target = com.aniob.core.perception.BurstTargetGuard
+                            .findTarget(burstAction, currentScreen, liveScreen)
+                        val dispatchable = if (target != null) {
+                            com.aniob.core.perception.BurstTargetGuard.retarget(burstAction, target)
+                        } else {
+                            burstAction
+                        }
+                        val outcome = dispatchLambda(dispatchable)
+                        // One counted step per dispatched action, including the burst.
+                        app.researchTelemetry.recordStep()
+                        burstScreen = outcome.screenAfter ?: liveScreen
+                        if (!outcome.dispatched) {
+                            burstAbort = "action ${offset + 1} did not dispatch"
+                            break
+                        }
+                    }
+                }
+
+                // The last planned action still goes through the pipeline so Verify runs on it. It
+                // is re-grounded against the post-burst screen first; if it is gone, the burst is
+                // closed with a provisional finish and the step goes straight to verification.
+                if (plannedBurst != null && burstAbort == null && plannedBurst!!.tail != null) {
+                    val tail = plannedBurst!!.tail!!
+                    val liveScreen = accessibility?.captureCurrentScreenState() ?: currentScreen
+                    val verdict = com.aniob.core.perception.BurstTargetGuard.check(tail, currentScreen, liveScreen)
+                    if (!verdict.allowed) {
+                        burstAbort = verdict.reason
+                    } else {
+                        val target = com.aniob.core.perception.BurstTargetGuard.findTarget(tail, currentScreen, liveScreen)
+                        if (target != null) {
+                            proposal = StepPipeline.Proposal.Model(
+                                com.aniob.core.perception.BurstTargetGuard.retarget(tail, target),
+                                primaryProvider
+                            )
+                        }
+                        currentScreen = liveScreen
+                    }
+                }
+                if (plannedBurst != null && burstAbort != null) {
+                    app.eventLogger.warn("AniobViewModel", "Burst stopped: $burstAbort")
+                    _uiState.update { it.copy(statusMessage = "Burst stopped: $burstAbort") }
+                    proposal = StepPipeline.Proposal.Model(
+                        AniobAction.Finish("Burst stopped: $burstAbort"),
+                        primaryProvider
+                    )
+                    targetNode = null
                 }
 
                 val res = stepPipe.executeStep(
@@ -2941,7 +3058,10 @@ class AniobViewModel(
         /** How often a paused task re-checks the resume flag (UX-3 stop/pause responsiveness). */
         const val PAUSE_POLL_MS = 100L
 
-        /** Observe-burst ceiling for motif modes (the shipping value). */
+        /** Output budget for a burst reply (the schema asks for < 60 tokens). */
+        const val BURST_MAX_OUTPUT_TOKENS = 96
+
+        /** Observe-burst ceiling for burst modes (the shipping value). */
         const val OBSERVATION_BURST_LIMIT = 3
 
         /** Ceiling that forces a full observation before every action (BASELINE conditions). */

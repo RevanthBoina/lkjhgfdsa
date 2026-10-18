@@ -15,7 +15,7 @@ class AniobObservationPolicy(
 ) {
 
     /**
-     * Live burst ceiling. Research ablation switches this at task start: 3 for the motif modes,
+     * Live burst ceiling. Research ablation switches this at task start: 3 for the burst modes,
      * 1 for BASELINE / INTENT_SHORTCUT_ONLY so every step performs a full observation.
      * Defaults to the constructor value, so non-experimental behaviour is unchanged.
      */

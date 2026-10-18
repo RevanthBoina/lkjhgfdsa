@@ -594,6 +594,30 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         markup = markup
     )
 
+    /**
+     * Runs [action] on the retained node behind [nodeId].
+     *
+     * Only a node that can actually perform the action is used; anything else (no compact capture,
+     * a recycled handle, a non-clickable label) returns false so the caller falls back to the
+     * coordinate gesture.
+     */
+    private fun performNodeAction(nodeId: Int?, action: Int): Boolean {
+        if (nodeId == null) return false
+        val node = currentObservedNode(nodeId) ?: return false
+        return try {
+            val capable = when (action) {
+                AccessibilityNodeInfo.ACTION_CLICK -> node.isClickable
+                AccessibilityNodeInfo.ACTION_LONG_CLICK -> node.isLongClickable
+                else -> true
+            }
+            com.aniob.core.perception.ObserveDispatchPolicy
+                .preferNodeAction(nodeId, capable, node.isEnabled) && node.performAction(action)
+        } catch (e: Exception) {
+            Log.w(TAG, "performAction($action) on id=$nodeId failed: ${e.message}")
+            false
+        }
+    }
+
     /** The live node behind the most recent compact id, when one was retained. */
     private fun currentObservedNode(id: Int): AccessibilityNodeInfo? =
         synchronized(refLock) { latestNodeRefs[id] }
@@ -781,12 +805,22 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         when (val command = AniobActionExecutor.planDispatch(action, liveScreen, width, height)) {
             is DispatchCommand.TapAt -> {
                 spotlightOverlay.flash(command.x.toFloat(), command.y.toFloat())
-                dispatchTap(command.x.toFloat(), command.y.toFloat(), callback)
+                // Node action first (a retained handle from the compact observation), gesture at
+                // the recorded centre as the fallback.
+                if (performNodeAction(command.nodeId, AccessibilityNodeInfo.ACTION_CLICK)) {
+                    callback(true)
+                } else {
+                    dispatchTap(command.x.toFloat(), command.y.toFloat(), callback)
+                }
             }
 
             is DispatchCommand.LongPressAt -> {
                 spotlightOverlay.flash(command.x.toFloat(), command.y.toFloat())
-                dispatchLongPress(command.x.toFloat(), command.y.toFloat(), command.durationMs, callback)
+                if (performNodeAction(command.nodeId, AccessibilityNodeInfo.ACTION_LONG_CLICK)) {
+                    callback(true)
+                } else {
+                    dispatchLongPress(command.x.toFloat(), command.y.toFloat(), command.durationMs, callback)
+                }
             }
 
             is DispatchCommand.SetText -> {
