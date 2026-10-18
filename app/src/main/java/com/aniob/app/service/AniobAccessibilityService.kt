@@ -178,8 +178,23 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         Log.i(TAG, "AniobAccessibilityService successfully connected and ready.")
     }
 
+    /**
+     * Monotonic count of window-structure events. The post-action verifier polls this cheap
+     * counter every 50 ms and reads the node tree only when it moved, instead of walking the
+     * tree on every tick.
+     */
+    private val windowEventCounter = java.util.concurrent.atomic.AtomicLong(0L)
+
+    /** Current value of the window-event counter; any change means the window moved. */
+    fun windowEventSequence(): Long = windowEventCounter.get()
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+            event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+        ) {
+            windowEventCounter.incrementAndGet()
+        }
         if (isRecordingDemo) {
             when (event.eventType) {
                 AccessibilityEvent.TYPE_VIEW_CLICKED -> {

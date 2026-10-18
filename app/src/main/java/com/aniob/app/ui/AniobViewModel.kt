@@ -59,6 +59,9 @@ import com.aniob.core.ladder.AniobIntentResolver
 import com.aniob.core.ladder.AniobPlanningAgent
 import com.aniob.core.ladder.ResolvedIntentShortcut
 import com.aniob.core.ladder.TaskProgress
+import com.aniob.core.memory.RememberAction
+import com.aniob.core.memory.RememberCache
+import com.aniob.core.verify.FastVerify
 import com.aniob.core.logging.AniobExecutionTracker
 import com.aniob.core.memory.AniobHippocampusTracker
 import com.aniob.core.memory.AniobSharedKnowledgeStore
@@ -177,6 +180,13 @@ class AniobViewModel(
 ) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(AniobUiState())
+
+    /**
+     * Zero-LLM replay cache. Declared with the other state (before [init]) so the asynchronous
+     * file load can never race the property initialiser; until the load lands a lookup misses.
+     */
+    @Volatile
+    private var rememberCache: RememberCache = RememberCache()
 
     /** Back-stack owned by the ViewModel (UX-0 §2). Survives rotation; root CHAT is re-derived. */
     private val _navBackStack = MutableStateFlow(restoreNavBackStack())
@@ -415,6 +425,14 @@ class AniobViewModel(
         localFailCount = prefs.getInt("local_fail_count", 0)
         disabledSkills = (prefs.getStringSet("disabled_skills", emptySet()) ?: emptySet()).toMutableSet()
         executionRouter.setDisabledSkills(disabledSkills)
+        // Zero-LLM replay: the ladder asks this callback before any model rung. The cache object
+        // is loaded off the main thread; until then a lookup simply misses.
+        executionRouter.rememberLookup = { goal, screen ->
+            rememberCache.lookup(goal, screen)
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            rememberCache = app.rememberCacheFile.load()
+        }
 
         _uiState.update {
             it.copy(
@@ -942,6 +960,9 @@ class AniobViewModel(
         // must already use the condition that was selected for it.
         AniobAccessibilityService.setFastObservation(mode.fastObservation)
         AniobAccessibilityService.instance?.setResearchFastDeltaVerify(mode.fastDeltaVerify)
+        // Remember replay is on only where the experiment says so, and only while the user's
+        // FastPath switch is also on.
+        executionRouter.rememberReplayEnabled = mode.rememberReplay && _uiState.value.fastPathEnabled
     }
 
     /**
@@ -962,6 +983,74 @@ class AniobViewModel(
                     )
                 }
             }
+        }
+    }
+
+    // =========================================================================================
+    // Remember: zero-LLM replay cache
+    // =========================================================================================
+
+    /** One verified transition of the current run; persisted only when the task succeeds. */
+    private data class RememberTransition(
+        val screen: AniobScreenState,
+        val action: AniobAction,
+        val node: AniobNode?
+    )
+
+    /**
+     * Stores this run's verified transitions, keyed by goal keywords, package and the screen the
+     * action was planned on. [mode] is the condition the run started under, so a settings change
+     * mid-task cannot seed a cache the run never read.
+     */
+    private fun persistRememberTransitions(
+        mode: AblationMode,
+        goal: String,
+        transitions: List<RememberTransition>
+    ) {
+        if (transitions.isEmpty()) return
+        if (!mode.rememberReplay || !_uiState.value.fastPathEnabled) return
+
+        var recorded = 0
+        for (transition in transitions) {
+            val descriptor = RememberAction.fromAction(
+                action = transition.action,
+                node = transition.node,
+                screen = transition.screen
+            ) ?: continue
+            val ok = rememberCache.record(
+                goal = goal,
+                packageName = transition.screen.packageName,
+                preActionScreenHash = FastVerify.screenIdentity(transition.screen),
+                actions = listOf(descriptor)
+            )
+            if (ok) recorded++
+        }
+        if (recorded == 0) return
+        val snapshot = rememberCache
+        viewModelScope.launch(Dispatchers.IO) {
+            app.rememberCacheFile.save(snapshot)
+        }
+    }
+
+    /**
+     * One bitmap for the tier-2 verify or for a visual Reason step. Returns null when the service
+     * is gone or the capture fails; callers treat that as "no pixels", never as an error.
+     */
+    private suspend fun captureVerifyScreenshot(): String? {
+        val service = AniobAccessibilityService.instance ?: return null
+        return try {
+            val snap = service.captureScreenshotAsync()
+            snap.bitmap?.let { bmp ->
+                try {
+                    val stream = java.io.ByteArrayOutputStream()
+                    bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, stream)
+                    android.util.Base64.encodeToString(stream.toByteArray(), android.util.Base64.NO_WRAP)
+                } finally {
+                    bmp.recycle()
+                }
+            }
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -2022,14 +2111,20 @@ class AniobViewModel(
                     _uiState.update { it.copy(blockedActions = blockedRecords.toList()) }
                 }
             },
-            settle = { _, capture ->
-                AniobWaitForIdle.waitForIdle(1000)
-                delay(400)
-                capture()
-            }
+            // Dispatch already polled for the transition (FastVerify); a second fixed wait here
+            // would only re-add the latency this change removes.
+            settle = { _, capture -> capture() }
         )
 
         val maxSteps = agentLimits.maxStepsPerTask
+        // A bitmap taken by the tier-2 verify is reused by the next Reason step instead of being
+        // captured twice. The structural identity it belongs to is stored with it, so a bitmap
+        // can never leak onto a different screen; cleared once consumed.
+        var pendingVerifyScreenshot: Pair<String, String>? = null
+        // Verified transitions of this run, persisted only if the task ends successfully.
+        val rememberTransitions = mutableListOf<RememberTransition>()
+        // Screen on which the last replay changed nothing; the cache is skipped there next time.
+        var stalledReplayIdentity: String? = null
         var finalOutcome: Outcome? = null
         var terminalReason: String = ""
         var stepResult: StepResult? = null
@@ -2118,25 +2213,42 @@ class AniobViewModel(
                 }
 
                 val userRouting = _uiState.value.autoRouterMode.lowercase()
-                val ladderResult = executionRouter.planStep(
-                    taskPrompt = task.clarifiedGoal,
-                    screenState = currentScreen,
-                    stepIndex = currentStep,
-                    taskSignature = task.rawPrompt.lowercase(),
-                    powerState = powerState,
-                    installedModelId = effectiveModelId,
-                    lastLocalFailCount = localFailCount,
-                    isModelFileMissing = isModelFileMissing,
-                    previousProgress = taskProgress,
-                    userRoutingMode = userRouting,
-                    lastObservedResult = if (currentStep > 0) "Step ${currentStep - 1} observed" else null
-                )
+                val planLadder = {
+                    executionRouter.planStep(
+                        taskPrompt = task.clarifiedGoal,
+                        screenState = currentScreen,
+                        stepIndex = currentStep,
+                        taskSignature = task.rawPrompt.lowercase(),
+                        powerState = powerState,
+                        installedModelId = effectiveModelId,
+                        lastLocalFailCount = localFailCount,
+                        isModelFileMissing = isModelFileMissing,
+                        previousProgress = taskProgress,
+                        userRoutingMode = userRouting,
+                        lastObservedResult = if (currentStep > 0) "Step ${currentStep - 1} observed" else null
+                    )
+                }
+                var ladderResult = planLadder()
+                // A replay that left the screen exactly as it found it must not be replayed again
+                // on that same screen: the cache would keep dispatching the same action. Re-plan
+                // once with the cache off so the model gets the step (the documented fallback).
+                if (ladderResult is AniobExecutionRouter.ExecutionPlanResult.RememberReplay &&
+                    FastVerify.screenIdentity(currentScreen) == stalledReplayIdentity
+                ) {
+                    app.eventLogger.info("AniobViewModel", "Remember replay made no progress; falling back to the model")
+                    executionRouter.rememberReplayEnabled = false
+                    ladderResult = planLadder()
+                    executionRouter.rememberReplayEnabled =
+                        researchMode.rememberReplay && _uiState.value.fastPathEnabled
+                }
                 if (ladderResult is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch) {
                     taskProgress = ladderResult.progress ?: taskProgress
                 }
 
                 var proposal: StepPipeline.Proposal
                 var targetNode: AniobNode? = null
+                // Filled by a model burst or a remember-cache replay; executed below.
+                var plannedBurst: ActionBurst? = null
                 when (ladderResult) {
                     is AniobExecutionRouter.ExecutionPlanResult.DirectIntent -> {
                         primaryProvider = "INTENT"
@@ -2147,6 +2259,26 @@ class AniobViewModel(
                             action = AniobAction.Finish(summary = "Intent dispatched: ${ladderResult.shortcut.targetPackage}"),
                             label = "INTENT"
                         )
+                    }
+                    is AniobExecutionRouter.ExecutionPlanResult.RememberReplay -> {
+                        primaryProvider = "REMEMBER"
+                        decisionReason = ladderResult.reason
+                        app.researchTelemetry.markRememberCacheHit()
+                        _uiState.update {
+                            it.copy(
+                                statusMessage = "Replaying ${ladderResult.actions.size} remembered action(s)...",
+                                lastRoutingReason = ladderResult.reason,
+                                lastProviderUsed = primaryProvider
+                            )
+                        }
+                        // The replay is dispatched like a burst: every action is re-grounded on the
+                        // live window, and the last one keeps the normal step pipeline so Verify runs.
+                        plannedBurst = ActionBurst(
+                            thought = "remembered ${ladderResult.actions.size} action(s)",
+                            isComplete = false,
+                            actions = ladderResult.actions
+                        )
+                        proposal = StepPipeline.Proposal.Model(ladderResult.actions.last(), primaryProvider)
                     }
                     is AniobExecutionRouter.ExecutionPlanResult.FastPathStep -> {
                         primaryProvider = "FASTPATH"
@@ -2252,7 +2384,6 @@ class AniobViewModel(
                         )
                         val activePrompt = assembledPrompt.text
 
-                        var plannedBurst: ActionBurst? = null
                         val plannedAction = if (localCanDrive) {
                             app.researchTelemetry.recordLocalInference()
                             val gen = localLlmClient.generateStepResult(
@@ -2286,24 +2417,24 @@ class AniobViewModel(
                             val labeledInteractive = com.aniob.core.perception.ObserveCapturePolicy
                                 .labeledInteractiveCount(currentScreen.nodes)
                             val previousStepFailed = stepResult?.verification?.isSuccessful == false
-                            val wantsPixels = com.aniob.core.perception.ObserveCapturePolicy
-                                .shouldCaptureScreenshot(
-                                    fastObservation = researchMode.fastObservation,
-                                    labeledInteractiveNodes = labeledInteractive,
-                                    previousStepFailed = previousStepFailed,
-                                    visionRequested = promptAsksForVisualInspection
-                                )
+                            // A tier-2 verify only spends a bitmap when nothing in the tree moved,
+                            // which is exactly the visual-popup / no-op-tap case: hand those pixels
+                            // to this Reason step instead of dropping them.
+                            val screenIdentityNow = com.aniob.core.verify.FastVerify.screenIdentity(currentScreen)
+                            val reusedScreenshot = pendingVerifyScreenshot
+                                ?.takeIf { it.first == screenIdentityNow }
+                                ?.second
+                            pendingVerifyScreenshot = null
+                            val wantsPixels = reusedScreenshot != null ||
+                                com.aniob.core.perception.ObserveCapturePolicy
+                                    .shouldCaptureScreenshot(
+                                        fastObservation = researchMode.fastObservation,
+                                        labeledInteractiveNodes = labeledInteractive,
+                                        previousStepFailed = previousStepFailed,
+                                        visionRequested = promptAsksForVisualInspection
+                                    )
                             val screenshotBase64 = if (wantsPixels && !isSensitiveScreen && accessibility != null) {
-                                val snap = accessibility.captureScreenshotAsync()
-                                snap.bitmap?.let { bmp ->
-                                    try {
-                                        val stream = java.io.ByteArrayOutputStream()
-                                        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, stream)
-                                        android.util.Base64.encodeToString(stream.toByteArray(), android.util.Base64.NO_WRAP)
-                                    } finally {
-                                        bmp.recycle()
-                                    }
-                                }
+                                reusedScreenshot ?: captureVerifyScreenshot()
                             } else null
                             // A burst reply is a handful of tokens; a tight budget keeps the
                             // decode short and stops a chatty model from padding the plan.
@@ -2402,12 +2533,38 @@ class AniobViewModel(
                     accessibility?.captureCurrentScreenState() ?: currentScreen
                 }
 
+                // The screen the action was planned on: the two-tier verifier compares against it.
+                var dispatchOrigin: AniobScreenState = currentScreen
+
+                /**
+                 * Waits for the dispatched action to show up, then returns the screen to verify
+                 * against. Tier 1 polls window events every 50 ms (max 800 ms) and stops on the
+                 * first structural change or expected text; only a timeout buys a bitmap, which is
+                 * kept for the next Reason step because an unchanged tree is exactly what a visual
+                 * popup or a no-op tap looks like.
+                 */
+                suspend fun awaitTransition(act: AniobAction): AniobScreenState? {
+                    if (accessibility == null) return null
+                    val fast = com.aniob.core.verify.FastVerify.await(
+                        preAction = dispatchOrigin,
+                        expectedTexts = com.aniob.core.verify.FastVerify.expectedTexts(act, resolvedCriteria),
+                        windowEvents = { accessibility.windowEventSequence() },
+                        capturePoll = { accessibility.captureCurrentScreenState() },
+                        screenshot = { captureVerifyScreenshot() }
+                    )
+                    fast.screenshotBase64?.let { bitmap ->
+                        val id = com.aniob.core.verify.FastVerify
+                            .screenIdentity(fast.screen ?: dispatchOrigin)
+                        if (id.isNotBlank()) pendingVerifyScreenshot = id to bitmap
+                    }
+                    return fast.screen ?: accessibility.captureCurrentScreenState()
+                }
+
                 val dispatchLambda: suspend (AniobAction) -> StepPipeline.DispatchOutcome = { act ->
                     when {
                         proposal is StepPipeline.Proposal.DirectIntent && ladderResult is AniobExecutionRouter.ExecutionPlanResult.DirectIntent -> {
                             val ok = dispatchSystemIntent(ladderResult.shortcut)
-                            AniobWaitForIdle.waitForIdle(800)
-                            val screenAfter = accessibility?.captureCurrentScreenState()
+                            val screenAfter = awaitTransition(act)
                             actionsDispatched++
                             StepPipeline.DispatchOutcome(dispatched = ok, reason = act.describeAction(), screenAfter = screenAfter)
                         }
@@ -2420,8 +2577,7 @@ class AniobViewModel(
                         else -> {
                             val ok = if (accessibility != null) executeActionSync(accessibility, act) else true
                             actionsDispatched++
-                            AniobWaitForIdle.waitForIdle(600)
-                            val screenAfter = accessibility?.captureCurrentScreenState()
+                            val screenAfter = awaitTransition(act)
                             StepPipeline.DispatchOutcome(dispatched = ok, screenAfter = screenAfter)
                         }
                     }
@@ -2486,6 +2642,7 @@ class AniobViewModel(
                         } else {
                             burstAction
                         }
+                        dispatchOrigin = liveScreen
                         val outcome = dispatchLambda(dispatchable)
                         // One counted step per dispatched action, including the burst.
                         app.researchTelemetry.recordStep()
@@ -2494,6 +2651,10 @@ class AniobViewModel(
                             burstAbort = "action ${offset + 1} did not dispatch"
                             break
                         }
+                        // Only a dispatched action becomes a replayable transition.
+                        rememberTransitions.add(
+                            RememberTransition(screen = liveScreen, action = dispatchable, node = target)
+                        )
                     }
                 }
 
@@ -2502,7 +2663,13 @@ class AniobViewModel(
                 // closed with a provisional finish and the step goes straight to verification.
                 if (plannedBurst != null && burstAbort == null && plannedBurst!!.tail != null) {
                     val tail = plannedBurst!!.tail!!
-                    val liveScreen = accessibility?.captureCurrentScreenState() ?: currentScreen
+                    // With no head there is nothing to re-observe: the tail was planned on
+                    // `currentScreen`, and re-reading would only re-index the same window.
+                    val liveScreen = if (plannedBurst!!.head.isEmpty()) {
+                        currentScreen
+                    } else {
+                        accessibility?.captureCurrentScreenState() ?: currentScreen
+                    }
                     val verdict = com.aniob.core.perception.BurstTargetGuard.check(tail, currentScreen, liveScreen)
                     if (!verdict.allowed) {
                         burstAbort = verdict.reason
@@ -2527,6 +2694,7 @@ class AniobViewModel(
                     targetNode = null
                 }
 
+                dispatchOrigin = currentScreen
                 val res = stepPipe.executeStep(
                     ctx = taskContext,
                     planningScreen = currentScreen,
@@ -2538,6 +2706,21 @@ class AniobViewModel(
                 )
                 stepResult = res
                 app.researchTelemetry.recordStep()
+                if (ladderResult is AniobExecutionRouter.ExecutionPlanResult.RememberReplay) {
+                    stalledReplayIdentity = if (
+                        FastVerify.screenIdentity(res.nextCtx.lastScreenState ?: currentScreen) ==
+                        FastVerify.screenIdentity(currentScreen)
+                    ) {
+                        FastVerify.screenIdentity(currentScreen)
+                    } else {
+                        null
+                    }
+                }
+                if (res.verification?.isSuccessful == true || res.terminalState == StepResult.TerminalState.SUCCESS) {
+                    rememberTransitions.add(
+                        RememberTransition(screen = currentScreen, action = res.action, node = targetNode)
+                    )
+                }
                 taskContext = res.nextCtx
                 observationPolicy.recordActionOutcome(proposal.action, currentScreen.packageName, res.verification?.isSuccessful == true)
 
@@ -2630,6 +2813,13 @@ class AniobViewModel(
             finalOutcome == Outcome.INTERRUPTED -> "interrupted"
             finalOutcome == Outcome.UNVERIFIED -> terminalReason.ifBlank { "unverified" }
             else -> terminalReason.ifBlank { "unmet_criteria" }
+        }
+        if (isSuccess) {
+            persistRememberTransitions(
+                mode = researchMode,
+                goal = task.clarifiedGoal.ifBlank { task.rawPrompt },
+                transitions = rememberTransitions
+            )
         }
         val researchRun = app.researchTelemetry.endTask(isSuccess, researchFailureReason)
         val researchLine = researchRun?.let { app.researchTelemetry.hudLine(it) }
@@ -2822,8 +3012,15 @@ class AniobViewModel(
         currentScreen: AniobScreenState
     ): VerifiedStep {
         executeActionSync(accessibility, action)
-        delay(600)
-        val screenAfter = accessibility?.captureCurrentScreenState() ?: currentScreen
+        // Same two-tier wait the step pipeline uses: no fixed settle delay here either.
+        val fast = FastVerify.await(
+            preAction = currentScreen,
+            expectedTexts = FastVerify.expectedTexts(action, null),
+            windowEvents = { accessibility?.windowEventSequence() },
+            capturePoll = { accessibility?.captureCurrentScreenState() },
+            screenshot = { captureVerifyScreenshot() }
+        )
+        val screenAfter = fast.screen ?: accessibility?.captureCurrentScreenState() ?: currentScreen
         val verification = DeterministicVerifier.verify(action, currentScreen, screenAfter)
 
         val recoverable = action.semanticTarget() != null && isTargetLikelyMissing(verification)
@@ -2883,8 +3080,14 @@ class AniobViewModel(
             "Scroll-until-found revealed node ${revealedNode.id} after ${scrollResult.swipes} swipes"
         )
         executeActionSync(accessibility, retryAction)
-        delay(600)
-        val screenAfter = service.captureCurrentScreenState()
+        val retryWait = FastVerify.await(
+            preAction = revealedScreen,
+            expectedTexts = FastVerify.expectedTexts(retryAction, null),
+            windowEvents = { service.windowEventSequence() },
+            capturePoll = { service.captureCurrentScreenState() },
+            screenshot = { captureVerifyScreenshot() }
+        )
+        val screenAfter = retryWait.screen ?: service.captureCurrentScreenState()
         val verification = DeterministicVerifier.verify(retryAction, revealedScreen, screenAfter)
         return VerifiedStep(screenAfter, retryAction, verification, true)
     }

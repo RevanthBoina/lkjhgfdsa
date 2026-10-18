@@ -1,6 +1,8 @@
 package com.aniob.core.ladder
 
+import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.AniobScreenState
+import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.tools.DevicePowerState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -109,5 +111,114 @@ class AniobExecutionRouterTest {
             powerState = power
         )
         assertTrue("Must not return FastPathStep when fastPathEnabled = false", plan !is AniobExecutionRouter.ExecutionPlanResult.FastPathStep)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Remember replay rung
+    // ---------------------------------------------------------------------------------------------
+
+    private val cachedTap = AniobAction.Tap(SemanticTarget.SomIndex(2))
+
+    @Test
+    fun `remember replay returns the cached actions and skips every model rung`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.rememberReplayEnabled = true
+        var lookups = 0
+        router.rememberLookup = { goal, seen ->
+            lookups++
+            assertEquals("Open wifi settings", goal)
+            assertEquals("com.android.settings", seen.packageName)
+            listOf(cachedTap)
+        }
+
+        val result = router.planStep(
+            taskPrompt = "Open wifi settings",
+            screenState = screen,
+            stepIndex = 1,
+            taskSignature = "open wifi settings",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.RememberReplay)
+        assertEquals(listOf(cachedTap), (result as AniobExecutionRouter.ExecutionPlanResult.RememberReplay).actions)
+        assertEquals(1, lookups)
+    }
+
+    @Test
+    fun `remember replay is off unless the ablation condition enables it`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        var lookups = 0
+        router.rememberLookup = { _, _ ->
+            lookups++
+            listOf(cachedTap)
+        }
+
+        val result = router.planStep(
+            taskPrompt = "Open wifi settings",
+            screenState = screen,
+            stepIndex = 1,
+            taskSignature = "open wifi settings",
+            powerState = power
+        )
+
+        assertTrue("the cache must not be consulted in the other conditions", result is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch)
+        assertEquals(0, lookups)
+    }
+
+    @Test
+    fun `a cache miss falls through to the normal model rung`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.rememberReplayEnabled = true
+        router.rememberLookup = { _, _ -> null }
+
+        val result = router.planStep(
+            taskPrompt = "Open wifi settings",
+            screenState = screen,
+            stepIndex = 1,
+            taskSignature = "open wifi settings",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch)
+    }
+
+    @Test
+    fun `an empty cache result is a miss, not an empty replay`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.rememberReplayEnabled = true
+        router.rememberLookup = { _, _ -> emptyList() }
+
+        val result = router.planStep(
+            taskPrompt = "Open wifi settings",
+            screenState = screen,
+            stepIndex = 1,
+            taskSignature = "open wifi settings",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch)
+    }
+
+    @Test
+    fun `the intent shortcut is resolved before the remember cache`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.intentShortcutsEnabled = true
+        router.rememberReplayEnabled = true
+        var lookups = 0
+        router.rememberLookup = { _, _ ->
+            lookups++
+            listOf(cachedTap)
+        }
+
+        val result = router.planStep(
+            taskPrompt = "open settings",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "open settings",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.DirectIntent)
+        assertEquals("the zero-millisecond intent rung stays first", 0, lookups)
     }
 }

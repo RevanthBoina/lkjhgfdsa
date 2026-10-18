@@ -40,6 +40,7 @@ object FailureReasonCopy {
     /** Human label for a provider code, used on stats and evidence cards (UX-5 §3). */
     fun providerLabel(code: String): String = when (code.uppercase()) {
         "FASTPATH" -> "Instant replay"
+        "REMEMBER" -> "Remembered replay"
         "LOCAL_SLM" -> "On-device"
         "OMNIROUTE_CLOUD" -> "Cloud"
         "INTENT" -> "System shortcut"
