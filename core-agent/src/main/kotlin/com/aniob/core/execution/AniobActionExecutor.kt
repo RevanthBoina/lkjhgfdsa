@@ -48,13 +48,24 @@ object AniobActionExecutor {
     private fun groundToTap(action: AniobAction.Tap, screen: AniobScreenState): DispatchCommand {
         val resolved = AniobGroundingResolver.resolve(action.target, screen)
             ?: return DispatchCommand.groundingMiss(action.target)
-        return DispatchCommand.TapAt(resolved.x, resolved.y, action.target.describe())
+        return DispatchCommand.TapAt(
+            x = resolved.x,
+            y = resolved.y,
+            targetDescription = action.target.describe(),
+            nodeId = resolved.node.id
+        )
     }
 
     private fun groundToLongPress(action: AniobAction.LongPress, screen: AniobScreenState): DispatchCommand {
         val resolved = AniobGroundingResolver.resolve(action.target, screen)
             ?: return DispatchCommand.groundingMiss(action.target)
-        return DispatchCommand.LongPressAt(resolved.x, resolved.y, action.durationMs, action.target.describe())
+        return DispatchCommand.LongPressAt(
+            x = resolved.x,
+            y = resolved.y,
+            durationMs = action.durationMs,
+            targetDescription = action.target.describe(),
+            nodeId = resolved.node.id
+        )
     }
 
     private fun groundToSetText(action: AniobAction.InputText, screen: AniobScreenState): DispatchCommand {
