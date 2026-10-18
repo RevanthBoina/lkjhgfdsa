@@ -16,7 +16,7 @@ It empowers users to control and automate any Android application through natura
    - Level 0: Intent Shortcuts (`ACTION_CALL`, `ACTION_VIEW`, `ACTION_SENDTO`) -> 0ms LLM.
    - Level 1: FastPath exact task replay with verified fingerprints -> 0ms LLM.
    - Level 2: Local SLM (Qwen2.5-1.5B via llama.cpp/Ollama) for structured text navigation.
-   - Level 3: Omniroute Cloud (`api.omniroute.ai/v1`) for vision, complex canvas, or unfamiliar apps.
+   - Level 3: OmniRoute Cloud (self-hosted gateway, address set in Settings) for vision, complex canvas, or unfamiliar apps.
 3. **Pin-to-Pin Betterment Hierarchy**: Every subsystem must exceed industry baselines (ARTEMIS, MobileAgent, AppAgent, PrivateAgent, DroidRun).
 4. **Safety & Privacy**: Unconfirmed sensitive actions (sending messages, payments, deleting files) are intercepted by `AniobSafetyGate`.
 5. **No Hallucinated Actions**: Max 60 actionable nodes extracted via `AniobTokenOptimizer`. One step at a time JSON schema.
@@ -103,9 +103,9 @@ Execution cascades through 4 deterministic rungs:
 3. **Rung 2: Local SLM (`OnDeviceProvider`)**
    - Qwen2.5-1.5B via local llama.cpp / Ollama bridge.
    - Used for simple text navigation, scrolling, and list selection.
-4. **Rung 3: Omniroute Cloud (`OmniRouteProvider`)**
-   - Base URL: `https://api.omniroute.ai/v1/chat/completions`
-   - Model: `gpt-4o` with multimodal vision.
+4. **Rung 3: OmniRoute Cloud (`OmniRouteProvider`)**
+   - Address: the user's own gateway, entered in Settings → Cloud AI (documented default `http://<host>:20128/v1`; `localhost` only via `adb reverse`).
+   - Model: `auto` (or `auto/coding|fast|cheap`, or a `provider/model` id) with optional multimodal vision.
    - Invoked when visual reasoning is required (canvas, icons without content-description, unlabelled components).
 
 ### 3.5 AutoRouter Decision Matrix (AniobAutoRouter)

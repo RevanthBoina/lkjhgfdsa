@@ -33,6 +33,8 @@ import com.aniob.app.system.SystemState
 @Composable
 fun AniobSetupConciergeScreen(
     systemState: SystemState,
+    // True when a cloud key and gateway address are saved, so the brain step can complete.
+    cloudReady: Boolean = false,
     onBack: () -> Unit,
     onNavigateToModels: () -> Unit,
     onRefresh: () -> Unit,
@@ -220,8 +222,8 @@ fun AniobSetupConciergeScreen(
             SetupCard(
                 index = 6,
                 title = "Give Aniob a brain",
-                body = "On-device (private) or cloud (fast). Either one completes this step.",
-                done = systemState.modelReady,
+                body = "On-device (private) or cloud (fast). Cloud setup lives in Settings.",
+                done = systemState.modelReady || cloudReady,
                 actionLabel = "Choose a brain",
                 onAction = onNavigateToModels,
                 testTag = "setup_brain"
