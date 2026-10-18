@@ -76,7 +76,8 @@ data class TaskContext(
         screen: AniobScreenState,
         activeSubgoal: String? = null,
         lastAction: String? = null,
-        lastResult: String? = null
+        lastResult: String? = null,
+        burstMode: Boolean = false
     ): ExecutorRequest {
         // A compact capture already pruned, merged and ordered its nodes; re-running the
         // optimizer would re-index them for no benefit and could break the prompt ids.
@@ -102,7 +103,8 @@ data class TaskContext(
             actionableNodes = optimizedNodes,
             lastAction = lastAction,
             lastResult = lastResult ?: condensedHistory.lastOrNull(),
-            consecutiveFailures = consecutiveFailures
+            consecutiveFailures = consecutiveFailures,
+            burstMode = burstMode
         )
     }
 

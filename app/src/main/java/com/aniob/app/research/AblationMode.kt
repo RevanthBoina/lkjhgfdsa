@@ -8,11 +8,11 @@ package com.aniob.app.research
  * intent-shortcut lookup, FastPath replay, the observe-burst policy and the event-driven capture
  * skip) — nothing here is a placebo label.
  *
- * | mode | intent shortcut | motif bursts | fast delta | remember replay |
+ * | mode | intent shortcut | action bursts | fast delta | remember replay |
  * |---|---|---|---|---|
  * | [BASELINE] | off | off | off | off |
  * | [INTENT_SHORTCUT_ONLY] | on | off | off | off |
- * | [MOTIF_AND_FAST_OBSERVE] | on | on | on | off |
+ * | [BURST_AND_FAST_OBSERVE] | on | on | on | off |
  * | [FULL_HUMAN_SPEED] | on | on | on | on |
  *
  * Node pruning (`AniobTokenOptimizer`) is NOT an ablation flag: it is the hard 60-node cap every
@@ -22,7 +22,7 @@ package com.aniob.app.research
  * [FULL_HUMAN_SPEED] is the default because it preserves the behaviour the app had before the
  * study existed; the other modes are opt-in degradations for measurement.
  *
- * The compact observe pipeline ([fastObservation]) is part of the motif conditions: it prunes and
+ * The compact observe pipeline ([fastObservation]) is part of the burst conditions: it prunes and
  * merges the live tree, gives every surviving element a sequential id and skips the screenshot
  * when the tree is dense enough to plan from.
  */
@@ -34,7 +34,7 @@ enum class AblationMode(
     /** One-line explanation shown under the radio button in Settings. */
     val description: String,
     val intentShortcuts: Boolean,
-    val motifBursts: Boolean,
+    val actionBursts: Boolean,
     val fastDeltaVerify: Boolean,
     val rememberReplay: Boolean
 ) {
@@ -43,7 +43,7 @@ enum class AblationMode(
         label = "Baseline",
         description = "Full observation every step, one action per model call. No shortcuts, no replay.",
         intentShortcuts = false,
-        motifBursts = false,
+        actionBursts = false,
         fastDeltaVerify = false,
         rememberReplay = false
     ),
@@ -52,16 +52,16 @@ enum class AblationMode(
         label = "Shortcuts only",
         description = "Direct intent shortcuts are on; every remaining step uses the standard loop.",
         intentShortcuts = true,
-        motifBursts = false,
+        actionBursts = false,
         fastDeltaVerify = false,
         rememberReplay = false
     ),
-    MOTIF_AND_FAST_OBSERVE(
-        id = "MOTIF_AND_FAST_OBSERVE",
-        label = "Motif + fast capture",
+    BURST_AND_FAST_OBSERVE(
+        id = "BURST_AND_FAST_OBSERVE",
+        label = "Burst + fast capture",
         description = "Shortcuts, multi-action bursts and the event-driven capture skip.",
         intentShortcuts = true,
-        motifBursts = true,
+        actionBursts = true,
         fastDeltaVerify = true,
         rememberReplay = false
     ),
@@ -70,7 +70,7 @@ enum class AblationMode(
         label = "Full human speed",
         description = "Every mechanism, including verified replay from remembered tasks.",
         intentShortcuts = true,
-        motifBursts = true,
+        actionBursts = true,
         fastDeltaVerify = true,
         rememberReplay = true
     );
@@ -78,9 +78,9 @@ enum class AblationMode(
     /**
      * True when the Observe phase runs the compact pipeline: prune invisible/decorative nodes,
      * fold child labels into their interactive parent, assign sequential ids, hash the structure
-     * and gate the bitmap capture. Both motif conditions enable it; the other two stay raw.
+     * and gate the bitmap capture. Both burst conditions enable it; the other two stay raw.
      */
-    val fastObservation: Boolean get() = motifBursts
+    val fastObservation: Boolean get() = actionBursts
 
     companion object {
         val DEFAULT: AblationMode = FULL_HUMAN_SPEED
