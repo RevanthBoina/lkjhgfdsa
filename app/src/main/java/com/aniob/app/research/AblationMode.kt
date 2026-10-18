@@ -12,7 +12,7 @@ package com.aniob.app.research
  * |---|---|---|---|---|
  * | [BASELINE] | off | off | off | off |
  * | [INTENT_SHORTCUT_ONLY] | on | off | off | off |
- * | [MOTIF_AND_FAST_A11Y] | on | on | on | off |
+ * | [MOTIF_AND_FAST_OBSERVE] | on | on | on | off |
  * | [FULL_HUMAN_SPEED] | on | on | on | on |
  *
  * Node pruning (`AniobTokenOptimizer`) is NOT an ablation flag: it is the hard 60-node cap every
@@ -27,7 +27,7 @@ package com.aniob.app.research
  * when the tree is dense enough to plan from.
  */
 enum class AblationMode(
-    /** Stable identifier used in `research_runs.csv`; never rename a shipped value. */
+    /** Stable identifier used in `research_runs.csv`. Rename only with the whole study. */
     val id: String,
     /** Short UI label. */
     val label: String,
@@ -56,8 +56,8 @@ enum class AblationMode(
         fastDeltaVerify = false,
         rememberReplay = false
     ),
-    MOTIF_AND_FAST_A11Y(
-        id = "MOTIF_AND_FAST_A11Y",
+    MOTIF_AND_FAST_OBSERVE(
+        id = "MOTIF_AND_FAST_OBSERVE",
         label = "Motif + fast capture",
         description = "Shortcuts, multi-action bursts and the event-driven capture skip.",
         intentShortcuts = true,
