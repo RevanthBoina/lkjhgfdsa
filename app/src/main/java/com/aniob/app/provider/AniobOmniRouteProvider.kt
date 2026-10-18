@@ -27,10 +27,14 @@ import kotlin.coroutines.resume
 /**
  * OmniRoute cloud provider client.
  *
- * Talks to an OmniRoute gateway's `/chat/completions` endpoint. The gateway address is
- * [baseUrl] and defaults to [AniobProviderConfig.OMNIROUTE_DEFAULT_BASE_URL]; the hosted service is
- * `omniroute.online`. Model selection is [AniobProviderConfig.OMNIROUTE_MODEL] (`auto`) only — the
- * gateway picks the best model internally, so a concrete model name is not honoured.
+ * Talks to a self-hosted OmniRoute gateway's `/chat/completions` endpoint. The gateway address is
+ * [baseUrl] and is entered by the user in Settings (see [AniobProviderConfig.validateBaseUrl]);
+ * [AniobProviderConfig.OMNIROUTE_DEFAULT_BASE_URL] is only a local/emulator fallback because
+ * `localhost` on a phone is the phone itself.
+ *
+ * The model is [AniobProviderConfig.OMNIROUTE_MODEL] (`auto`) by default so the gateway can route
+ * across the providers the user connected; OmniRoute also accepts `auto/coding`, `auto/fast`,
+ * `auto/cheap` and `provider/model` ids, which Settings allows.
  *
  * When [jsonMode] is enabled, all generation requests enforce `response_format:
  * json_object` with temperature 0.1 so the ladder can trust structured output.
@@ -303,15 +307,24 @@ enum class OmniRouteConnectionStatus {
     UNREACHABLE
 }
 
+/**
+ * One-shot connectivity probe used by the "Test" button in Settings.
+ *
+ * Sends a one-token `auto` completion to the user's gateway. A two-second queue on a busy provider
+ * is normal, so the read timeout is 20 s rather than the eight seconds the old probe used (which
+ * reported a healthy gateway as unreachable whenever a model took a moment to answer).
+ */
 suspend fun testOmniRouteConnection(apiKey: String, baseUrl: String): OmniRouteConnectionStatus = withContext(Dispatchers.IO) {
     if (apiKey.isBlank()) return@withContext OmniRouteConnectionStatus.BAD_KEY
+    if (AniobProviderConfig.validateBaseUrl(baseUrl) != null) return@withContext OmniRouteConnectionStatus.UNREACHABLE
     val client = AniobHttpClientSingleton.client.newBuilder()
         .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .callTimeout(25, TimeUnit.SECONDS)
         .build()
 
     val payload = JSONObject().apply {
-        put("model", "auto")
+        put("model", AniobProviderConfig.OMNIROUTE_MODEL)
         put("messages", JSONArray().apply {
             put(JSONObject().apply {
                 put("role", "user")

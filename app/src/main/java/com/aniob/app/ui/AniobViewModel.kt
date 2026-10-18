@@ -17,6 +17,9 @@ import com.aniob.app.background.AniobForegroundService
 import com.aniob.app.db.SessionScoreEntity
 import com.aniob.app.model.AniobModelDownloader
 import com.aniob.app.provider.AniobOmniRouteProvider
+import com.aniob.app.provider.AniobProviderConfig
+import com.aniob.app.provider.OmniRouteConnectionStatus
+import com.aniob.app.provider.testOmniRouteConnection
 import com.aniob.app.service.AniobAccessibilityService
 import com.aniob.app.telemetry.AniobDeviceTelemetry
 import com.aniob.app.ui.chat.ChatMessage
@@ -137,7 +140,22 @@ data class AniobUiState(
     /** UX-5: names of skills the user has disabled; matcher skips these. */
     val disabledSkills: Set<String> = emptySet(),
     /** Staged draft from share or incoming intent that requires user confirmation/submission */
-    val pendingInputPrefill: String? = null
+    val pendingInputPrefill: String? = null,
+    /** Result of the last Cloud AI save / connection test, rendered as a banner in Settings. */
+    val cloudTest: CloudTestUiState = CloudTestUiState()
+)
+
+/** Outcomes of saving or testing the Cloud AI (OmniRoute) settings. */
+enum class CloudTestResult { NONE, SAVED, SUCCESS, BAD_KEY, UNREACHABLE, INVALID_SETUP }
+
+/**
+ * Settings feedback for the Cloud AI card. [message] is short, user-facing copy that explains the
+ * concrete next step; [testing] disables the buttons while the probe is in flight.
+ */
+data class CloudTestUiState(
+    val testing: Boolean = false,
+    val result: CloudTestResult = CloudTestResult.NONE,
+    val message: String? = null
 )
 
 class AniobViewModel(
@@ -351,17 +369,23 @@ class AniobViewModel(
     private fun getOmniRouteProvider(): AniobOmniRouteProvider {
         return AniobOmniRouteProvider(
             apiKey = _uiState.value.omnirouteApiKey,
-            baseUrl = com.aniob.app.provider.AniobProviderConfig.resolveEndpoint(_uiState.value.omnirouteBaseUrl),
-            model = com.aniob.app.provider.AniobProviderConfig.coerceModel(_uiState.value.omnirouteModel)
+            baseUrl = AniobProviderConfig.normalizeBaseUrl(_uiState.value.omnirouteBaseUrl)
+                .ifBlank { AniobProviderConfig.OMNIROUTE_DEFAULT_BASE_URL },
+            model = AniobProviderConfig.sanitizeModel(_uiState.value.omnirouteModel)
         )
     }
+
+    /** Cloud AI is usable only with both a stored key and a valid gateway address. */
+    private fun isCloudConfigured(): Boolean =
+        AniobProviderConfig.isConfigured(_uiState.value.omnirouteApiKey, _uiState.value.omnirouteBaseUrl)
 
     init {
         val prefs = app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
         // Key comes from encrypted storage (which migrates and then deletes any plaintext copy an
-        // older build wrote). Model is coerced because OmniRoute only honours "auto".
+        // older build wrote). The model is only sanitised: OmniRoute accepts "auto", auto/<mode>
+        // and provider/model ids, so a stored value is honoured unless it is unusable.
         val savedApiKey = secretStore.getOmniRouteApiKey()
-        val savedModel = com.aniob.app.provider.AniobProviderConfig.coerceModel(
+        val savedModel = AniobProviderConfig.sanitizeModel(
             prefs.getString("omniroute_model", "auto") ?: "auto"
         )
         val savedBaseUrl = secretStore.getOmniRouteBaseUrl()
@@ -1017,20 +1041,146 @@ class AniobViewModel(
         _uiState.update { it.copy(autoRouterMode = mode) }
     }
 
+    /**
+     * Persists the Cloud AI (OmniRoute) settings entered in Settings.
+     *
+     * The key goes to the Keystore-backed secret store; the gateway address and model are not
+     * secrets and stay in the ordinary prefs file. Both a key and a valid address are required
+     * before cloud routing is allowed, because `localhost` on a phone is the phone itself. Clearing
+     * both fields is a real "turn Cloud AI off" action, not a validation failure.
+     */
+    fun saveCloudSettings(apiKey: String, model: String, baseUrl: String) {
+        val address = AniobProviderConfig.normalizeBaseUrl(baseUrl)
+        val key = apiKey.trim()
+
+        if (key.isEmpty() && address.isEmpty()) {
+            secretStore.setOmniRouteApiKey("")
+            secretStore.setOmniRouteBaseUrl("")
+            app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE).edit()
+                .putString("omniroute_model", AniobProviderConfig.OMNIROUTE_MODEL).apply()
+            _uiState.update {
+                it.copy(
+                    omnirouteApiKey = "",
+                    omnirouteBaseUrl = "",
+                    omnirouteModel = AniobProviderConfig.OMNIROUTE_MODEL,
+                    cloudTest = CloudTestUiState(
+                        result = CloudTestResult.SAVED,
+                        message = "Cloud AI is off. Add a key whenever you want it back."
+                    )
+                )
+            }
+            return
+        }
+
+        val validationError = when {
+            key.isEmpty() -> "Add the key from your OmniRoute dashboard."
+            address.isEmpty() -> "Add the address of the computer running OmniRoute."
+            else -> AniobProviderConfig.validateBaseUrl(address)
+                ?: AniobProviderConfig.validateModel(model)
+        }
+        if (validationError != null) {
+            _uiState.update {
+                it.copy(
+                    cloudTest = CloudTestUiState(
+                        result = CloudTestResult.INVALID_SETUP,
+                        message = validationError
+                    )
+                )
+            }
+            return
+        }
+        if (!secretStore.isAvailable) {
+            _uiState.update {
+                it.copy(
+                    cloudTest = CloudTestUiState(
+                        result = CloudTestResult.INVALID_SETUP,
+                        message = "This device cannot store the key securely, so Cloud AI stays off."
+                    )
+                )
+            }
+            return
+        }
+
+        val cleanedModel = AniobProviderConfig.sanitizeModel(model)
+        secretStore.setOmniRouteApiKey(key)
+        secretStore.setOmniRouteBaseUrl(address)
+        app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE).edit()
+            .putString("omniroute_model", cleanedModel).apply()
+        _uiState.update {
+            it.copy(
+                omnirouteApiKey = key,
+                omnirouteBaseUrl = address,
+                omnirouteModel = cleanedModel,
+                cloudTest = CloudTestUiState(
+                    result = CloudTestResult.SAVED,
+                    message = "Saved. Run Test connection to confirm the gateway answers."
+                )
+            )
+        }
+    }
+
+    /**
+     * Probes the entered gateway/key without saving them, so a typo never replaces a working setup.
+     * Runs off the main thread via [testOmniRouteConnection] and publishes the outcome to the
+     * Settings banner.
+     */
+    fun testCloudConnection(apiKey: String, baseUrl: String) {
+        if (_uiState.value.cloudTest.testing) return
+        val key = apiKey.trim()
+        val address = AniobProviderConfig.normalizeBaseUrl(baseUrl)
+        val validationError = when {
+            key.isEmpty() -> "Add the key from your OmniRoute dashboard."
+            address.isEmpty() -> "Add the address of the computer running OmniRoute."
+            else -> AniobProviderConfig.validateBaseUrl(address)
+        }
+        if (validationError != null) {
+            _uiState.update {
+                it.copy(
+                    cloudTest = CloudTestUiState(
+                        result = CloudTestResult.INVALID_SETUP,
+                        message = validationError
+                    )
+                )
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(cloudTest = CloudTestUiState(testing = true)) }
+            val status = testOmniRouteConnection(key, address)
+            val (result, message) = when (status) {
+                OmniRouteConnectionStatus.SUCCESS ->
+                    CloudTestResult.SUCCESS to "The gateway answered for this key. Save to keep it."
+                OmniRouteConnectionStatus.BAD_KEY ->
+                    CloudTestResult.BAD_KEY to "The gateway rejected this key. Copy it again from the OmniRoute dashboard."
+                OmniRouteConnectionStatus.UNREACHABLE ->
+                    CloudTestResult.UNREACHABLE to "No usable answer from that address. Check Wi-Fi and the address, confirm OmniRoute is running, and that it has at least one provider connected."
+            }
+            _uiState.update {
+                it.copy(cloudTest = CloudTestUiState(result = result, message = message))
+            }
+        }
+    }
+
+    /** Clears stale feedback as soon as the user edits a field. */
+    fun clearCloudTestResult() {
+        if (_uiState.value.cloudTest != CloudTestUiState()) {
+            _uiState.update { it.copy(cloudTest = CloudTestUiState()) }
+        }
+    }
+
+    /** Backwards-compatible entry point that keeps the previously saved gateway address. */
     fun updateSettings(apiKey: String, model: String) {
-        val prefs = app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
-        // The key is a secret: encrypted store only. The model name is not, so it stays in plaintext
-        // prefs alongside the other UI settings. OmniRoute accepts only "auto".
-        secretStore.setOmniRouteApiKey(apiKey)
-        val coerced = com.aniob.app.provider.AniobProviderConfig.coerceModel(model)
-        prefs.edit().putString("omniroute_model", coerced).apply()
-        _uiState.update { it.copy(omnirouteApiKey = apiKey, omnirouteModel = coerced) }
+        saveCloudSettings(apiKey, model, _uiState.value.omnirouteBaseUrl)
     }
 
     /** Sets the OmniRoute gateway base URL. Not a secret, so it is persisted in plaintext prefs. */
     fun setOmniRouteBaseUrl(baseUrl: String) {
-        secretStore.setOmniRouteBaseUrl(baseUrl)
-        _uiState.update { it.copy(omnirouteBaseUrl = baseUrl.trim()) }
+        val address = AniobProviderConfig.normalizeBaseUrl(baseUrl)
+        secretStore.setOmniRouteBaseUrl(address)
+        _uiState.update {
+            it.copy(omnirouteBaseUrl = address, cloudTest = CloudTestUiState())
+        }
     }
 
     fun handleIncomingShare(shared: com.aniob.app.workflow.ParsedIncomingContent) {
@@ -1372,7 +1522,7 @@ class AniobViewModel(
                 // Do not initialize native memory for an explicitly cloud-only request.
                 if (_uiState.value.autoRouterMode != "cloud-only") refreshLocalEngine()
                 val trigger = AniobExternalAiTrigger(
-                    cloudProvider = if (_uiState.value.omnirouteApiKey.isNotBlank()) getOmniRouteProvider() else null,
+                    cloudProvider = if (isCloudConfigured()) getOmniRouteProvider() else null,
                     localProvider = localLlmProvider,
                     sharedKnowledgeStore = sharedKnowledgeStore
                 )
@@ -1960,12 +2110,8 @@ class AniobViewModel(
                             structured.action
                         } else if (decision.target == RouteTarget.LOCAL_SLM) {
                             AniobAction.Fail("Local model is not capable or ready: ${localCaps?.reason ?: "model not loaded"}")
-                        } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD && _uiState.value.omnirouteApiKey.isNotBlank()) {
-                            val omniroute = AniobOmniRouteProvider(
-                                apiKey = _uiState.value.omnirouteApiKey,
-                                baseUrl = com.aniob.app.provider.AniobProviderConfig.resolveEndpoint(_uiState.value.omnirouteBaseUrl),
-                                model = com.aniob.app.provider.AniobProviderConfig.coerceModel(_uiState.value.omnirouteModel)
-                            )
+                        } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD && isCloudConfigured()) {
+                            val omniroute = getOmniRouteProvider()
                             val needsVision = (localFailCount > 0) || task.rawPrompt.contains(Regex("(?i)look|see|inspect|read|image|photo|visual"))
                             val isSensitiveScreen = currentScreen.nodes.any {
                                 it.isPassword || it.viewId.contains(Regex("(?i)password|pwd|otp|pin|cvv|card_number"))
@@ -2021,7 +2167,7 @@ class AniobViewModel(
                                 }
                             )
                         } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD) {
-                            AniobAction.Fail("OmniRoute cloud API key is missing")
+                            AniobAction.Fail("Cloud AI is not set up — add your OmniRoute key and gateway address in Settings")
                         } else {
                             AniobAction.Fail("No capable provider available: ${decision.reason}")
                         }

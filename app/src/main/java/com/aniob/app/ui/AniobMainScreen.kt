@@ -231,7 +231,9 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
 
             AniobRoute.SETTINGS -> AniobSettingsScreen(
                 uiState = uiState,
-                onSaveSettings = { key, model -> viewModel.updateSettings(key, model) },
+                onSaveSettings = { key, model, address -> viewModel.saveCloudSettings(key, model, address) },
+                onTestConnection = { key, address -> viewModel.testCloudConnection(key, address) },
+                onCloudInputChanged = { viewModel.clearCloudTestResult() },
                 onAutoRouterModeChanged = { mode -> viewModel.setAutoRouterMode(mode) },
                 onFastPathChanged = { viewModel.setFastPathEnabled(it) },
                 onSafetyGateChanged = { viewModel.setSafetyGateEnabled(it) },
@@ -244,6 +246,10 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
 
             AniobRoute.ONBOARDING -> AniobSetupConciergeScreen(
                 systemState = systemState,
+                cloudReady = com.aniob.app.provider.AniobProviderConfig.isConfigured(
+                    uiState.omnirouteApiKey,
+                    uiState.omnirouteBaseUrl
+                ),
                 onBack = { viewModel.navigateBack() },
                 onNavigateToModels = { viewModel.navigateTo(AniobRoute.MODELS) },
                 onRefresh = { app.systemState.refresh() },
@@ -332,6 +338,10 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
 
     if (showWhyModelDialog) {
         val installedModel = viewModel.getInstalledModelName() ?: "No local model installed"
+        val cloudReady = com.aniob.app.provider.AniobProviderConfig.isConfigured(
+            uiState.omnirouteApiKey,
+            uiState.omnirouteBaseUrl
+        )
         val reason = viewModel.getModelChoiceReason()
         AlertDialog(
             onDismissRequest = { showWhyModelDialog = false },
@@ -340,6 +350,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Mode: ${FailureReasonCopy.providerLabel(uiState.autoRouterMode)}", fontWeight = FontWeight.Bold)
                     Text("Brain: $installedModel")
+                    Text("Cloud: " + if (cloudReady) "ready (${uiState.omnirouteModel})" else "not set up")
                     Text(reason, style = MaterialTheme.typography.bodyMedium)
                 }
             },

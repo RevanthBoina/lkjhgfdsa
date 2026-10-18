@@ -8,10 +8,18 @@ default_local_provider: "ondevice_slm"
 providers:
   omniroute:
     name: "Omniroute Cloud"
+    # OmniRoute is a self-hosted, OpenAI-compatible gateway
+    # (https://github.com/diegosouzapw/OmniRoute), documented at http://localhost:20128/v1 on the
+    # machine that runs it. `localhost` on a phone is the phone itself, so the Android app asks the
+    # user for that machine's address (for example http://192.168.1.20:20128/v1) or an https
+    # reverse proxy. Plain http is accepted only for private/local hosts.
     base_url: "http://localhost:20128/v1"
     # The key is NOT read from an environment variable or BuildConfig. It is stored in
-    # Tink-encrypted SharedPreferences by com.aniob.app.data.AniobSecretStore.
+    # Tink-encrypted SharedPreferences by com.aniob.app.data.AniobSecretStore. Copy it from
+    # Dashboard -> Endpoints (an endpoint key, not an upstream provider key).
     api_key_env: ""
+    # "auto" lets the gateway pick. Presets: auto/coding, auto/fast, auto/cheap; any
+    # provider/model id from the dashboard is also accepted.
     model: "auto"
     vision_enabled: true
     timeout_seconds: 30

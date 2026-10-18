@@ -35,7 +35,9 @@ BANNED=(
   "hierarchies"
   "actuates"
   "FAST_PATH"
-  "OMNIROUTE"
+  # Internal provider identifiers (OMNIROUTE_CLOUD, OMNIROUTE_API_KEY) must never be rendered.
+  # The product name "OmniRoute" is a proper noun and is allowed on the Cloud AI setup card.
+  "OMNIROUTE_"
   "Pre-flight"
   "Preflight"
 )
