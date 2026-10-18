@@ -6,6 +6,7 @@ import android.content.res.Configuration
 import com.aniob.app.db.AniobDatabase
 import com.aniob.app.metrics.EventLogger
 import com.aniob.app.metrics.MetricsCollector
+import com.aniob.app.research.ResearchTelemetryManager
 import com.aniob.app.system.AniobSystemState
 
 class AniobApplication : Application(), ComponentCallbacks2 {
@@ -55,6 +56,15 @@ class AniobApplication : Application(), ComponentCallbacks2 {
             actionHost = workflowActionHost,
             destinationPreferences = destinationPreferences
         )
+    }
+
+    /**
+     * Paper metrics (latency, LLM calls, success rate) and the active ablation mode.
+     * One instance per process: the per-task counters live here, and the CSVs are shared by the
+     * Settings selector, the task pipeline and the Stats screen.
+     */
+    val researchTelemetry: ResearchTelemetryManager by lazy {
+        ResearchTelemetryManager(this)
     }
 
     /**

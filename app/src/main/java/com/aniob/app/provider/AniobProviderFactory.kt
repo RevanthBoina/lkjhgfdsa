@@ -180,13 +180,16 @@ object AniobProviderFactory {
         apiKey: String,
         baseUrl: String = AniobProviderConfig.OMNIROUTE_DEFAULT_BASE_URL,
         model: String = AniobProviderConfig.OMNIROUTE_MODEL,
-        jsonMode: Boolean = false
+        jsonMode: Boolean = false,
+        /** Per-request callback used by the research telemetry; see [AniobOmniRouteProvider]. */
+        onLlmRequest: () -> Unit = {}
     ): AniobCloudLlmProvider {
         return AniobOmniRouteProvider(
             apiKey = apiKey,
             baseUrl = AniobProviderConfig.resolveEndpoint(baseUrl),
             model = AniobProviderConfig.sanitizeModel(model),
-            jsonMode = jsonMode
+            jsonMode = jsonMode,
+            onLlmRequest = onLlmRequest
         )
     }
 }

@@ -18,6 +18,9 @@ import com.aniob.app.db.SessionScoreEntity
 import com.aniob.app.model.AniobModelDownloader
 import com.aniob.app.provider.AniobOmniRouteProvider
 import com.aniob.app.provider.AniobProviderConfig
+import com.aniob.app.research.AblationMode
+import com.aniob.app.research.ResearchRun
+import com.aniob.app.research.ResearchSummaryRow
 import com.aniob.app.provider.OmniRouteConnectionStatus
 import com.aniob.app.provider.testOmniRouteConnection
 import com.aniob.app.service.AniobAccessibilityService
@@ -142,7 +145,17 @@ data class AniobUiState(
     /** Staged draft from share or incoming intent that requires user confirmation/submission */
     val pendingInputPrefill: String? = null,
     /** Result of the last Cloud AI save / connection test, rendered as a banner in Settings. */
-    val cloudTest: CloudTestUiState = CloudTestUiState()
+    val cloudTest: CloudTestUiState = CloudTestUiState(),
+    /** Research: ablation condition that the next task will run under. */
+    val ablationMode: AblationMode = AblationMode.DEFAULT,
+    /** Research: one-line HUD for the last finished task (`[MODE] Latency… | Calls… | Success…`). */
+    val researchStatusLine: String? = null,
+    /** Research: increments per finished run so the host can fire a one-shot toast. */
+    val researchRunSequence: Long = 0L,
+    /** Research: last finished run, shown with the manual override in the Stats screen. */
+    val researchLastRun: ResearchRun? = null,
+    /** Research: running averages for [ablationMode]. */
+    val researchSummary: ResearchSummaryRow? = null
 )
 
 /** Outcomes of saving or testing the Cloud AI (OmniRoute) settings. */
@@ -371,7 +384,10 @@ class AniobViewModel(
             apiKey = _uiState.value.omnirouteApiKey,
             baseUrl = AniobProviderConfig.normalizeBaseUrl(_uiState.value.omnirouteBaseUrl)
                 .ifBlank { AniobProviderConfig.OMNIROUTE_DEFAULT_BASE_URL },
-            model = AniobProviderConfig.sanitizeModel(_uiState.value.omnirouteModel)
+            model = AniobProviderConfig.sanitizeModel(_uiState.value.omnirouteModel),
+            // Research metric #2: one count per outbound generation request. No-ops when no
+            // instrumented task is running (for example a chat-only Q&A).
+            onLlmRequest = { app.researchTelemetry.recordLlmCall() }
         )
     }
 
@@ -390,6 +406,11 @@ class AniobViewModel(
         )
         val savedBaseUrl = secretStore.getOmniRouteBaseUrl()
         val savedMode = prefs.getString("autorouter_mode", "auto") ?: "auto"
+        // Research state survives process death with the app's files, so a batch keeps its mode
+        // and the HUD can show the previous run immediately after a cold start.
+        val researchMode = app.researchTelemetry.mode
+        val lastResearchRun = app.researchTelemetry.lastRunOrNull()
+        val researchSummaryRow = lastResearchRun?.let { app.researchTelemetry.summaryFor(it.mode) }
         val savedQueued = prefs.getString("queued_prompt", null)
         localFailCount = prefs.getInt("local_fail_count", 0)
         disabledSkills = (prefs.getStringSet("disabled_skills", emptySet()) ?: emptySet()).toMutableSet()
@@ -408,11 +429,17 @@ class AniobViewModel(
                 ) { SafetyLevel.STANDARD },
                 fastPathEnabled = prefs.getBoolean("fastpath_enabled", true),
                 safetyGateEnabled = prefs.getBoolean("safety_gate_enabled", true),
-                disabledSkills = disabledSkills.toSet()
+                disabledSkills = disabledSkills.toSet(),
+                ablationMode = researchMode,
+                researchLastRun = lastResearchRun,
+                researchStatusLine = lastResearchRun?.let { app.researchTelemetry.hudLine(it) },
+                researchSummary = researchSummaryRow
             )
         }
 
-        executionRouter.fastPathEnabled = _uiState.value.fastPathEnabled
+        // The ablation mode owns the effective switches; the FastPath preference is ANDed with it
+        // so a mode without remember-replay cannot silently re-enable it.
+        applyAblationMode(_uiState.value.ablationMode)
 
         // UX-4: an OFF safety level is never silently retained — re-arm on every process start.
         if (_uiState.value.safetyLevel == SafetyLevel.OFF) {
@@ -872,10 +899,101 @@ class AniobViewModel(
 
     /** REAL switch: OFF gates the replay lookup — proven by a zero-replay-hits test. */
     fun setFastPathEnabled(enabled: Boolean) {
-        executionRouter.fastPathEnabled = enabled
         app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
             .edit().putBoolean("fastpath_enabled", enabled).apply()
         _uiState.update { it.copy(fastPathEnabled = enabled) }
+        // Re-derive the effective replay flag: a mode without remember-replay keeps it off even
+        // when the user switch is on.
+        applyAblationMode(_uiState.value.ablationMode)
+    }
+
+    // =========================================================================================
+    // Research: ablation selection, metrics HUD and manual verdict override
+    // =========================================================================================
+
+    /**
+     * Switches the experimental condition for the next task.
+     *
+     * Persisted in the telemetry manager's prefs (not `aniob_prefs`) so the CSV and the mode that
+     * produced it cannot drift apart. The change is applied to the real switches immediately.
+     */
+    fun setAblationMode(mode: AblationMode) {
+        app.researchTelemetry.mode = mode
+        applyAblationMode(mode)
+        _uiState.update { it.copy(ablationMode = mode, researchStatusLine = null) }
+        // The summary lives on disk; refresh it off the main thread.
+        viewModelScope.launch(Dispatchers.IO) {
+            val summary = app.researchTelemetry.summaryFor(mode)
+            _uiState.update { it.copy(researchSummary = summary) }
+        }
+    }
+
+    /**
+     * Applies a mode to the mechanisms that exist today. Called on init, on every mode change and
+     * at the start of each task, so a stale switch can never survive into a measured run.
+     */
+    internal fun applyAblationMode(mode: AblationMode) {
+        executionRouter.intentShortcutsEnabled = mode.intentShortcuts
+        executionRouter.fastPathEnabled = mode.rememberReplay && _uiState.value.fastPathEnabled
+        observationPolicy.setBurstLimit(
+            if (mode.motifBursts) OBSERVATION_BURST_LIMIT else OBSERVATION_BURST_LIMIT_SINGLE_STEP
+        )
+        // The accessibility service may connect after this call; it keeps the value for the run.
+        AniobAccessibilityService.instance?.setResearchFastDeltaVerify(mode.fastA11yDeltaVerify)
+    }
+
+    /**
+     * Manual verdict for the last finished run, used when the deterministic verifier cannot judge
+     * an outcome. Rewrites the last CSV row (flagged as manual) and refreshes the HUD.
+     */
+    fun overrideResearchOutcome(success: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val updated = app.researchTelemetry.overrideLastOutcome(success)
+            if (updated != null) {
+                val line = app.researchTelemetry.hudLine(updated)
+                _uiState.update { current ->
+                    current.copy(
+                        researchLastRun = updated,
+                        researchStatusLine = line,
+                        researchSummary = app.researchTelemetry.summaryFor(updated.mode),
+                        researchRunSequence = current.researchRunSequence + 1
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Publishes a run that the abnormal-exit safety net just closed (Stop, cancellation, crash of a
+     * step) so the HUD/Toast line still appears for it. Normal completions publish in
+     * [updateToIdle]; this is only for runs closed outside that path.
+     */
+    private fun publishResearchRun(run: ResearchRun?) {
+        if (run == null) return
+        val line = app.researchTelemetry.hudLine(run)
+        val summary = app.researchTelemetry.summaryFor(run.mode)
+        _uiState.update { current ->
+            current.copy(
+                researchLastRun = run,
+                researchStatusLine = line,
+                researchSummary = summary,
+                researchRunSequence = current.researchRunSequence + 1
+            )
+        }
+    }
+
+    /** Deletes stored research CSVs so the next batch starts clean. */
+    fun clearResearchData() {
+        viewModelScope.launch(Dispatchers.IO) {
+            app.researchTelemetry.clearAll()
+            _uiState.update {
+                it.copy(
+                    researchLastRun = null,
+                    researchStatusLine = null,
+                    researchSummary = null
+                )
+            }
+        }
     }
 
     fun isSafetyGateEnabled(): Boolean = _uiState.value.safetyGateEnabled
@@ -1591,8 +1709,17 @@ class AniobViewModel(
                 return@launch
             }
 
-            // Task is self-contained -> Proceed directly
-            executeTaskPipeline(task, generation)
+            // Task is self-contained -> Proceed directly. The finally closes the research run when
+            // the pipeline is cancelled (Stop) or throws before its own endTask call.
+            try {
+                executeTaskPipeline(task, generation)
+            } finally {
+                publishResearchRun(
+                    app.researchTelemetry.endTaskIfActive(
+                        failureReason = if (_uiState.value.isRunning) "interrupted" else "stopped"
+                    )
+                )
+            }
         }
     }
 
@@ -1694,7 +1821,15 @@ class AniobViewModel(
             if (!runDoctorPreflight(updatedTask, clarifiedPrompt, resolvedShortcut)) {
                 return@launch
             }
-            executeTaskPipeline(updatedTask, gen)
+            try {
+                executeTaskPipeline(updatedTask, gen)
+            } finally {
+                publishResearchRun(
+                    app.researchTelemetry.endTaskIfActive(
+                        failureReason = if (_uiState.value.isRunning) "interrupted" else "stopped"
+                    )
+                )
+            }
         }
     }
 
@@ -1711,6 +1846,12 @@ class AniobViewModel(
      */
     private suspend fun executeTaskPipeline(task: AniobTask, taskGeneration: Long = activeGeneration) {
         if (taskGeneration != activeGeneration) return
+        // Research instrumentation: pin this run to the persisted ablation mode, flip the real
+        // switches, then reset counters and start the elapsed-realtime clock. Everything below is
+        // measured; nothing above it is.
+        val researchMode = app.researchTelemetry.mode
+        applyAblationMode(researchMode)
+        app.researchTelemetry.startTask(task.clarifiedGoal.ifBlank { task.rawPrompt }, researchMode)
         persistRunningMarker(task, 0, "Task started")
 
         watchdog.reset()
@@ -1998,6 +2139,7 @@ class AniobViewModel(
                     is AniobExecutionRouter.ExecutionPlanResult.DirectIntent -> {
                         primaryProvider = "INTENT"
                         decisionReason = ladderResult.reason
+                        app.researchTelemetry.markIntentShortcutUsed()
                         _uiState.update { it.copy(statusMessage = "Executing direct system intent...") }
                         proposal = StepPipeline.Proposal.DirectIntent(
                             action = AniobAction.Finish(summary = "Intent dispatched: ${ladderResult.shortcut.targetPackage}"),
@@ -2007,6 +2149,7 @@ class AniobViewModel(
                     is AniobExecutionRouter.ExecutionPlanResult.FastPathStep -> {
                         primaryProvider = "FASTPATH"
                         decisionReason = ladderResult.reason
+                        app.researchTelemetry.markRememberCacheHit()
                         _uiState.update { it.copy(statusMessage = "FastPath replay step ${currentStep + 1}...") }
                         proposal = StepPipeline.Proposal.FastPath(ladderResult.action)
                         targetNode = ladderResult.action.semanticTarget()?.let {
@@ -2095,6 +2238,7 @@ class AniobViewModel(
                         val activePrompt = assembledPrompt.text
 
                         val plannedAction = if (localCanDrive) {
+                            app.researchTelemetry.recordLocalInference()
                             val gen = localLlmClient.generateStepResult(
                                 systemPrompt,
                                 activePrompt
@@ -2261,6 +2405,7 @@ class AniobViewModel(
                     targetNode = targetNode
                 )
                 stepResult = res
+                app.researchTelemetry.recordStep()
                 taskContext = res.nextCtx
                 observationPolicy.recordActionOutcome(proposal.action, currentScreen.packageName, res.verification?.isSuccessful == true)
 
@@ -2291,6 +2436,8 @@ class AniobViewModel(
         }
 
         if (taskGeneration != activeGeneration) {
+            // A newer task took ownership; record this one honestly but do not touch the live UI.
+            app.researchTelemetry.endTask(isSuccess = false, failureReason = "superseded")
             return
         }
 
@@ -2341,6 +2488,20 @@ class AniobViewModel(
             Outcome.INTERRUPTED -> "Task interrupted"
             Outcome.FAILED -> "Task terminated: ${terminalReason.ifBlank { "Unmet criteria" }}"
         }
+
+        // Research metric closure: latency comes from elapsedRealtime inside the manager, LLM calls
+        // and steps were counted as they happened, and success is the deterministic verdict above.
+        // endTask appends the row, rewrites the summary table and logs RESEARCH_METRICS.
+        val researchFailureReason = when {
+            isSuccess -> ""
+            finalOutcome == Outcome.STOPPED -> "stopped"
+            finalOutcome == Outcome.INTERRUPTED -> "interrupted"
+            finalOutcome == Outcome.UNVERIFIED -> terminalReason.ifBlank { "unverified" }
+            else -> terminalReason.ifBlank { "unmet_criteria" }
+        }
+        val researchRun = app.researchTelemetry.endTask(isSuccess, researchFailureReason)
+        val researchLine = researchRun?.let { app.researchTelemetry.hudLine(it) }
+        val researchSummaryRow = researchRun?.let { app.researchTelemetry.summaryFor(it.mode) }
 
         val consolidatedSkill = if (isSuccess) {
             hippocampusTracker.consolidateOnSuccess(
@@ -2462,7 +2623,16 @@ class AniobViewModel(
             it.copy(
                 statusMessage = resultSummary,
                 lastProviderUsed = primaryProvider,
-                chatMessages = it.chatMessages + assistantMessage
+                chatMessages = it.chatMessages + assistantMessage,
+                researchStatusLine = researchLine ?: it.researchStatusLine,
+                researchLastRun = researchRun ?: it.researchLastRun,
+                researchSummary = researchSummaryRow ?: it.researchSummary,
+                // The sequence only moves for a recorded run, which is what fires the HUD toast.
+                researchRunSequence = if (researchRun != null) {
+                    it.researchRunSequence + 1
+                } else {
+                    it.researchRunSequence
+                }
             )
         }
     }
@@ -2755,6 +2925,12 @@ class AniobViewModel(
 
         /** How often a paused task re-checks the resume flag (UX-3 stop/pause responsiveness). */
         const val PAUSE_POLL_MS = 100L
+
+        /** Observe-burst ceiling for motif modes (the shipping value). */
+        const val OBSERVATION_BURST_LIMIT = 3
+
+        /** Ceiling that forces a full observation before every action (BASELINE conditions). */
+        const val OBSERVATION_BURST_LIMIT_SINGLE_STEP = 1
 
         /** Trust Center keeps the last 20 decisions (UX-4). */
         const val CONFIRMATION_HISTORY_LIMIT = 20

@@ -21,6 +21,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.aniob.app.provider.AniobProviderConfig
+import com.aniob.app.research.AblationMode
 import com.aniob.app.ui.AniobUiState
 import com.aniob.app.ui.CloudTestResult
 import com.aniob.app.ui.components.BannerKind
@@ -35,6 +36,7 @@ fun AniobSettingsScreen(
     onTestConnection: (String, String) -> Unit,
     onCloudInputChanged: () -> Unit = {},
     onAutoRouterModeChanged: (String) -> Unit = {},
+    onAblationModeChanged: (AblationMode) -> Unit = {},
     onFastPathChanged: (Boolean) -> Unit = {},
     onSafetyGateChanged: (Boolean) -> Unit = {},
     onBack: () -> Unit = {},
@@ -130,6 +132,61 @@ fun AniobSettingsScreen(
                     }
                 }
             }
+            // Research ablation selector: the condition the next measured task runs under.
+            Card(modifier = Modifier.fillMaxWidth().testTag("card_ablation_mode")) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "Research mode",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "Pick the condition before a test batch. It changes how the agent works, not what it can do.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    AblationMode.entries.forEach { mode ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onAblationModeChanged(mode) }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = uiState.ablationMode == mode,
+                                onClick = { onAblationModeChanged(mode) },
+                                modifier = Modifier.testTag("radio_ablation_${mode.id}")
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = mode.label,
+                                    fontWeight = FontWeight.SemiBold,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    text = mode.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = "Each finished task is appended to research_runs.csv; averages are kept in research_summary_table.csv inside the app's files folder.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
             // Quick Navigation Shortcuts Card
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),

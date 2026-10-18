@@ -34,6 +34,13 @@ class AniobExecutionRouter(
      */
     var fastPathEnabled: Boolean = true
 
+    /**
+     * Research ablation switch for the step-0 intent-shortcut lookup. Off means the ladder never
+     * resolves `AniobIntentResolver` and every step goes through the model/skill rungs — the
+     * BASELINE condition. Defaults to on, which is the shipping behaviour.
+     */
+    var intentShortcutsEnabled: Boolean = true
+
     /** UX-5: skills the user disabled are skipped by both matchers. */
     private var disabledSkills: Set<String> = emptySet()
 
@@ -72,8 +79,8 @@ class AniobExecutionRouter(
         userRoutingMode: String = "auto",
         lastObservedResult: String? = null
     ): ExecutionPlanResult {
-        // Step 0: Direct Intent Shortcut (0ms LLM)
-        if (stepIndex == 0) {
+        // Step 0: Direct Intent Shortcut (0ms LLM). The ablation switch gates the lookup itself.
+        if (stepIndex == 0 && intentShortcutsEnabled) {
             val intentShortcut = AniobIntentResolver.resolve(taskPrompt)
             if (intentShortcut != null) {
                 return ExecutionPlanResult.DirectIntent(
