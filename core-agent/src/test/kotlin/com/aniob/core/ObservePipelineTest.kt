@@ -4,6 +4,7 @@ import com.aniob.core.domain.AniobNode
 import com.aniob.core.domain.ExecutorRequest
 import com.aniob.core.domain.AniobRect
 import com.aniob.core.perception.ObserveCapturePolicy
+import com.aniob.core.perception.ObserveDispatchPolicy
 import com.aniob.core.perception.ObserveSnapshot
 import com.aniob.core.perception.ObserveTreeCompactor
 import org.junit.Assert.assertEquals
@@ -315,6 +316,17 @@ class ObservePipelineTest {
             AniobNode(id = 4, className = "TextView", text = "Caption")
         )
         assertEquals(2, ObserveCapturePolicy.labeledInteractiveCount(nodes))
+    }
+
+    @Test
+    fun nodeActionIsPreferedOnlyForALiveUsableHandle() {
+        assertTrue(ObserveDispatchPolicy.preferNodeAction(nodeId = 3, capable = true, enabled = true))
+        // No compact handle (baseline capture) -> gesture.
+        assertFalse(ObserveDispatchPolicy.preferNodeAction(nodeId = null, capable = true, enabled = true))
+        // A label that is not itself clickable -> gesture at its centre.
+        assertFalse(ObserveDispatchPolicy.preferNodeAction(nodeId = 3, capable = false, enabled = true))
+        // A disabled control -> gesture, so the attempt fails visibly instead of silently.
+        assertFalse(ObserveDispatchPolicy.preferNodeAction(nodeId = 3, capable = true, enabled = false))
     }
 
     // ---------------------------------------------------------------------------------------------

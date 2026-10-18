@@ -2258,7 +2258,11 @@ class AniobViewModel(
                             AniobAction.Fail("Local model is not capable or ready: ${localCaps?.reason ?: "model not loaded"}")
                         } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD && isCloudConfigured()) {
                             val omniroute = getOmniRouteProvider()
-                            val needsVision = (localFailCount > 0) || task.rawPrompt.contains(Regex("(?i)look|see|inspect|read|image|photo|visual"))
+                            // Pixels are only *required* when the goal itself is visual. A local
+                            // model hiccup is already covered by the failed-verify branch below.
+                            val promptAsksForVisualInspection = task.rawPrompt.contains(
+                                Regex("(?i)look|see|inspect|read|image|photo|visual")
+                            )
                             val isSensitiveScreen = currentScreen.nodes.any {
                                 it.isPassword || it.viewId.contains(Regex("(?i)password|pwd|otp|pin|cvv|card_number"))
                             }
@@ -2273,7 +2277,7 @@ class AniobViewModel(
                                     fastObservation = researchMode.fastObservation,
                                     labeledInteractiveNodes = labeledInteractive,
                                     previousStepFailed = previousStepFailed,
-                                    visionRequested = needsVision
+                                    visionRequested = promptAsksForVisualInspection
                                 )
                             val screenshotBase64 = if (wantsPixels && !isSensitiveScreen && accessibility != null) {
                                 val snap = accessibility.captureScreenshotAsync()
