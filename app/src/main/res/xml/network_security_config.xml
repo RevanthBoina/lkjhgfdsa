@@ -6,7 +6,7 @@
             <certificates src="system" />
         </trust-anchors>
     </debug-overrides>
-    <base-config cleartextTrafficPermitted="false">
+    <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>

@@ -77,6 +77,7 @@ fun AniobChatScreen(
     onWorkflowCancel: (String) -> Unit = {},
     onContinueInWebsite: (String) -> Unit = {},
     onConsumePendingPrefill: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     renderWindow: () -> List<ChatMessage> = { emptyList() }
 ) {
     val context = LocalContext.current
@@ -374,6 +375,7 @@ fun AniobChatScreen(
                         message = message,
                         onOpenDetails = { onShowTrackerSheet(true) },
                         onManageModels = onManageModels,
+                        onOpenSettings = onOpenSettings,
                         onRetry = {
                             if (!message.retryPrompt.isNullOrBlank()) {
                                 onSubmitTask(message.retryPrompt)
@@ -647,6 +649,7 @@ fun WhatsAppChatBubble(
     message: ChatMessage,
     onOpenDetails: () -> Unit,
     onManageModels: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     onRetry: () -> Unit = {}
 ) {
     val isUser = message.role == "user"
@@ -657,6 +660,10 @@ fun WhatsAppChatBubble(
     val isPreflightFailure = message.badge?.let {
         it.contains("Pre-flight") || it.contains("Check Failed")
     } == true
+    val needsProviderAction = isPreflightFailure ||
+        message.content.contains("configure an API key in Settings", ignoreCase = true) ||
+        message.content.contains("API key is not configured", ignoreCase = true) ||
+        message.content.contains("cloud API key is missing", ignoreCase = true)
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -683,11 +690,12 @@ fun WhatsAppChatBubble(
                     textColor = if (isUser) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                if (isPreflightFailure) {
+                if (needsProviderAction) {
                     Spacer(modifier = Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (message.content.contains("install an on-device model", ignoreCase = true) ||
-                            message.content.contains("Local model file missing", ignoreCase = true)
+                            message.content.contains("Local model file missing", ignoreCase = true) ||
+                            message.content.contains("Download an on-device model", ignoreCase = true)
                         ) {
                             Button(
                                 onClick = onManageModels,
@@ -695,6 +703,18 @@ fun WhatsAppChatBubble(
                                 modifier = Modifier.testTag("doctor_manage_models_btn")
                             ) {
                                 Text("Manage Models", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                        if (message.content.contains("Settings", ignoreCase = true) ||
+                            message.content.contains("API key", ignoreCase = true) ||
+                            message.content.contains("Local model file missing", ignoreCase = true)
+                        ) {
+                            OutlinedButton(
+                                onClick = onOpenSettings,
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                modifier = Modifier.testTag("doctor_open_settings_btn")
+                            ) {
+                                Text("Cloud API", style = MaterialTheme.typography.labelSmall)
                             }
                         }
                         if (message.content.contains("Accessibility Service Disabled", ignoreCase = true)) {

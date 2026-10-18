@@ -103,6 +103,9 @@ data class AniobUiState(
     val omnirouteModel: String = "auto",
     /** OmniRoute gateway base URL; blank means AniobProviderConfig.OMNIROUTE_DEFAULT_BASE_URL. */
     val omnirouteBaseUrl: String = "",
+    val omnirouteTesting: Boolean = false,
+    val omnirouteConnectionStatus: String = "",
+    val omnirouteDiscoveredModels: List<String> = emptyList(),
     val autoRouterMode: String = "auto", // auto, local-first, local-only, cloud-only, balanced
     val statusMessage: String = "Ready",
     val lastRoutingReason: String = "Ready",
@@ -325,6 +328,22 @@ class AniobViewModel(
         return AniobModelDownloader.ALL_MODELS.find { it.id == id }?.name ?: id
     }
 
+    /** Human-readable active brain summary for the top-bar chip. */
+    fun getActiveBrainLabel(): String {
+        val installed = getInstalledModelName()
+        val hasCloud = _uiState.value.omnirouteApiKey.isNotBlank()
+        val cloudModel = _uiState.value.omnirouteModel.ifBlank { "auto" }
+        val mode = _uiState.value.autoRouterMode.lowercase()
+        return when {
+            mode == "cloud-only" -> if (hasCloud) "Cloud ($cloudModel)" else "Add Cloud Key"
+            mode == "local-only" -> installed ?: "No model"
+            installed != null && hasCloud -> "$installed + Cloud"
+            installed != null -> installed
+            hasCloud -> "Cloud ($cloudModel)"
+            else -> "No model"
+        }
+    }
+
     /** Installed model size in whole GB, for actionable offline guidance. */
     private fun recommendedModelSizeGb(modelId: String): Int =
         AniobModelDownloader.ALL_MODELS.find { it.id == modelId }?.sizeGb?.toInt() ?: 2
@@ -332,13 +351,19 @@ class AniobViewModel(
     /** Richer routing rationale for the "Why this model?" dialog. */
     fun getModelChoiceReason(): String {
         val installed = getInstalledModelName() ?: "none installed"
+        val hasCloud = _uiState.value.omnirouteApiKey.isNotBlank()
+        val cloudDesc = if (hasCloud) {
+            val gw = _uiState.value.omnirouteBaseUrl.ifBlank { "auto-gateway" }
+            "active (model '${_uiState.value.omnirouteModel.ifBlank { "auto" }}' via $gw)"
+        } else {
+            "not configured"
+        }
         val telemetry = AniobDeviceTelemetry.getRealState(app)
         val batteryToken = if (telemetry.isCharging) "charging" else "on battery ${telemetry.batteryPercent}%"
         val mode = _uiState.value.autoRouterMode
         val decision = _uiState.value.lastRoutingReason
         return "Battery $batteryToken. Mode '$mode' selected '$installed' " +
-            "(local ${telemetry.totalRamGb}GB RAM device; local route keeps prompts on-device, " +
-            "cloud route escalates only when the local model is unavailable). " +
+            "(local ${telemetry.totalRamGb}GB RAM device; Cloud API: $cloudDesc). " +
             "Last decision: $decision"
     }
 
@@ -348,11 +373,18 @@ class AniobViewModel(
      */
     private val secretStore = com.aniob.app.data.AniobSecretStore(app)
 
-    private fun getOmniRouteProvider(): AniobOmniRouteProvider {
+    private fun isOmniRouteReady(): Boolean {
+        val state = _uiState.value
+        return state.omnirouteApiKey.isNotBlank() ||
+            (state.omnirouteBaseUrl.isNotBlank() && AniobOmniRouteProvider.isLocalGateway(state.omnirouteBaseUrl))
+    }
+
+    private fun getOmniRouteProvider(sessionId: String? = null): AniobOmniRouteProvider {
         return AniobOmniRouteProvider(
             apiKey = _uiState.value.omnirouteApiKey,
-            baseUrl = com.aniob.app.provider.AniobProviderConfig.resolveEndpoint(_uiState.value.omnirouteBaseUrl),
-            model = com.aniob.app.provider.AniobProviderConfig.coerceModel(_uiState.value.omnirouteModel)
+            baseUrl = _uiState.value.omnirouteBaseUrl,
+            model = com.aniob.app.provider.AniobProviderConfig.coerceModel(_uiState.value.omnirouteModel),
+            sessionId = sessionId
         )
     }
 
@@ -1017,20 +1049,97 @@ class AniobViewModel(
         _uiState.update { it.copy(autoRouterMode = mode) }
     }
 
-    fun updateSettings(apiKey: String, model: String) {
+    @JvmOverloads
+    fun updateSettings(
+        apiKey: String,
+        model: String,
+        baseUrl: String = _uiState.value.omnirouteBaseUrl
+    ) {
         val prefs = app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
-        // The key is a secret: encrypted store only. The model name is not, so it stays in plaintext
-        // prefs alongside the other UI settings. OmniRoute accepts only "auto".
-        secretStore.setOmniRouteApiKey(apiKey)
+        val trimmedKey = apiKey.trim()
+        val trimmedUrl = baseUrl.trim()
+        // The key is a secret: encrypted store only. Model and gateway URL stay in prefs.
+        secretStore.setOmniRouteApiKey(trimmedKey)
+        secretStore.setOmniRouteBaseUrl(trimmedUrl)
         val coerced = com.aniob.app.provider.AniobProviderConfig.coerceModel(model)
         prefs.edit().putString("omniroute_model", coerced).apply()
-        _uiState.update { it.copy(omnirouteApiKey = apiKey, omnirouteModel = coerced) }
+        val statusMsg = if (trimmedKey.isNotBlank() || com.aniob.app.provider.AniobOmniRouteProvider.isLocalGateway(trimmedUrl)) {
+            "Saved ✓ · Model: $coerced"
+        } else {
+            "Cloud API key cleared"
+        }
+        _uiState.update {
+            it.copy(
+                omnirouteApiKey = trimmedKey,
+                omnirouteModel = coerced,
+                omnirouteBaseUrl = trimmedUrl,
+                omnirouteConnectionStatus = statusMsg
+            )
+        }
+        app.systemState.refresh()
     }
 
     /** Sets the OmniRoute gateway base URL. Not a secret, so it is persisted in plaintext prefs. */
     fun setOmniRouteBaseUrl(baseUrl: String) {
-        secretStore.setOmniRouteBaseUrl(baseUrl)
-        _uiState.update { it.copy(omnirouteBaseUrl = baseUrl.trim()) }
+        val trimmed = baseUrl.trim()
+        secretStore.setOmniRouteBaseUrl(trimmed)
+        _uiState.update { it.copy(omnirouteBaseUrl = trimmed) }
+    }
+
+    /**
+     * Saves the provided OmniRoute settings and performs a live diagnostic test against the gateway.
+     */
+    fun testOmniRouteSettings(
+        apiKey: String = _uiState.value.omnirouteApiKey,
+        baseUrl: String = _uiState.value.omnirouteBaseUrl,
+        model: String = _uiState.value.omnirouteModel
+    ) {
+        updateSettings(apiKey = apiKey, model = model, baseUrl = baseUrl)
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    omnirouteTesting = true,
+                    omnirouteConnectionStatus = "Testing connection..."
+                )
+            }
+            val diag = com.aniob.app.provider.verifyOmniRouteGateway(
+                apiKey = apiKey.trim(),
+                baseUrl = baseUrl.trim(),
+                model = com.aniob.app.provider.AniobProviderConfig.coerceModel(model)
+            )
+            // If user left baseUrl blank and a fallback gateway succeeded (e.g. omniroute.online or 10.0.2.2),
+            // keep the resolved endpoint visible in the status message.
+            _uiState.update {
+                it.copy(
+                    omnirouteTesting = false,
+                    omnirouteConnectionStatus = diag.message,
+                    omnirouteDiscoveredModels = if (diag.availableModels.isNotEmpty()) diag.availableModels else it.omnirouteDiscoveredModels
+                )
+            }
+        }
+    }
+
+    /**
+     * Fetches the live `/v1/models` list from the configured OmniRoute gateway.
+     */
+    fun refreshOmniRouteModels(
+        apiKey: String = _uiState.value.omnirouteApiKey,
+        baseUrl: String = _uiState.value.omnirouteBaseUrl
+    ) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(omnirouteConnectionStatus = "Loading models from gateway...") }
+            val models = com.aniob.app.provider.fetchOmniRouteModels(apiKey.trim(), baseUrl.trim())
+            _uiState.update {
+                it.copy(
+                    omnirouteDiscoveredModels = models,
+                    omnirouteConnectionStatus = if (models.isNotEmpty()) {
+                        "Loaded ${models.size} models from gateway ✓"
+                    } else {
+                        "Could not load model list — check gateway address or key"
+                    }
+                )
+            }
+        }
     }
 
     fun handleIncomingShare(shared: com.aniob.app.workflow.ParsedIncomingContent) {
@@ -1372,7 +1481,7 @@ class AniobViewModel(
                 // Do not initialize native memory for an explicitly cloud-only request.
                 if (_uiState.value.autoRouterMode != "cloud-only") refreshLocalEngine()
                 val trigger = AniobExternalAiTrigger(
-                    cloudProvider = if (_uiState.value.omnirouteApiKey.isNotBlank()) getOmniRouteProvider() else null,
+                    cloudProvider = if (isOmniRouteReady()) getOmniRouteProvider(sessionId = taskId) else null,
                     localProvider = localLlmProvider,
                     sharedKnowledgeStore = sharedKnowledgeStore
                 )
@@ -1944,28 +2053,8 @@ class AniobViewModel(
                         )
                         val activePrompt = assembledPrompt.text
 
-                        val plannedAction = if (localCanDrive) {
-                            val gen = localLlmClient.generateStepResult(
-                                systemPrompt,
-                                activePrompt
-                            )
-                            totalTokens += ((systemPrompt.length + activePrompt.length) / 4).coerceAtLeast(80)
-                            if (gen is AniobGenerationResult.Ready) {
-                                android.util.Log.i("AniobViewModel", "Local SLM generated output (len=${gen.fullText.length})")
-                            }
-                            val structured = AniobLocalActionResolver.resolveStructured(gen, currentScreen)
-                            if (structured.usedFallback) {
-                                app.eventLogger.warn("AniobViewModel", "Local SLM produced no schema-valid action: ${structured.reason}")
-                            }
-                            structured.action
-                        } else if (decision.target == RouteTarget.LOCAL_SLM) {
-                            AniobAction.Fail("Local model is not capable or ready: ${localCaps?.reason ?: "model not loaded"}")
-                        } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD && _uiState.value.omnirouteApiKey.isNotBlank()) {
-                            val omniroute = AniobOmniRouteProvider(
-                                apiKey = _uiState.value.omnirouteApiKey,
-                                baseUrl = com.aniob.app.provider.AniobProviderConfig.resolveEndpoint(_uiState.value.omnirouteBaseUrl),
-                                model = com.aniob.app.provider.AniobProviderConfig.coerceModel(_uiState.value.omnirouteModel)
-                            )
+                        suspend fun runOmniRouteStep(): AniobAction {
+                            val omniroute = getOmniRouteProvider(sessionId = task.id)
                             val needsVision = (localFailCount > 0) || task.rawPrompt.contains(Regex("(?i)look|see|inspect|read|image|photo|visual"))
                             val isSensitiveScreen = currentScreen.nodes.any {
                                 it.isPassword || it.viewId.contains(Regex("(?i)password|pwd|otp|pin|cvv|card_number"))
@@ -1984,7 +2073,7 @@ class AniobViewModel(
                             } else null
                             val raw = omniroute.getNextActionRaw(systemPrompt, activePrompt, screenshotBase64)
                             totalTokens += ((systemPrompt.length + activePrompt.length) / 4).coerceAtLeast(150)
-                            raw.fold(
+                            return raw.fold(
                                 onSuccess = { text ->
                                     totalTokens += (text.length / 4).coerceAtLeast(1)
                                     val executorDecode = AniobDecodeConfig.forRole(AniobDecodeConfig.Role.EXECUTOR)
@@ -2020,6 +2109,56 @@ class AniobViewModel(
                                     AniobAction.Fail("Cloud action generation failed: ${error.message ?: "network error"}")
                                 }
                             )
+                        }
+
+                        val canEscalateToCloud = userRouting != "local-only" && isOmniRouteReady() && powerState.isNetworkAvailable
+
+                        val plannedAction = if (localCanDrive) {
+                            val gen = localLlmClient.generateStepResult(
+                                systemPrompt,
+                                activePrompt
+                            )
+                            totalTokens += ((systemPrompt.length + activePrompt.length) / 4).coerceAtLeast(80)
+                            if (gen is AniobGenerationResult.Ready) {
+                                android.util.Log.i("AniobViewModel", "Local SLM generated output (len=${gen.fullText.length})")
+                            }
+                            val structured = AniobLocalActionResolver.resolveStructured(gen, currentScreen)
+                            if (structured.usedFallback) {
+                                app.eventLogger.warn("AniobViewModel", "Local SLM produced no schema-valid action: ${structured.reason}")
+                                if (canEscalateToCloud) {
+                                    primaryProvider = "OMNIROUTE_CLOUD"
+                                    escalations++
+                                    decisionReason = "Escalated to OmniRoute Cloud after local output fallback"
+                                    _uiState.update {
+                                        it.copy(
+                                            statusMessage = "Escalating to Cloud...",
+                                            lastProviderUsed = primaryProvider,
+                                            lastRoutingReason = decisionReason
+                                        )
+                                    }
+                                    runOmniRouteStep()
+                                } else {
+                                    structured.action
+                                }
+                            } else {
+                                structured.action
+                            }
+                        } else if (decision.target == RouteTarget.LOCAL_SLM && canEscalateToCloud) {
+                            primaryProvider = "OMNIROUTE_CLOUD"
+                            escalations++
+                            decisionReason = "Escalated to OmniRoute Cloud (${localCaps?.reason ?: "local model not loaded"})"
+                            _uiState.update {
+                                it.copy(
+                                    statusMessage = "Escalating to Cloud...",
+                                    lastProviderUsed = primaryProvider,
+                                    lastRoutingReason = decisionReason
+                                )
+                            }
+                            runOmniRouteStep()
+                        } else if (decision.target == RouteTarget.LOCAL_SLM) {
+                            AniobAction.Fail("Local model is not capable or ready: ${localCaps?.reason ?: "model not loaded"}")
+                        } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD && isOmniRouteReady()) {
+                            runOmniRouteStep()
                         } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD) {
                             AniobAction.Fail("OmniRoute cloud API key is missing")
                         } else {
