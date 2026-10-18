@@ -78,7 +78,14 @@ data class TaskContext(
         lastAction: String? = null,
         lastResult: String? = null
     ): ExecutorRequest {
-        val optimizedNodes = com.aniob.core.optimizer.AniobTokenOptimizer.optimize(screen.nodes)
+        // A compact capture already pruned, merged and ordered its nodes; re-running the
+        // optimizer would re-index them for no benefit and could break the prompt ids.
+        val alreadyCompact = screen.nodes.any { it.markup.isNotBlank() }
+        val optimizedNodes = if (alreadyCompact) {
+            screen.nodes
+        } else {
+            com.aniob.core.optimizer.AniobTokenOptimizer.optimize(screen.nodes)
+        }
         val criteriaList = if (!successCriteria.isEmpty) {
             successCriteria.describeList()
         } else emptyList()
@@ -91,7 +98,7 @@ data class TaskContext(
             packageName = screen.packageName,
             activityName = screen.activityName,
             windowId = 0,
-            observationId = screen.treeHash,
+            observationId = screen.screenHash.ifBlank { screen.treeHash },
             actionableNodes = optimizedNodes,
             lastAction = lastAction,
             lastResult = lastResult ?: condensedHistory.lastOrNull(),

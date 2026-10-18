@@ -122,7 +122,7 @@ The product name **OmniRoute** is allowed here even though internal identifiers
 
 The ablation selector is a study surface, not a consumer setting: the labels name the exact
 condition so a run in `research_runs.csv` can be traced back to what the agent did. Mode ids
-(`BASELINE`, `INTENT_SHORTCUT_ONLY`, `MOTIF_AND_FAST_A11Y`, `FULL_HUMAN_SPEED`) stay internal —
+(`BASELINE`, `INTENT_SHORTCUT_ONLY`, `MOTIF_AND_FAST_OBSERVE`, `FULL_HUMAN_SPEED`) stay internal —
 they appear only in the CSV, the log tag and the bracketed HUD prefix, never as prose.
 
 | Slot | Copy |
@@ -185,8 +185,8 @@ End-of-task HUD (Stats line and the one-shot Toast), format fixed for the paper:
 | Failure title | Needs attention: %1$s |
 | Interrupted title | Aniob was interrupted |
 | Interrupted body | Aniob was killed by the system at step %1$d — run it again or view the partial steps. |
-| A11y lost title | Aniob lost access |
-| A11y lost body | Re-enable accessibility to continue, or stop the task. |
+| Access lost title | Aniob lost access |
+| Access lost body | Re-enable accessibility to continue, or stop the task. |
 | Tile idle | Ask Aniob |
 | Tile running | Stop task |
 | Shortcut new task | New task |

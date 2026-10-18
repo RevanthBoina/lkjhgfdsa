@@ -21,7 +21,7 @@ import kotlinx.coroutines.flow.update
 
 /** One reactive snapshot of every system gate the UI reads. Never a non-reactive local read. */
 data class SystemState(
-    val a11yConnected: Boolean = false,
+    val accessibilityConnected: Boolean = false,
     val overlayGranted: Boolean = false,
     val notificationsEnabled: Boolean = false,
     val batteryUnrestricted: Boolean = false,
@@ -33,7 +33,7 @@ data class SystemState(
 /**
  * Single reactive truth for permission/service state (UX-0 §1, kills U2).
  *
- * Sources push updates: a11y service lifecycle, connectivity callback, package changes and
+ * Sources push updates: accessibility service lifecycle, connectivity callback, package changes and
  * Activity `onResume`. Every banner/card collects this flow — a manual Refresh button may
  * remain as a secondary affordance but is never the mechanism.
  */
@@ -60,7 +60,7 @@ class AniobSystemState(private val app: AniobApplication) {
     fun refresh() {
         _state.update {
             SystemState(
-                a11yConnected = AniobAccessibilityService.isServiceConnected,
+                accessibilityConnected = AniobAccessibilityService.isServiceConnected,
                 overlayGranted = canDrawOverlays(),
                 notificationsEnabled = NotificationManagerCompat.from(app).areNotificationsEnabled(),
                 batteryUnrestricted = isBatteryUnrestricted(),
@@ -73,7 +73,7 @@ class AniobSystemState(private val app: AniobApplication) {
 
     /** Push-based update from the accessibility service, avoiding a full re-probe. */
     fun onAccessibilityChanged(connected: Boolean) {
-        _state.update { it.copy(a11yConnected = connected, checkedAt = System.currentTimeMillis()) }
+        _state.update { it.copy(accessibilityConnected = connected, checkedAt = System.currentTimeMillis()) }
     }
 
     private fun canDrawOverlays(): Boolean =

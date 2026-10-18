@@ -120,7 +120,7 @@ data class AniobUiState(
     val interruptedSummary: TaskSummary? = null,
     /** UX-6: last completed task, rendered as a card on next open (Quiet Return). */
     val lastSummary: TaskSummary? = null,
-    /** UX-6: a11y was revoked mid-run; recovery banner until the user re-enables. */
+    /** UX-6: accessibility access was revoked mid-run; recovery banner until the user re-enables. */
     val accessibilityRecoveryNeeded: Boolean = false,
     /** UX-4: pending approval the user must actually see. */
     val confirmRequest: ConfirmRequest? = null,
@@ -938,8 +938,10 @@ class AniobViewModel(
         observationPolicy.setBurstLimit(
             if (mode.motifBursts) OBSERVATION_BURST_LIMIT else OBSERVATION_BURST_LIMIT_SINGLE_STEP
         )
-        // The accessibility service may connect after this call; it keeps the value for the run.
-        AniobAccessibilityService.instance?.setResearchFastDeltaVerify(mode.fastA11yDeltaVerify)
+        // Static flag: the service may connect after this call, and the first capture of the run
+        // must already use the condition that was selected for it.
+        AniobAccessibilityService.setFastObservation(mode.fastObservation)
+        AniobAccessibilityService.instance?.setResearchFastDeltaVerify(mode.fastDeltaVerify)
     }
 
     /**
@@ -1904,10 +1906,10 @@ class AniobViewModel(
 
         // Background automation integrity: minimize Aniob chat UI and run foreground service
         AniobBackgroundController.onTaskStarted(app, task.rawPrompt)
-        delay(500) // Allow WindowManager to minimize Aniob so a11y perceives the target app
+        delay(500) // Allow WindowManager to minimize Aniob so the service perceives the target app
 
-        val a11y = AniobAccessibilityService.instance
-        var screenBefore: AniobScreenState? = a11y?.captureCurrentScreenState()
+        val accessibility = AniobAccessibilityService.instance
+        var screenBefore: AniobScreenState? = accessibility?.captureCurrentScreenState()
 
         fun recordTrajectory(
             stepIndex: Int,
@@ -2050,7 +2052,7 @@ class AniobViewModel(
                 // Check Observation Policy: burst if predictable, else full capture
                 val captured = if (wasPaused || observationPolicy.shouldObserve() || screenBefore == null) {
                     screenReads++; screenCaptureCount++
-                    val fresh = a11y?.captureCurrentScreenState() ?: AniobScreenState(
+                    val fresh = accessibility?.captureCurrentScreenState() ?: AniobScreenState(
                         packageName = "com.aniob.app",
                         treeHash = "mock_hash_${currentStep}",
                         nodes = listOf(
@@ -2067,14 +2069,14 @@ class AniobViewModel(
                 }
 
                 // Session validation: do not trust a cached app session blindly.
-                val foregroundBefore = a11y?.currentForegroundPackage()
+                val foregroundBefore = accessibility?.currentForegroundPackage()
                 val reuseCheck = appSessionManager.ensureReusableOrInvalidate(
                     packageName = captured.packageName,
                     liveForegroundPackage = foregroundBefore,
                     liveScreenState = captured
                 )
                 var currentScreen = captured
-                val liveService = a11y
+                val liveService = accessibility
                 if (!reuseCheck.valid && liveService != null) {
                     if (foregroundBefore == "com.aniob.app") {
                         app.eventLogger.info("AniobViewModel", "Aniob is still foregrounded; minimizing to reveal target app")
@@ -2260,8 +2262,21 @@ class AniobViewModel(
                             val isSensitiveScreen = currentScreen.nodes.any {
                                 it.isPassword || it.viewId.contains(Regex("(?i)password|pwd|otp|pin|cvv|card_number"))
                             }
-                            val screenshotBase64 = if (needsVision && !isSensitiveScreen && a11y != null) {
-                                val snap = a11y.captureScreenshotAsync()
+                            // Observe cost: the bitmap is the expensive half of perception, so the
+                            // compact conditions only pay for it when the tree is sparse or the
+                            // previous verify failed. Baseline pays on every step by design.
+                            val labeledInteractive = com.aniob.core.perception.ObserveCapturePolicy
+                                .labeledInteractiveCount(currentScreen.nodes)
+                            val previousStepFailed = stepResult?.verification?.isSuccessful == false
+                            val wantsPixels = com.aniob.core.perception.ObserveCapturePolicy
+                                .shouldCaptureScreenshot(
+                                    fastObservation = researchMode.fastObservation,
+                                    labeledInteractiveNodes = labeledInteractive,
+                                    previousStepFailed = previousStepFailed,
+                                    visionRequested = needsVision
+                                )
+                            val screenshotBase64 = if (wantsPixels && !isSensitiveScreen && accessibility != null) {
+                                val snap = accessibility.captureScreenshotAsync()
                                 snap.bitmap?.let { bmp ->
                                     try {
                                         val stream = java.io.ByteArrayOutputStream()
@@ -2344,7 +2359,7 @@ class AniobViewModel(
 
                 val captureLambda: suspend () -> AniobScreenState = {
                     screenReads++; screenCaptureCount++
-                    a11y?.captureCurrentScreenState() ?: currentScreen
+                    accessibility?.captureCurrentScreenState() ?: currentScreen
                 }
 
                 val dispatchLambda: suspend (AniobAction) -> StepPipeline.DispatchOutcome = { act ->
@@ -2352,7 +2367,7 @@ class AniobViewModel(
                         proposal is StepPipeline.Proposal.DirectIntent && ladderResult is AniobExecutionRouter.ExecutionPlanResult.DirectIntent -> {
                             val ok = dispatchSystemIntent(ladderResult.shortcut)
                             AniobWaitForIdle.waitForIdle(800)
-                            val screenAfter = a11y?.captureCurrentScreenState()
+                            val screenAfter = accessibility?.captureCurrentScreenState()
                             actionsDispatched++
                             StepPipeline.DispatchOutcome(dispatched = ok, reason = act.describeAction(), screenAfter = screenAfter)
                         }
@@ -2363,10 +2378,10 @@ class AniobViewModel(
                             StepPipeline.DispatchOutcome(dispatched = false, reason = act.reason)
                         }
                         else -> {
-                            val ok = if (a11y != null) executeActionSync(a11y, act) else true
+                            val ok = if (accessibility != null) executeActionSync(accessibility, act) else true
                             actionsDispatched++
                             AniobWaitForIdle.waitForIdle(600)
-                            val screenAfter = a11y?.captureCurrentScreenState()
+                            val screenAfter = accessibility?.captureCurrentScreenState()
                             StepPipeline.DispatchOutcome(dispatched = ok, screenAfter = screenAfter)
                         }
                     }
@@ -2441,7 +2456,7 @@ class AniobViewModel(
             return
         }
 
-        val finalScreen = a11y?.captureCurrentScreenState() ?: screenBefore ?: AniobScreenState(packageName = "com.aniob.app")
+        val finalScreen = accessibility?.captureCurrentScreenState() ?: screenBefore ?: AniobScreenState(packageName = "com.aniob.app")
         val criteriaEvaluations = resolvedCriteria?.evaluateCriteria(finalScreen, currentStep) ?: emptyList()
         val evidenceItems = criteriaEvaluations.map { ev ->
             EvidenceItem(
@@ -2660,12 +2675,12 @@ class AniobViewModel(
     ): DeterministicVerifier.VerificationResult =
         DeterministicVerifier.verifyFinish(criteria, finalScreen, steps)
 
-    private suspend fun executeActionSync(a11y: AniobAccessibilityService?, action: AniobAction): Boolean {
+    private suspend fun executeActionSync(accessibility: AniobAccessibilityService?, action: AniobAction): Boolean {
         // Block until the UI is quiescent so we never dispatch into a running animation.
         AniobWaitForIdle.waitForIdle(1000)
-        if (a11y == null) return false
+        if (accessibility == null) return false
         val deferred = CompletableDeferred<Boolean>()
-        a11y.executeAction(action) { success ->
+        accessibility.executeAction(action) { success ->
             deferred.complete(success)
         }
         return withTimeoutOrNull(SWIPE_CALLBACK_TIMEOUT_SECONDS * 1000L) { deferred.await() } ?: false
@@ -2684,20 +2699,20 @@ class AniobViewModel(
      * long-list failure mode where a valid element below the fold is reported as not found.
      */
     private suspend fun executeVerifyAndRecover(
-        a11y: AniobAccessibilityService?,
+        accessibility: AniobAccessibilityService?,
         action: AniobAction,
         taskPrompt: String,
         currentScreen: AniobScreenState
     ): VerifiedStep {
-        executeActionSync(a11y, action)
+        executeActionSync(accessibility, action)
         delay(600)
-        val screenAfter = a11y?.captureCurrentScreenState() ?: currentScreen
+        val screenAfter = accessibility?.captureCurrentScreenState() ?: currentScreen
         val verification = DeterministicVerifier.verify(action, currentScreen, screenAfter)
 
         val recoverable = action.semanticTarget() != null && isTargetLikelyMissing(verification)
         if (!recoverable) return VerifiedStep(screenAfter, action, verification, false)
 
-        return scrollRecoverAndRetry(a11y, action, taskPrompt, currentScreen)
+        return scrollRecoverAndRetry(accessibility, action, taskPrompt, currentScreen)
             ?: VerifiedStep(screenAfter, action, verification, false)
     }
 
@@ -2710,12 +2725,12 @@ class AniobViewModel(
     }
 
     private suspend fun scrollRecoverAndRetry(
-        a11y: AniobAccessibilityService?,
+        accessibility: AniobAccessibilityService?,
         action: AniobAction,
         taskPrompt: String,
         currentScreen: AniobScreenState
     ): VerifiedStep? {
-        val service = a11y ?: return null
+        val service = accessibility ?: return null
         val keywords = promptKeywords(taskPrompt)
 
         fun matches(node: AniobNode): Boolean {
@@ -2750,7 +2765,7 @@ class AniobViewModel(
             "AniobViewModel",
             "Scroll-until-found revealed node ${revealedNode.id} after ${scrollResult.swipes} swipes"
         )
-        executeActionSync(a11y, retryAction)
+        executeActionSync(accessibility, retryAction)
         delay(600)
         val screenAfter = service.captureCurrentScreenState()
         val verification = DeterministicVerifier.verify(retryAction, revealedScreen, screenAfter)

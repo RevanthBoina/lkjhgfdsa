@@ -16,7 +16,12 @@ data class AniobScreenState(
     val screenshotBase64: String? = null,
     val timestamp: Long = System.currentTimeMillis(),
     val changedRegion: AniobRect? = null,
-    val isEventDrivenSkip: Boolean = false
+    val isEventDrivenSkip: Boolean = false,
+    /**
+     * `packageName:activityName:structuralSignature.hashCode()` for the *visible interactive*
+     * structure of this screen. Empty on captures that did not run the compact pipeline.
+     */
+    val screenHash: String = ""
 ) {
     fun findNodeById(id: Int): AniobNode? = fusedIndex.findById(id) ?: nodes.find { it.id == id }
 
