@@ -41,6 +41,18 @@ class AniobExecutionRouter(
      */
     var intentShortcutsEnabled: Boolean = true
 
+    /**
+     * Remember-replay switch (the FULL_HUMAN_SPEED condition). On means the zero-LLM cache is
+     * consulted right after the intent shortcut and before any model rung.
+     */
+    var rememberReplayEnabled: Boolean = false
+
+    /**
+     * Cache lookup supplied by the app layer: (goal, live screen) -> replayable actions, or null
+     * when this exact transition was never solved. Kept as a callback so the ladder stays pure.
+     */
+    var rememberLookup: ((String, AniobScreenState) -> List<AniobAction>?)? = null
+
     /** UX-5: skills the user disabled are skipped by both matchers. */
     private var disabledSkills: Set<String> = emptySet()
 
@@ -56,6 +68,11 @@ class AniobExecutionRouter(
 
     sealed class ExecutionPlanResult {
         data class DirectIntent(val shortcut: ResolvedIntentShortcut, val reason: String) : ExecutionPlanResult()
+        /**
+         * A verified transition replayed from the remember cache. The list is dispatched in order
+         * without any model call, so it costs 0 LLM requests.
+         */
+        data class RememberReplay(val actions: List<AniobAction>, val reason: String) : ExecutionPlanResult()
         data class FastPathStep(val action: AniobAction, val reason: String) : ExecutionPlanResult()
         data class SkillStepExecution(val action: AniobAction, val skill: AniobSkill, val reason: String) : ExecutionPlanResult()
         data class ModelDispatch(
@@ -86,6 +103,18 @@ class AniobExecutionRouter(
                 return ExecutionPlanResult.DirectIntent(
                     shortcut = intentShortcut,
                     reason = "Direct intent shortcut resolved in <15ms"
+                )
+            }
+        }
+
+        // Step 0.5: Remember replay (0 LLM). Sits after the intent shortcut and before every
+        // model rung, exactly where the ablation condition expects the cache to be consulted.
+        if (rememberReplayEnabled) {
+            val replay = rememberLookup?.invoke(taskPrompt, screenState)
+            if (!replay.isNullOrEmpty()) {
+                return ExecutionPlanResult.RememberReplay(
+                    actions = replay,
+                    reason = "Remember cache hit for ${screenState.packageName} (0 LLM calls)"
                 )
             }
         }

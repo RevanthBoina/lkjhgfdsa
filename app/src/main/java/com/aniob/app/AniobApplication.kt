@@ -5,6 +5,7 @@ import android.content.ComponentCallbacks2
 import android.content.res.Configuration
 import com.aniob.app.db.AniobDatabase
 import com.aniob.app.metrics.EventLogger
+import com.aniob.app.memory.RememberCacheFile
 import com.aniob.app.metrics.MetricsCollector
 import com.aniob.app.research.ResearchTelemetryManager
 import com.aniob.app.system.AniobSystemState
@@ -65,6 +66,14 @@ class AniobApplication : Application(), ComponentCallbacks2 {
      */
     val researchTelemetry: ResearchTelemetryManager by lazy {
         ResearchTelemetryManager(this)
+    }
+
+    /**
+     * Zero-LLM replay cache for verified transitions (`filesDir/remember_cache.json`).
+     * The in-memory copy lives in the ViewModel; this only owns the file.
+     */
+    val rememberCacheFile: RememberCacheFile by lazy {
+        RememberCacheFile.forContext(this)
     }
 
     /**
