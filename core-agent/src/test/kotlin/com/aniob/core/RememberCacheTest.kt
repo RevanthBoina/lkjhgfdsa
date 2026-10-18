@@ -70,6 +70,13 @@ class RememberCacheTest {
     }
 
     @Test
+    fun theCacheFileLivesAtTheDocumentedName() {
+        assertEquals("remember_cache.json", RememberCache.FILE_NAME)
+        assertEquals(300, RememberCache.MAX_ENTRIES)
+        assertEquals(0.06, RememberCache.COORDINATE_TOLERANCE, 0.0)
+    }
+
+    @Test
     fun keyIsGoalPipePackagePipeHash() {
         val key = RememberCache.keyOf("settings-wifi", "com.example.app", "com.example.app:Main:1")
         assertEquals("settings-wifi|com.example.app|com.example.app:Main:1", key)
