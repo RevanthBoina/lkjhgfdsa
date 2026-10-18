@@ -136,14 +136,14 @@ fun AniobSetupConciergeScreen(
                 index = 2,
                 title = "Accessibility access",
                 body = "To tap buttons for you — only while a task runs.",
-                done = systemState.a11yConnected,
+                done = systemState.accessibilityConnected,
                 actionLabel = "Open Settings",
                 onAction = {
                     context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK
                     })
                 },
-                testTag = "setup_a11y"
+                testTag = "setup_accessibility"
             )
 
             SetupCard(

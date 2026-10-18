@@ -107,7 +107,8 @@ class ResearchTelemetryTest {
     fun ablationFlagsMatchTheDocumentedTable() {
         assertFalse(AblationMode.BASELINE.intentShortcuts)
         assertFalse(AblationMode.BASELINE.motifBursts)
-        assertFalse(AblationMode.BASELINE.fastA11yDeltaVerify)
+        assertFalse(AblationMode.BASELINE.fastDeltaVerify)
+        assertFalse(AblationMode.BASELINE.fastObservation)
         assertFalse(AblationMode.BASELINE.rememberReplay)
 
         assertTrue(AblationMode.INTENT_SHORTCUT_ONLY.intentShortcuts)
@@ -116,11 +117,13 @@ class ResearchTelemetryTest {
 
         assertTrue(AblationMode.MOTIF_AND_FAST_A11Y.intentShortcuts)
         assertTrue(AblationMode.MOTIF_AND_FAST_A11Y.motifBursts)
-        assertTrue(AblationMode.MOTIF_AND_FAST_A11Y.fastA11yDeltaVerify)
+        assertTrue(AblationMode.MOTIF_AND_FAST_A11Y.fastDeltaVerify)
+        assertTrue(AblationMode.MOTIF_AND_FAST_A11Y.fastObservation)
         assertFalse(AblationMode.MOTIF_AND_FAST_A11Y.rememberReplay)
 
         assertTrue(AblationMode.FULL_HUMAN_SPEED.intentShortcuts)
         assertTrue(AblationMode.FULL_HUMAN_SPEED.motifBursts)
+        assertTrue(AblationMode.FULL_HUMAN_SPEED.fastObservation)
         assertTrue(AblationMode.FULL_HUMAN_SPEED.rememberReplay)
 
         assertEquals(AblationMode.FULL_HUMAN_SPEED, AblationMode.DEFAULT)

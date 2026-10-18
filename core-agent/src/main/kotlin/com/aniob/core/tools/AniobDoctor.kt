@@ -41,10 +41,10 @@ object AniobDoctor {
         val checks = mutableListOf<DoctorCheck>()
         
         // Check 1: Accessibility connected RIGHT NOW (offline shortcuts exempt)
-        val a11yPassed = isOfflineShortcut || isAccessibilityConnected
+        val accessibilityPassed = isOfflineShortcut || isAccessibilityConnected
         checks.add(DoctorCheck(
             name = "accessibility_connected",
-            passed = a11yPassed,
+            passed = accessibilityPassed,
             reason = when {
                 isOfflineShortcut -> "Offline shortcut (accessibility exempt)"
                 isAccessibilityConnected -> "Accessibility connected"

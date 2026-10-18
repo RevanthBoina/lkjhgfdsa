@@ -6,7 +6,7 @@ Implement perception pipeline with pin-to-pin betterments over ARTEMIS, MobileAg
 ## Key Components:
 1. `AniobScreenDiff`:
    - 4-Level Waterfall:
-     1. Event-driven skip: If no a11y window or view state change occurred, skip screenshot (0ms).
+     1. Event-driven skip: If no accessibility window or view state change occurred, skip screenshot (0ms).
      2. Perceptual tree hash comparison: If tree hash is identical, reuse cached screenshot.
      3. Changed region crop: If change is localized, extract bounding box.
      4. Downscaled JPEG q80: Scale bitmap so max dimension <= 1120px at quality 80.

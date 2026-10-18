@@ -77,7 +77,7 @@ object AniobBackgroundController {
         AniobForegroundService.finishWithNotification(context, summary, isSuccess)
     }
 
-    /** A11y was revoked mid-run: drop the pill and post the recovery door (UX-6). */
+    /** Accessibility access was revoked mid-run: drop the pill and post the recovery door (UX-6). */
     fun onAccessibilityLost(context: Context) {
         pill?.hide()
         pill = null

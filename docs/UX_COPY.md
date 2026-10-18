@@ -185,8 +185,8 @@ End-of-task HUD (Stats line and the one-shot Toast), format fixed for the paper:
 | Failure title | Needs attention: %1$s |
 | Interrupted title | Aniob was interrupted |
 | Interrupted body | Aniob was killed by the system at step %1$d — run it again or view the partial steps. |
-| A11y lost title | Aniob lost access |
-| A11y lost body | Re-enable accessibility to continue, or stop the task. |
+| Access lost title | Aniob lost access |
+| Access lost body | Re-enable accessibility to continue, or stop the task. |
 | Tile idle | Ask Aniob |
 | Tile running | Stop task |
 | Shortcut new task | New task |

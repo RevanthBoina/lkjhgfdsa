@@ -14,6 +14,9 @@ import com.aniob.core.domain.*
 import com.aniob.core.perception.AniobScreenCaptureSource
 import com.aniob.core.perception.AniobFusedIndex
 import com.aniob.core.perception.AniobPerceptionTier
+import com.aniob.core.perception.CompactNode
+import com.aniob.core.perception.ObserveSnapshot
+import com.aniob.core.perception.ObserveTreeCompactor
 import android.view.accessibility.AccessibilityWindowInfo
 
 import com.aniob.core.execution.AniobActionExecutor
@@ -45,9 +48,26 @@ enum class ScreenshotStatus {
 class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSource {
 
     companion object {
-        private const val TAG = "AniobA11yService"
+        private const val TAG = "AniobAccessibility"
         private const val MAX_IDLE_WAIT_MS = 1000L
         private const val IDLE_POLL_INTERVAL_MS = 50L
+
+        /** Hard cap on references retained from one compact pass (prompt nodes are <= 60). */
+        private const val MAX_COMPACT_REFS = 400
+
+        /**
+         * Research switch for the compact observe pipeline. Static so a task started before the
+         * service connects still gets the right behaviour on the first capture.
+         */
+        @Volatile
+        var fastObservationEnabled: Boolean = false
+            private set
+
+        /** Set once per task by the ViewModel from the active ablation mode. */
+        fun setFastObservation(enabled: Boolean) {
+            fastObservationEnabled = enabled
+        }
+
         private val XML_CONTROL_CHARS_REGEX = Regex("[^\\u0009\\u000A\\u000D\\u0020-\\uD7FF\\uE000-\\uFFFD]")
         var instance: AniobAccessibilityService? = null
             private set
@@ -88,10 +108,18 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
     @Volatile private var lastScreenState: AniobScreenState? = null
 
     /**
+     * Class name of the last `TYPE_WINDOW_STATE_CHANGED` event, i.e. the activity or dialog that
+     * owns the current window. Used only as the activity part of the structural screen hash; the
+     * verification path keeps reading [AniobScreenState.activityName], which the platform capture
+     * has never filled.
+     */
+    @Volatile private var lastWindowClassName: String = ""
+
+    /**
      * Research ablation switch for the event-driven capture skip (waterfall level 1).
      *
      * When false, every capture recomputes the tree hash instead of trusting the cached one, which
-     * is the "no fast a11y delta verify" condition of BASELINE / INTENT_SHORTCUT_ONLY. Defaults to
+     * is the "no fast accessibility delta verify" condition of BASELINE / INTENT_SHORTCUT_ONLY. Defaults to
      * true so ordinary use keeps today's behaviour. Verification semantics are unchanged: this only
      * removes the zero-work short-circuit.
      */
@@ -101,6 +129,17 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
     fun setResearchFastDeltaVerify(enabled: Boolean) {
         researchFastDeltaVerify = enabled
     }
+
+    /**
+     * Live node handles retained for the latest compact observation, keyed by prompt id.
+     * Replaced (and the previous batch recycled) on every capture, so the map is always in step
+     * with `lastScreenState`.
+     */
+    private val refLock = Any()
+    private var latestNodeRefs: Map<Int, AccessibilityNodeInfo> = emptyMap()
+
+    /** Serialises compact captures so one pass cannot recycle another pass's node handles. */
+    private val compactCaptureLock = Any()
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -187,6 +226,10 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
             }
         }
 
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            event.className?.toString()?.takeIf { it.isNotBlank() }?.let { lastWindowClassName = it }
+        }
+
         if (!isTaskActive) return
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
@@ -204,9 +247,10 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
 
     override fun onDestroy() {
         super.onDestroy()
+        recycleLatestRefs()
         instance = null
         isServiceConnected = false
-        // A11y dies mid-task: surface the loss so UX-6's recovery flow can react.
+        // Accessibility access dies mid-task: surface the loss so UX-6's recovery flow can react.
         AniobAccessibilityService.onServiceLost?.invoke(AniobAccessibilityService.isTaskActive)
         AniobAccessibilityService.isTaskActive = false
         try {
@@ -237,6 +281,7 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         super.onTrimMemory(level)
         if (level >= TRIM_MEMORY_RUNNING_LOW) {
             lastScreenState = null
+            recycleLatestRefs()
             contentChangedSinceLastStep = true
             Log.i(TAG, "onTrimMemory level=$level -> cleared cached screen state (reflex, no LLM)")
         }
@@ -247,6 +292,14 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
      * visibility parity with bounds clipping, and hard caps (75 depth / 8000 nodes).
      */
     override fun captureScreen(includeInvisible: Boolean): AniobScreenState {
+        // The compact pipeline runs only for the two fast ablation conditions; baseline keeps the
+        // existing raw traversal so the comparison measures pruning, not a refactor.
+        if (fastObservationEnabled) return captureCompactScreen()
+        return captureLegacyScreen(includeInvisible)
+    }
+
+    private fun captureLegacyScreen(includeInvisible: Boolean): AniobScreenState {
+        recycleLatestRefs()
         val rawNodes = mutableListOf<AniobNode>()
         var primaryPackage = currentForegroundPackage().orEmpty()
         val displayMetrics = resources.displayMetrics
@@ -328,6 +381,239 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
     }
 
     fun captureCurrentScreenState(): AniobScreenState = captureScreen(includeInvisible = false)
+
+    // ---------------------------------------------------------------------------------------------
+    // Compact observation (the two fast research conditions)
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * One hierarchical pass -> pure-JVM prune/merge -> sequential ids -> structural hash, keeping
+     * a live node reference per surviving id. No bitmap is taken here; the caller decides with
+     * `ObserveCapturePolicy` whether pixels are actually needed for this step.
+     */
+    private fun captureCompactScreen(): AniobScreenState =
+        synchronized(compactCaptureLock) { captureCompactScreenLocked() }
+
+    private fun captureCompactScreenLocked(): AniobScreenState {
+        recycleLatestRefs()
+        val refs = ArrayList<AccessibilityNodeInfo>(64)
+        val roots = ArrayList<ObserveSnapshot>(2)
+        var primaryPackage = currentForegroundPackage().orEmpty()
+        val displayMetrics = resources.displayMetrics
+        val screenBounds = AniobRect(0, 0, displayMetrics.widthPixels, displayMetrics.heightPixels)
+
+        val windowList = try {
+            windows
+        } catch (_: Exception) {
+            emptyList<AccessibilityWindowInfo>()
+        }
+
+        val rootsToRead = ArrayList<Pair<AccessibilityNodeInfo, AniobRect>>(2)
+        if (windowList.isNotEmpty()) {
+            val appWindows = windowList.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+            val targetWindows = if (appWindows.isNotEmpty()) {
+                windowList.filter {
+                    it.type == AccessibilityWindowInfo.TYPE_APPLICATION ||
+                        it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD
+                }
+            } else {
+                windowList
+            }
+            for (w in targetWindows) {
+                val root = w.root ?: continue
+                if (primaryPackage.isEmpty()) root.packageName?.toString()?.let { primaryPackage = it }
+                val winRect = Rect()
+                w.getBoundsInScreen(winRect)
+                val clip = AniobRect(winRect.left, winRect.top, winRect.right, winRect.bottom)
+                    .intersect(screenBounds)
+                rootsToRead.add(root to clip)
+            }
+        } else {
+            rootInActiveWindow?.let { root ->
+                primaryPackage = root.packageName?.toString().orEmpty()
+                rootsToRead.add(root to screenBounds)
+            }
+        }
+
+        try {
+            for ((root, clip) in rootsToRead) {
+                val snapshot = collectSnapshot(root, 0, clip, refs)
+                if (snapshot != null) {
+                    roots.add(snapshot)
+                    if (snapshot.platformIndex < 0) recycleQuietly(root)
+                } else {
+                    recycleQuietly(root)
+                }
+            }
+
+            // Activity identity comes from the last window-state event: it makes the hash
+            // discriminate between screens that share a package and a structure.
+            val observation = ObserveTreeCompactor.compact(roots, primaryPackage, lastWindowClassName)
+            val used = HashSet<Int>(observation.nodes.size * 2)
+            val byId = HashMap<Int, AccessibilityNodeInfo>(observation.nodes.size * 2)
+            for (node in observation.nodes) {
+                used.add(node.platformIndex)
+                refs.getOrNull(node.platformIndex)?.let { byId[node.id] = it }
+            }
+            refs.forEachIndexed { index, ref -> if (index !in used) recycleQuietly(ref) }
+            synchronized(refLock) { latestNodeRefs = byId }
+
+            Log.d(
+                TAG,
+                "compact observe: ${observation.nodes.size} nodes (merged ${observation.mergedNodeCount}) " +
+                    "hash=${observation.screenHash}"
+            )
+            val nodes = observation.nodes.map { it.toAniobNode() }
+            val waterfall = AniobScreenDiff.evaluateWaterfall(
+                hasAccessibilityContentChanged = contentChangedSinceLastStep || !researchFastDeltaVerify,
+                currentNodes = nodes,
+                previousScreen = lastScreenState
+            )
+            contentChangedSinceLastStep = false
+
+            val screenState = AniobScreenState(
+                packageName = primaryPackage,
+                activityName = "",
+                nodes = nodes,
+                fusedIndex = AniobFusedIndex(nodes),
+                perceptionTier = AniobPerceptionTier.FAST,
+                treeHash = waterfall.treeHash,
+                screenshotBase64 = null,
+                changedRegion = waterfall.changedRegion,
+                isEventDrivenSkip = waterfall.waterfallLevelUsed == 1,
+                screenHash = observation.screenHash
+            )
+            lastScreenState = screenState
+            return screenState
+        } catch (e: Exception) {
+            // A half-finished pass must not leak platform references.
+            refs.forEach(::recycleQuietly)
+            synchronized(refLock) { latestNodeRefs = emptyMap() }
+            Log.w(TAG, "Compact observation failed; falling back to the raw traversal", e)
+            return captureLegacyScreen(includeInvisible = false)
+        }
+    }
+
+    /**
+     * Builds the platform-neutral snapshot for one node. Nodes that cannot be acted on and carry
+     * no content are traversed but not retained, so the reference list stays small.
+     */
+    private fun collectSnapshot(
+        node: AccessibilityNodeInfo,
+        depth: Int,
+        clipBounds: AniobRect,
+        refs: MutableList<AccessibilityNodeInfo>
+    ): ObserveSnapshot? {
+        if (depth > 75 || refs.size >= MAX_COMPACT_REFS) return null
+        if (!node.isVisibleToUser) return null
+
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        val bounds = AniobRect(rect.left, rect.top, rect.right, rect.bottom).intersect(clipBounds)
+        val text = node.text?.toString().orEmpty().sanitizeForXml()
+        val description = node.contentDescription?.toString().orEmpty().sanitizeForXml()
+        val errorText = node.error?.toString().orEmpty().sanitizeForXml()
+        val tooltip = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            node.tooltipText?.toString().orEmpty().sanitizeForXml()
+        } else ""
+        val paneTitle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            node.paneTitle?.toString().orEmpty().sanitizeForXml()
+        } else ""
+        val isHeading = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) node.isHeading else false
+
+        val interactive = node.isClickable || node.isCheckable || node.isEditable || node.isScrollable
+        val keep = interactive || text.isNotBlank() || description.isNotBlank() ||
+            errorText.isNotBlank() || tooltip.isNotBlank() || paneTitle.isNotBlank() || isHeading
+
+        val nextClip = if (node.isScrollable) bounds else clipBounds
+        val children = ArrayList<ObserveSnapshot>(node.childCount)
+        for (i in 0 until node.childCount) {
+            val child = if (Build.VERSION.SDK_INT >= 33) {
+                node.getChild(i, 4) ?: node.getChild(i)
+            } else {
+                node.getChild(i)
+            } ?: continue
+            val snapshot = collectSnapshot(child, depth + 1, nextClip, refs)
+            if (snapshot != null) {
+                children.add(snapshot)
+                if (snapshot.platformIndex < 0) recycleQuietly(child)
+            } else {
+                recycleQuietly(child)
+            }
+        }
+
+        val platformIndex = if (keep) {
+            refs.add(node)
+            refs.size - 1
+        } else {
+            -1
+        }
+
+        return ObserveSnapshot(
+            className = node.className?.toString().orEmpty(),
+            viewId = node.viewIdResourceName.orEmpty(),
+            text = text,
+            contentDescription = description,
+            bounds = bounds,
+            isVisible = true,
+            isClickable = node.isClickable,
+            isCheckable = node.isCheckable,
+            isChecked = node.isChecked,
+            isEditable = node.isEditable,
+            isScrollable = node.isScrollable,
+            isSelected = node.isSelected,
+            isEnabled = node.isEnabled,
+            isPassword = node.isPassword,
+            isHeading = isHeading,
+            errorText = errorText,
+            paneTitle = paneTitle,
+            tooltip = tooltip,
+            platformIndex = platformIndex,
+            children = children
+        )
+    }
+
+    private fun CompactNode.toAniobNode(): AniobNode = AniobNode(
+        id = id,
+        className = className,
+        // The merged label is what the model sees, so text search and grounding both use it.
+        text = label,
+        viewId = viewId,
+        bounds = bounds,
+        isClickable = isClickable,
+        isEditable = isEditable,
+        isScrollable = isScrollable,
+        isSelected = isSelected,
+        isChecked = isChecked,
+        isEnabled = isEnabled,
+        isPassword = isPassword,
+        errorText = errorText,
+        isHeading = isHeading,
+        paneTitle = paneTitle,
+        tooltip = tooltip,
+        markup = markup
+    )
+
+    /** The live node behind the most recent compact id, when one was retained. */
+    private fun currentObservedNode(id: Int): AccessibilityNodeInfo? =
+        synchronized(refLock) { latestNodeRefs[id] }
+
+    private fun recycleLatestRefs() {
+        val previous = synchronized(refLock) {
+            val current = latestNodeRefs
+            latestNodeRefs = emptyMap()
+            current
+        }
+        previous.values.forEach(::recycleQuietly)
+    }
+
+    private fun recycleQuietly(node: AccessibilityNodeInfo) {
+        try {
+            node.recycle()
+        } catch (_: Exception) {
+            // Already recycled or the platform no longer owns it; nothing to do.
+        }
+    }
 
     private fun traverseNodeBounded(
         node: AccessibilityNodeInfo,
@@ -525,40 +811,59 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
         }
     }
 
-    /** Sets text by locating the node by id within the live tree. */
+    /**
+     * Sets text on the node behind [DispatchCommand.SetText.nodeId].
+     *
+     * Compact captures keep a live reference per prompt id, so the common path is a direct
+     * `performAction(ACTION_SET_TEXT)` with no second tree walk. The bounds search stays as the
+     * fallback for raw captures and for a reference that went away between capture and dispatch.
+     */
     private fun setTextOnNode(
         command: DispatchCommand.SetText,
         liveScreen: AniobScreenState,
         callback: (Boolean) -> Unit
     ) {
-        val root = rootInActiveWindow
-        val targetNode = liveScreen.findNodeById(command.nodeId)
-        if (root != null && targetNode != null) {
-            val found = findAccessibilityNodeByBounds(root, targetNode.bounds)
-            if (found != null) {
-                try {
-                    if (command.clearFirst) {
-                        val clearArgs = Bundle()
-                        clearArgs.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
-                        found.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs)
-                    }
-                    val arguments = Bundle()
-                    arguments.putCharSequence(
-                        AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                        command.text
-                    )
-                    callback(found.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments))
-                } finally {
-                    if (found !== root) found.recycle()
-                    root.recycle()
-                }
-                return
-            }
-            root.recycle()
-        } else {
-            root?.recycle()
+        val cached = if (fastObservationEnabled) currentObservedNode(command.nodeId) else null
+        if (cached != null) {
+            applySetText(cached, command, callback)
+            return
         }
-        callback(false)
+
+        val root = rootInActiveWindow ?: return callback(false)
+        try {
+            val targetNode = liveScreen.findNodeById(command.nodeId) ?: return callback(false)
+            val found = findAccessibilityNodeByBounds(root, targetNode.bounds) ?: return callback(false)
+            try {
+                applySetText(found, command, callback)
+            } finally {
+                if (found !== root) recycleQuietly(found)
+            }
+        } finally {
+            recycleQuietly(root)
+        }
+    }
+
+    private fun applySetText(
+        node: AccessibilityNodeInfo,
+        command: DispatchCommand.SetText,
+        callback: (Boolean) -> Unit
+    ) {
+        try {
+            if (command.clearFirst) {
+                val clearArgs = Bundle()
+                clearArgs.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+                node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs)
+            }
+            val arguments = Bundle()
+            arguments.putCharSequence(
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                command.text
+            )
+            callback(node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments))
+        } catch (e: Exception) {
+            Log.w(TAG, "ACTION_SET_TEXT failed: ${e.message}")
+            callback(false)
+        }
     }
 
     private fun dispatchGesturePath(command: DispatchCommand.SwipeGesture, callback: (Boolean) -> Unit) {
@@ -641,12 +946,15 @@ class AniobAccessibilityService : AccessibilityService(), AniobScreenCaptureSour
     }
 
     /**
-     * Package currently owning the active window, read live from the a11y root. Used to detect
+     * Package currently owning the active window, read live from the accessibility root. Used to detect
      * an OEM background-kill that invalidated our cached session before we reuse it.
      */
     fun currentForegroundPackage(): String? =
         try {
-            rootInActiveWindow?.packageName?.toString()
+            val root = rootInActiveWindow ?: return null
+            val packageName = root.packageName?.toString()
+            root.recycle()
+            packageName
         } catch (_: Exception) {
             null
         }

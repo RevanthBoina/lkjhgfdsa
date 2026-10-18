@@ -57,6 +57,14 @@ data class ExecutorRequest(
             )
         )
         appendLine()
-        appendLine("INSTRUCTION: Output strictly ONE JSON action object to accomplish GOAL '$goal'. Target by kind 'som_index' using the index [X] of the matching element in LIVE ACTIONABLE NODES. Do not output any explanation or extra text.")
+        // Compact observations carry `id=N` in the markup instead of the legacy `[N]` prefix, so the
+        // targeting instruction must name the token the model actually sees.
+        val compact = actionableNodes.any { it.markup.isNotBlank() }
+        val targetHint = if (compact) {
+            "Target by kind 'som_index' using the id= value of the matching element"
+        } else {
+            "Target by kind 'som_index' using the index [X] of the matching element"
+        }
+        appendLine("INSTRUCTION: Output strictly ONE JSON action object to accomplish GOAL '$goal'. $targetHint in LIVE ACTIONABLE NODES. Do not output any explanation or extra text.")
     }
 }

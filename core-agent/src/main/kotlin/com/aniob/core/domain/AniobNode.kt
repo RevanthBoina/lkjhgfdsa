@@ -23,7 +23,13 @@ data class AniobNode(
     val isHeading: Boolean = false,
     val paneTitle: String = "",
     val tooltip: String = "",
-    val source: GroundingSource = GroundingSource.ACCESSIBILITY
+    val source: GroundingSource = GroundingSource.ACCESSIBILITY,
+    /**
+     * Compact `<role id=N label='…'>` token produced by the fast observe pipeline. When present it
+     * replaces the verbose Set-of-Mark line in the prompt; the id is re-stamped on read so a
+     * re-index never leaves stale markup.
+     */
+    val markup: String = ""
 ) {
     val centerX: Int get() = (bounds.left + bounds.right) / 2
     val centerY: Int get() = (bounds.top + bounds.bottom) / 2
@@ -31,6 +37,7 @@ data class AniobNode(
     val height: Int get() = bounds.bottom - bounds.top
 
     fun toOptimizedTokenString(): String {
+        if (markup.isNotBlank()) return markup.replaceFirst(Regex("id=\\d+"), "id=$id")
         val viewIdPart = if (viewId.isNotBlank()) " viewId='$viewId'" else ""
         val contentDescPart = if (contentDescription.isNotBlank()) " contentDesc='$contentDescription'" else ""
         val enabledPart = if (!isEnabled) " enabled=false" else ""
