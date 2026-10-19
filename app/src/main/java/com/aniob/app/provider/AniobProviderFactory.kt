@@ -36,6 +36,9 @@ object AniobProviderConfig {
     /** Android emulator host loopback for desktop OmniRoute instances on :20128. */
     const val OMNIROUTE_EMULATOR_BASE_URL = "http://10.0.2.2:20128/v1"
 
+    /** Direct hosted endpoint, for users without a local gateway. */
+    const val OMNIROUTE_CLOUD_BASE_URL = "https://omniroute.online/v1"
+
     const val CHAT_COMPLETIONS_PATH = "/chat/completions"
     const val MODELS_PATH = "/models"
 

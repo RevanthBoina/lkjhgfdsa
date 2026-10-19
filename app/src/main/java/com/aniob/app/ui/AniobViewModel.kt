@@ -21,6 +21,7 @@ import com.aniob.app.provider.AniobProviderConfig
 import com.aniob.app.research.AblationMode
 import com.aniob.app.research.ResearchRun
 import com.aniob.app.research.ResearchSummaryRow
+import com.aniob.app.research.StudyPass
 import com.aniob.app.provider.OmniRouteConnectionStatus
 import com.aniob.app.provider.testOmniRouteConnection
 import com.aniob.app.service.AniobAccessibilityService
@@ -154,6 +155,8 @@ data class AniobUiState(
     val cloudTest: CloudTestUiState = CloudTestUiState(),
     /** Research: ablation condition that the next task will run under. */
     val ablationMode: AblationMode = AblationMode.DEFAULT,
+    /** Research: study pass (warm-up vs measured). */
+    val studyPass: StudyPass = StudyPass.MEASURED,
     /** Research: one-line HUD for the last finished task (`[MODE] Latency… | Calls… | Success…`). */
     val researchStatusLine: String? = null,
     /** Research: increments per finished run so the host can fire a one-shot toast. */
@@ -477,6 +480,7 @@ class AniobViewModel(
                 safetyGateEnabled = prefs.getBoolean("safety_gate_enabled", true),
                 disabledSkills = disabledSkills.toSet(),
                 ablationMode = researchMode,
+                studyPass = app.researchTelemetry.studyPass,
                 researchLastRun = lastResearchRun,
                 researchStatusLine = lastResearchRun?.let { app.researchTelemetry.hudLine(it) },
                 researchSummary = researchSummaryRow
@@ -972,6 +976,14 @@ class AniobViewModel(
             val summary = app.researchTelemetry.summaryFor(mode)
             _uiState.update { it.copy(researchSummary = summary) }
         }
+    }
+
+    /**
+     * Switches the study pass (warm-up vs measured) for the next task.
+     */
+    fun setStudyPass(pass: StudyPass) {
+        app.researchTelemetry.studyPass = pass
+        _uiState.update { it.copy(studyPass = pass) }
     }
 
     /**
@@ -2028,8 +2040,13 @@ class AniobViewModel(
         // switches, then reset counters and start the elapsed-realtime clock. Everything below is
         // measured; nothing above it is.
         val researchMode = app.researchTelemetry.mode
+        val researchPass = app.researchTelemetry.studyPass
         applyAblationMode(researchMode)
-        app.researchTelemetry.startTask(task.clarifiedGoal.ifBlank { task.rawPrompt }, researchMode)
+        app.researchTelemetry.startTask(
+            task.clarifiedGoal.ifBlank { task.rawPrompt },
+            researchMode,
+            researchPass
+        )
         persistRunningMarker(task, 0, "Task started")
 
         watchdog.reset()
@@ -2233,7 +2250,7 @@ class AniobViewModel(
 
                 // Check Observation Policy: burst if predictable, else full capture
                 val captured = if (wasPaused || observationPolicy.shouldObserve() || screenBefore == null) {
-                    screenReads++; screenCaptureCount++
+                    screenReads++; screenCaptureCount++; app.researchTelemetry.recordScreenCapture()
                     val fresh = accessibility?.captureCurrentScreenState() ?: AniobScreenState(
                         packageName = "com.aniob.app",
                         treeHash = "mock_hash_${currentStep}",
@@ -2267,7 +2284,7 @@ class AniobViewModel(
                         }
                         delay(600)
                         currentScreen = liveService.captureCurrentScreenState()
-                        screenReads++; screenCaptureCount++
+                        screenReads++; screenCaptureCount++; app.researchTelemetry.recordScreenCapture()
                     } else if (foregroundBefore != null && foregroundBefore != captured.packageName) {
                         app.eventLogger.info(
                             "AniobViewModel",
@@ -2276,14 +2293,14 @@ class AniobViewModel(
                         executeActionSync(liveService, AniobAction.OpenApp(packageName = foregroundBefore))
                         delay(800)
                         currentScreen = liveService.captureCurrentScreenState()
-                        screenReads++; screenCaptureCount++
+                        screenReads++; screenCaptureCount++; app.researchTelemetry.recordScreenCapture()
                     } else {
                         app.eventLogger.info(
                             "AniobViewModel",
                             "Session tree stale (${reuseCheck.reason}) - refreshing capture"
                         )
                         currentScreen = liveService.captureCurrentScreenState()
-                        screenReads++; screenCaptureCount++
+                        screenReads++; screenCaptureCount++; app.researchTelemetry.recordScreenCapture()
                     }
                 }
                 appSessionManager.onSessionScreenUpdated(currentScreen.packageName, currentScreen)
@@ -2512,7 +2529,9 @@ class AniobViewModel(
                                 screenshotBase64,
                                 maxTokens = if (burstEnabled) BURST_MAX_OUTPUT_TOKENS else 512
                             )
-                            totalTokens += ((systemPrompt.length + activePrompt.length) / 4).coerceAtLeast(150)
+                            val promptEstTokens = (systemPrompt.length + activePrompt.length) / 4
+                            app.researchTelemetry.recordPromptTokens(promptEstTokens)
+                            totalTokens += promptEstTokens.coerceAtLeast(150)
                             return raw.fold(
                                 onSuccess = { text ->
                                     totalTokens += (text.length / 4).coerceAtLeast(1)
@@ -2546,6 +2565,8 @@ class AniobViewModel(
                                                 ).getOrNull()
                                             }.getOrNull()
                                             if (repaired != null) {
+                                                val repairPromptTokens = (systemPrompt.length + repairMsg.length) / 4
+                                                app.researchTelemetry.recordPromptTokens(repairPromptTokens)
                                                 totalTokens += ((repairMsg.length + repaired.length) / 4).coerceAtLeast(1)
                                                 structured = AniobStructuredOutput.parseOrRepair(
                                                     raw = repaired,
@@ -2574,7 +2595,9 @@ class AniobViewModel(
                                 systemPrompt,
                                 activePrompt
                             )
-                            totalTokens += ((systemPrompt.length + activePrompt.length) / 4).coerceAtLeast(80)
+                            val localPromptEst = (systemPrompt.length + activePrompt.length) / 4
+                            app.researchTelemetry.recordPromptTokens(localPromptEst)
+                            totalTokens += localPromptEst.coerceAtLeast(80)
                             if (gen is AniobGenerationResult.Ready) {
                                 android.util.Log.i("AniobViewModel", "Local SLM generated output (len=${gen.fullText.length})")
                             }
@@ -2648,7 +2671,7 @@ class AniobViewModel(
                 persistRunningMarker(task, currentStep + 1, proposal.action.describeAction())
 
                 val captureLambda: suspend () -> AniobScreenState = {
-                    screenReads++; screenCaptureCount++
+                    screenReads++; screenCaptureCount++; app.researchTelemetry.recordScreenCapture()
                     accessibility?.captureCurrentScreenState() ?: currentScreen
                 }
 
