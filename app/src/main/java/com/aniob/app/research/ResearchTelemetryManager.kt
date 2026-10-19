@@ -44,11 +44,14 @@ class ResearchTelemetryManager(
     private data class ActiveRun(
         val goal: String,
         val mode: AblationMode,
+        val pass: StudyPass,
         val startElapsedMs: Long,
         val startedAtWallMs: Long,
         var llmCalls: Int = 0,
         var localInferences: Int = 0,
         var steps: Int = 0,
+        var screenshots: Int = 0,
+        var promptTokens: Int = 0,
         var intentShortcutUsed: Boolean = false,
         var rememberCacheHit: Boolean = false
     )
@@ -74,6 +77,15 @@ class ResearchTelemetryManager(
             prefs.edit().putString(KEY_MODE, value.id).apply()
         }
 
+    /**
+     * Active study pass (warm-up vs measured), persisted across process death.
+     */
+    var studyPass: StudyPass
+        get() = StudyPass.fromId(prefs.getString(KEY_STUDY_PASS, null))
+        set(value) {
+            prefs.edit().putString(KEY_STUDY_PASS, value.id).apply()
+        }
+
     /** True between [startTask] and [endTask]; lets the UI gate the manual override honestly. */
     val isTaskActive: Boolean
         get() = synchronized(lock) { active != null }
@@ -91,7 +103,11 @@ class ResearchTelemetryManager(
      * An unfinished previous run is discarded with a warning rather than written with invented
      * values: a crash must not fabricate a data point.
      */
-    fun startTask(goal: String, mode: AblationMode = this.mode) {
+    fun startTask(
+        goal: String,
+        mode: AblationMode = this.mode,
+        pass: StudyPass = this.studyPass
+    ) {
         synchronized(lock) {
             active?.let {
                 logger("RESEARCH_WARN discarding unfinished run for '${it.goal.take(60)}'")
@@ -99,11 +115,12 @@ class ResearchTelemetryManager(
             active = ActiveRun(
                 goal = goal.trim(),
                 mode = mode,
+                pass = pass,
                 startElapsedMs = clock(),
                 startedAtWallMs = System.currentTimeMillis()
             )
         }
-        logger("RESEARCH_START mode=${mode.id} goal=\"${goal.trim().take(120)}\"")
+        logger("RESEARCH_START mode=${mode.id} pass=${pass.id} goal=\"${goal.trim().take(120)}\"")
     }
 
     /** Increments the LLM HTTP request counter. Call once per outbound generation request. */
@@ -119,6 +136,16 @@ class ResearchTelemetryManager(
     /** Increments the executed-step counter. Call once per dispatched step. */
     fun recordStep() {
         synchronized(lock) { active?.let { it.steps++ } }
+    }
+
+    /** Increments the screenshot capture counter. Call once per bitmap capture. */
+    fun recordScreenCapture() {
+        synchronized(lock) { active?.let { it.screenshots++ } }
+    }
+
+    /** Adds prompt tokens to the current task. Call at each cloud/local generation site. */
+    fun recordPromptTokens(n: Int) {
+        synchronized(lock) { active?.let { it.promptTokens += n.coerceAtLeast(0) } }
     }
 
     /** Marks that the run was resolved by a direct intent shortcut rather than a model call. */
@@ -156,7 +183,10 @@ class ResearchTelemetryManager(
                 success = isSuccess,
                 failureReason = if (isSuccess) "" else failureReason.trim(),
                 intentShortcutUsed = current.intentShortcutUsed,
-                rememberCacheHit = current.rememberCacheHit
+                rememberCacheHit = current.rememberCacheHit,
+                screenshots = current.screenshots,
+                promptTokens = current.promptTokens,
+                studyPass = current.pass
             )
             store.append(run)
             store.rewriteSummary()
@@ -167,8 +197,9 @@ class ResearchTelemetryManager(
         val line = summaryRow?.hudLine() ?: fallbackHudLine(run)
         logger(line)
         logger(
-            "TASK_END mode=${run.mode.id} latency_s=${ResearchRun.formatLatency(run.latencySeconds)} " +
+            "TASK_END mode=${run.mode.id} pass=${run.studyPass.id} latency_s=${ResearchRun.formatLatency(run.latencySeconds)} " +
                 "llm_calls=${run.llmCalls} local_inferences=${run.localInferences} steps=${run.steps} " +
+                "screenshots=${run.screenshots} prompt_tokens=${run.promptTokens} " +
                 "success=${run.success} intent_shortcut=${run.intentShortcutUsed} " +
                 "remember_cache_hit=${run.rememberCacheHit} failure_reason=\"${run.failureReason.take(120)}\""
         )
@@ -280,5 +311,6 @@ class ResearchTelemetryManager(
         const val SUMMARY_FILE = ResearchRunStore.SUMMARY_FILE
         private const val PREFS_NAME = "aniob_research"
         private const val KEY_MODE = "ablation_mode"
+        private const val KEY_STUDY_PASS = "study_pass"
     }
 }

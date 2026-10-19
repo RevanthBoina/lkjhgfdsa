@@ -253,16 +253,14 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                 onCloudInputChanged = { viewModel.clearCloudTestResult() },
                 onAutoRouterModeChanged = { mode -> viewModel.setAutoRouterMode(mode) },
                 onAblationModeChanged = { mode -> viewModel.setAblationMode(mode) },
+                onStudyPassChanged = { pass -> viewModel.setStudyPass(pass) },
                 onFastPathChanged = { viewModel.setFastPathEnabled(it) },
                 onSafetyGateChanged = { viewModel.setSafetyGateEnabled(it) },
                 onBack = { viewModel.navigateBack() },
                 onNavigateToModels = { viewModel.navigateTo(AniobRoute.MODELS) },
                 onNavigateToStats = { viewModel.navigateTo(AniobRoute.STATS) },
                 onNavigateToOnboarding = { viewModel.navigateTo(AniobRoute.ONBOARDING) },
-                onNavigateToTrust = { viewModel.navigateTo(AniobRoute.TRUST) },
-                onSaveBaseUrl = { url -> viewModel.setOmniRouteBaseUrl(url) },
-                onTestConnection = { key, url, model -> viewModel.testOmniRouteSettings(key, url, model) },
-                onLoadModels = { key, url -> viewModel.refreshOmniRouteModels(key, url) }
+                onNavigateToTrust = { viewModel.navigateTo(AniobRoute.TRUST) }
             )
 
             AniobRoute.ONBOARDING -> AniobSetupConciergeScreen(

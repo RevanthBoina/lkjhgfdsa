@@ -22,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.aniob.app.provider.AniobProviderConfig
 import com.aniob.app.research.AblationMode
+import com.aniob.app.research.StudyPass
 import com.aniob.app.ui.AniobUiState
 import com.aniob.app.ui.CloudTestResult
 import com.aniob.app.ui.components.BannerKind
@@ -37,6 +38,7 @@ fun AniobSettingsScreen(
     onCloudInputChanged: () -> Unit = {},
     onAutoRouterModeChanged: (String) -> Unit = {},
     onAblationModeChanged: (AblationMode) -> Unit = {},
+    onStudyPassChanged: (StudyPass) -> Unit = {},
     onFastPathChanged: (Boolean) -> Unit = {},
     onSafetyGateChanged: (Boolean) -> Unit = {},
     onBack: () -> Unit = {},
@@ -176,6 +178,27 @@ fun AniobSettingsScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                        }
+                    }
+
+                    HorizontalDivider()
+
+                    Text(
+                        text = "Study pass",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        StudyPass.entries.forEach { pass ->
+                            FilterChip(
+                                selected = uiState.studyPass == pass,
+                                onClick = { onStudyPassChanged(pass) },
+                                label = { Text(pass.label) },
+                                modifier = Modifier.testTag("radio_study_pass_${pass.id.lowercase()}")
+                            )
                         }
                     }
 

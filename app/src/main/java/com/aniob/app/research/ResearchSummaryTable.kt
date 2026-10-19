@@ -9,7 +9,13 @@ data class ResearchSummaryRow(
     val successes: Int,
     val meanLatencySeconds: Double,
     val meanLlmCallsPerTask: Double,
-    val successRatePercent: Double
+    val successRatePercent: Double,
+    val stdLatencySeconds: Double = 0.0,
+    val meanLatencyPerStepSeconds: Double = 0.0,
+    val meanUiStepsPerTask: Double = 0.0,
+    val meanScreenshotsPerTask: Double = 0.0,
+    val meanPromptTokensPerCall: Double = 0.0,
+    val speedupVsBaseline: String = ""
 ) {
     /**
      * The line shown in the end-of-task toast and in `Log.i("RESEARCH_METRICS", ...)`:
@@ -28,43 +34,112 @@ data class ResearchSummaryRow(
     )
 
     fun toCsvRow(): String = listOf(
+        "${AblationMode.entries.indexOf(mode) + 1}. ${mode.paperLabel}",
         mode.id,
         runs.toString(),
         successes.toString(),
+        String.format(Locale.US, "%.2f", successRatePercent),
         String.format(Locale.US, "%.2f", meanLatencySeconds),
+        String.format(Locale.US, "%.2f", stdLatencySeconds),
+        String.format(Locale.US, "%.2f", meanLatencyPerStepSeconds),
         String.format(Locale.US, "%.2f", meanLlmCallsPerTask),
-        String.format(Locale.US, "%.1f", successRatePercent)
+        String.format(Locale.US, "%.2f", meanUiStepsPerTask),
+        String.format(Locale.US, "%.2f", meanScreenshotsPerTask),
+        String.format(Locale.US, "%.2f", meanPromptTokensPerCall),
+        speedupVsBaseline
     ).joinToString(CsvCodec.DELIMITER.toString())
 }
 
 /**
- * Aggregation for the paper's three metrics, grouped by ablation mode.
+ * Aggregation for the paper's metrics, grouped by ablation mode.
  *
  * Deliberately pure: no files, no Android, no clock. `ResearchTelemetryManager` owns the IO and
  * feeds the parsed runs here, which is what makes the numbers unit-testable.
  */
 object ResearchSummaryTable {
 
-    const val HEADER = "mode,runs,successes,mean_latency_s,mean_llm_calls_per_task,success_rate_percent"
+    const val HEADER =
+        "Ablation_Mode,Mode_Code,Tasks_Evaluated,Tasks_Succeeded,Task_Success_Rate_Pct," +
+            "Mean_End_to_End_Latency_Sec,Std_Latency_Sec,Mean_Latency_Per_Step_Sec," +
+            "Mean_LLM_API_Calls_Per_Task,Mean_UI_Steps_Per_Task,Mean_Screenshots_Per_Task," +
+            "Mean_Prompt_Tokens_Per_Call,Speedup_vs_Baseline"
 
     /**
-     * One row per mode that has at least one run, in enum declaration order so the CSV is stable
-     * between rewrites. Modes with no data are omitted instead of emitting NaN means.
+     * One row per mode that has at least one measured run, in enum declaration order so the CSV is
+     * stable between rewrites. Warm-up runs are excluded from this summary.
      */
-    fun build(runs: List<ResearchRun>): List<ResearchSummaryRow> =
-        AblationMode.entries.mapNotNull { mode ->
-            val modeRuns = runs.filter { it.mode == mode }
+    fun build(runs: List<ResearchRun>): List<ResearchSummaryRow> {
+        val measuredRuns = runs.filter { it.studyPass == StudyPass.MEASURED }
+        val baselineRuns = measuredRuns.filter { it.mode == AblationMode.BASELINE }
+        val baselineMeanLatency = if (baselineRuns.isNotEmpty()) {
+            baselineRuns.sumOf { it.latencySeconds } / baselineRuns.size
+        } else {
+            null
+        }
+
+        return AblationMode.entries.mapNotNull { mode ->
+            val modeRuns = measuredRuns.filter { it.mode == mode }
             if (modeRuns.isEmpty()) return@mapNotNull null
+            val n = modeRuns.size
             val successes = modeRuns.count { it.success }
+            val successRatePercent = successes.toDouble() / n * 100.0
+            val meanLatencySeconds = modeRuns.sumOf { it.latencySeconds } / n
+
+            val stdLatencySeconds = if (n <= 1) {
+                0.0
+            } else {
+                val sumSquaredDiffs = modeRuns.sumOf {
+                    val diff = it.latencySeconds - meanLatencySeconds
+                    diff * diff
+                }
+                Math.sqrt(sumSquaredDiffs / (n - 1))
+            }
+
+            val runsWithSteps = modeRuns.filter { it.steps > 0 }
+            val meanLatencyPerStepSeconds = if (runsWithSteps.isEmpty()) {
+                0.0
+            } else {
+                runsWithSteps.sumOf { it.latencySeconds / it.steps } / runsWithSteps.size
+            }
+
+            val meanLlmCallsPerTask = modeRuns.sumOf { it.llmCalls.toDouble() } / n
+            val meanUiStepsPerTask = modeRuns.sumOf { it.steps.toDouble() } / n
+            val meanScreenshotsPerTask = modeRuns.sumOf { it.screenshots.toDouble() } / n
+
+            val totalLlmCalls = modeRuns.sumOf { it.llmCalls }
+            val totalPromptTokens = modeRuns.sumOf { it.promptTokens }
+            val meanPromptTokensPerCall = if (totalLlmCalls == 0) {
+                0.0
+            } else {
+                totalPromptTokens.toDouble() / totalLlmCalls.toDouble()
+            }
+
+            val speedupVsBaseline = if (baselineMeanLatency == null) {
+                ""
+            } else if (mode == AblationMode.BASELINE) {
+                "1.00x"
+            } else if (meanLatencySeconds <= 0.0) {
+                "0.00x"
+            } else {
+                String.format(Locale.US, "%.2fx", baselineMeanLatency / meanLatencySeconds)
+            }
+
             ResearchSummaryRow(
                 mode = mode,
-                runs = modeRuns.size,
+                runs = n,
                 successes = successes,
-                meanLatencySeconds = modeRuns.sumOf { it.latencySeconds } / modeRuns.size,
-                meanLlmCallsPerTask = modeRuns.sumOf { it.llmCalls.toDouble() } / modeRuns.size,
-                successRatePercent = successes.toDouble() / modeRuns.size * 100.0
+                meanLatencySeconds = meanLatencySeconds,
+                meanLlmCallsPerTask = meanLlmCallsPerTask,
+                successRatePercent = successRatePercent,
+                stdLatencySeconds = stdLatencySeconds,
+                meanLatencyPerStepSeconds = meanLatencyPerStepSeconds,
+                meanUiStepsPerTask = meanUiStepsPerTask,
+                meanScreenshotsPerTask = meanScreenshotsPerTask,
+                meanPromptTokensPerCall = meanPromptTokensPerCall,
+                speedupVsBaseline = speedupVsBaseline
             )
         }
+    }
 
     /** Full file contents, header included, newline-terminated. */
     fun toCsv(rows: List<ResearchSummaryRow>): String = buildString {

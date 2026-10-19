@@ -26,7 +26,10 @@ data class ResearchRun(
     val intentShortcutUsed: Boolean,
     val rememberCacheHit: Boolean,
     /** True once the researcher replaced the automatic verdict with a manual one. */
-    val manuallyOverridden: Boolean = false
+    val manuallyOverridden: Boolean = false,
+    val screenshots: Int = 0,
+    val promptTokens: Int = 0,
+    val studyPass: StudyPass = StudyPass.MEASURED
 ) {
 
     fun toCsvRow(): String = listOf(
@@ -41,15 +44,20 @@ data class ResearchRun(
         CsvCodec.escape(CsvCodec.singleLine(failureReason)),
         intentShortcutUsed.toString(),
         rememberCacheHit.toString(),
-        manuallyOverridden.toString()
+        manuallyOverridden.toString(),
+        screenshots.toString(),
+        promptTokens.toString(),
+        studyPass.id
     ).joinToString(CsvCodec.DELIMITER.toString())
 
     companion object {
         const val HEADER =
             "timestamp_ms,mode,goal,latency_s,llm_calls,local_inferences,steps,success," +
-                "failure_reason,intent_shortcut_used,remember_cache_hit,manually_overridden"
+                "failure_reason,intent_shortcut_used,remember_cache_hit,manually_overridden," +
+                "screenshots,prompt_tokens,study_pass"
 
-        const val COLUMN_COUNT = 12
+        const val COLUMN_COUNT = 15
+        const val LEGACY_COLUMN_COUNT = 12
 
         /** Milliseconds precision in the raw file; the summary table and HUD round to 2 decimals. */
         fun formatLatency(seconds: Double): String =
@@ -58,22 +66,37 @@ data class ResearchRun(
         /** Parses one CSV row; returns `null` for the header, blank lines or malformed rows. */
         fun fromCsvRow(row: String): ResearchRun? {
             val cells = CsvCodec.split(row)
-            if (cells.size != COLUMN_COUNT) return null
+            if (cells.size != COLUMN_COUNT && cells.size != LEGACY_COLUMN_COUNT) return null
             val timestamp = cells[0].toLongOrNull() ?: return null
             val latency = cells[3].toDoubleOrNull() ?: return null
+            val llmCalls = cells[4].toIntOrNull() ?: return null
+            val localInferences = cells[5].toIntOrNull() ?: return null
+            val steps = cells[6].toIntOrNull() ?: return null
+            val success = cells[7].toBooleanStrictOrNull() ?: return null
+            val intentShortcutUsed = cells[9].toBooleanStrictOrNull() ?: return null
+            val rememberCacheHit = cells[10].toBooleanStrictOrNull() ?: return null
+            val manuallyOverridden = cells[11].toBooleanStrictOrNull() ?: false
+
+            val screenshots = if (cells.size >= 13) cells[12].toIntOrNull() ?: return null else 0
+            val promptTokens = if (cells.size >= 14) cells[13].toIntOrNull() ?: return null else 0
+            val studyPass = if (cells.size >= 15) StudyPass.fromId(cells[14]) else StudyPass.MEASURED
+
             return ResearchRun(
                 timestampMs = timestamp,
                 mode = AblationMode.fromId(cells[1]),
                 goal = cells[2],
                 latencySeconds = latency,
-                llmCalls = cells[4].toIntOrNull() ?: return null,
-                localInferences = cells[5].toIntOrNull() ?: return null,
-                steps = cells[6].toIntOrNull() ?: return null,
-                success = cells[7].toBooleanStrictOrNull() ?: return null,
+                llmCalls = llmCalls,
+                localInferences = localInferences,
+                steps = steps,
+                success = success,
                 failureReason = cells[8],
-                intentShortcutUsed = cells[9].toBooleanStrictOrNull() ?: return null,
-                rememberCacheHit = cells[10].toBooleanStrictOrNull() ?: return null,
-                manuallyOverridden = cells[11].toBooleanStrictOrNull() ?: false
+                intentShortcutUsed = intentShortcutUsed,
+                rememberCacheHit = rememberCacheHit,
+                manuallyOverridden = manuallyOverridden,
+                screenshots = screenshots,
+                promptTokens = promptTokens,
+                studyPass = studyPass
             )
         }
     }
