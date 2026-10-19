@@ -44,11 +44,20 @@ internal fun formatEta(seconds: Long): String {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AniobModelDownloadScreen(
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    uiState: com.aniob.app.ui.AniobUiState? = null,
+    onSaveCloudSettings: (apiKey: String, model: String, baseUrl: String) -> Unit = { _, _, _ -> },
+    onTestCloudConnection: (apiKey: String, baseUrl: String, model: String) -> Unit = { _, _, _ -> },
+    onOpenSettings: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val downloader = remember { AniobModelDownloader(context) }
+
+    var cloudKeyInput by remember(uiState?.omnirouteApiKey) { mutableStateOf(uiState?.omnirouteApiKey.orEmpty()) }
+    var cloudUrlInput by remember(uiState?.omnirouteBaseUrl) { mutableStateOf(uiState?.omnirouteBaseUrl.orEmpty()) }
+    var cloudModelInput by remember(uiState?.omnirouteModel) { mutableStateOf(uiState?.omnirouteModel?.ifBlank { "auto" } ?: "auto") }
+    var cloudKeyVisible by remember { mutableStateOf(false) }
 
     var deviceInfo by remember { mutableStateOf(downloader.getDeviceInfo()) }
     val downloadStates by downloader.downloadStates.collectAsStateWithLifecycle()
@@ -188,6 +197,151 @@ fun AniobModelDownloadScreen(
                         ) {
                             Text("Battery: ${deviceInfo.batteryPct}% ${if (deviceInfo.isCharging) "(Charging)" else ""}", style = MaterialTheme.typography.bodySmall)
                             Text("Network: ${if (deviceInfo.isWifi) "Wi-Fi" else "Mobile Data"}", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+
+            // 1b. Cloud Brain (OmniRoute API) Quick Setup Card
+            item {
+                val hasCloud = cloudKeyInput.isNotBlank() || (uiState?.omnirouteApiKey?.isNotBlank() == true)
+                Card(
+                    modifier = Modifier.fillMaxWidth().testTag("cloud_brain_card"),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Cloud Brain (OmniRoute API)",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = "Instant setup with zero large downloads. Routes across 375+ cloud models with auto-fallback.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Badge(
+                                containerColor = if (hasCloud) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                            ) {
+                                Text(
+                                    text = if (hasCloud) "Ready ✓" else "Optional",
+                                    color = if (hasCloud) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(
+                                selected = cloudUrlInput.isBlank(),
+                                onClick = { cloudUrlInput = "" },
+                                label = { Text("Auto") },
+                                modifier = Modifier.testTag("models_chip_url_auto")
+                            )
+                            FilterChip(
+                                selected = cloudUrlInput == com.aniob.app.provider.AniobProviderConfig.OMNIROUTE_CLOUD_BASE_URL,
+                                onClick = { cloudUrlInput = com.aniob.app.provider.AniobProviderConfig.OMNIROUTE_CLOUD_BASE_URL },
+                                label = {
+                                    Text(
+                                        text = "Cloud (omniroute.online)"
+                                    )
+                                },
+                                modifier = Modifier.testTag("models_chip_url_cloud")
+                            )
+                            FilterChip(
+                                selected = cloudUrlInput == com.aniob.app.provider.AniobProviderConfig.OMNIROUTE_DEFAULT_BASE_URL,
+                                onClick = { cloudUrlInput = com.aniob.app.provider.AniobProviderConfig.OMNIROUTE_DEFAULT_BASE_URL },
+                                label = { Text("Local :20128") },
+                                modifier = Modifier.testTag("models_chip_url_local")
+                            )
+                        }
+
+                        OutlinedTextField(
+                            value = cloudUrlInput,
+                            onValueChange = { cloudUrlInput = it },
+                            label = { Text("Gateway Server Address") },
+                            placeholder = {
+                                Text(
+                                    text = "${com.aniob.app.provider.AniobProviderConfig.OMNIROUTE_CLOUD_BASE_URL} or ${com.aniob.app.provider.AniobProviderConfig.OMNIROUTE_DEFAULT_BASE_URL}"
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth().testTag("models_input_omniroute_url"),
+                            singleLine = true
+                        )
+
+                        OutlinedTextField(
+                            value = cloudKeyInput,
+                            onValueChange = { cloudKeyInput = it },
+                            label = { Text("Cloud Access Key") },
+                            placeholder = { Text("sk-...") },
+                            visualTransformation = if (cloudKeyVisible) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                            trailingIcon = {
+                                IconButton(onClick = { cloudKeyVisible = !cloudKeyVisible }) {
+                                    Icon(
+                                        imageVector = if (cloudKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                        contentDescription = if (cloudKeyVisible) "Hide secret key" else "Reveal secret key"
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().testTag("models_input_omniroute_key"),
+                            singleLine = true
+                        )
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf("auto" to "Auto", "auto/fast" to "Fast", "auto/smart" to "Smart", "auto/vision" to "Vision").forEach { (id, label) ->
+                                FilterChip(
+                                    selected = cloudModelInput == id,
+                                    onClick = { cloudModelInput = id },
+                                    label = { Text(label) }
+                                )
+                            }
+                        }
+
+                        if (!uiState?.omnirouteConnectionStatus.isNullOrBlank()) {
+                            Text(
+                                text = uiState?.omnirouteConnectionStatus.orEmpty(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.testTag("models_cloud_status")
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    onTestCloudConnection(
+                                        cloudKeyInput.trim(),
+                                        cloudUrlInput.trim(),
+                                        cloudModelInput.ifBlank { "auto" }
+                                    )
+                                },
+                                modifier = Modifier.weight(1f).testTag("test_cloud_brain_btn")
+                            ) {
+                                Text("Test Connection")
+                            }
+                            Button(
+                                onClick = {
+                                    onSaveCloudSettings(
+                                        cloudKeyInput.trim(),
+                                        cloudModelInput.ifBlank { "auto" },
+                                        cloudUrlInput.trim()
+                                    )
+                                    Toast.makeText(context, "Cloud API saved", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.weight(1f).testTag("save_cloud_brain_btn")
+                            ) {
+                                Text("Save Cloud Brain")
+                            }
                         }
                     }
                 }

@@ -39,7 +39,8 @@ fun AniobSetupConciergeScreen(
     onNavigateToModels: () -> Unit,
     onRefresh: () -> Unit,
     onRunDemoTask: () -> Unit,
-    mode: Mode = Mode.WIZARD
+    mode: Mode = Mode.WIZARD,
+    onNavigateToSettings: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var demoPlaying by remember { mutableStateOf(false) }
@@ -228,6 +229,14 @@ fun AniobSetupConciergeScreen(
                 onAction = onNavigateToModels,
                 testTag = "setup_brain"
             )
+            if (!systemState.modelReady) {
+                OutlinedButton(
+                    onClick = onNavigateToSettings,
+                    modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).testTag("setup_cloud_key_btn")
+                ) {
+                    Text("Or add Cloud API Key in Settings")
+                }
+            }
 
             SetupCard(
                 index = 7,

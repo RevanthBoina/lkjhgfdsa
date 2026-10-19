@@ -113,7 +113,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                             }
                         },
                         actions = {
-                            val installedModel = viewModel.getInstalledModelName() ?: "No model"
+                            val activeBrainLabel = viewModel.getActiveBrainLabel()
                             val modeLabel = when (uiState.autoRouterMode.lowercase()) {
                                 "local-first" -> "Local-first"
                                 "local-only" -> "On-device"
@@ -123,7 +123,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                             }
                             AssistChip(
                                 onClick = { showWhyModelDialog = true },
-                                label = { Text("$modeLabel · $installedModel") },
+                                label = { Text("$modeLabel · $activeBrainLabel") },
                                 leadingIcon = {
                                     Icon(Icons.Default.Memory, contentDescription = null, modifier = Modifier.size(16.dp))
                                 },
@@ -211,6 +211,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                         onWorkflowCancel = { taskId -> viewModel.onWorkflowCancel(taskId) },
                         onContinueInWebsite = { taskId -> viewModel.onContinueInWebsite(taskId) },
                         onConsumePendingPrefill = { viewModel.consumePendingInputPrefill() },
+                        onOpenSettings = { viewModel.navigateTo(AniobRoute.SETTINGS) },
                         renderWindow = { viewModel.renderWindow() }
                     )
                 }
@@ -238,7 +239,11 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
             )
 
             AniobRoute.MODELS -> AniobModelDownloadScreen(
-                onBack = { viewModel.navigateBack() }
+                onBack = { viewModel.navigateBack() },
+                uiState = uiState,
+                onSaveCloudSettings = { key, model, url -> viewModel.updateSettings(key, model, url) },
+                onTestCloudConnection = { key, url, model -> viewModel.testOmniRouteSettings(key, url, model) },
+                onOpenSettings = { viewModel.navigateTo(AniobRoute.SETTINGS) }
             )
 
             AniobRoute.SETTINGS -> AniobSettingsScreen(
@@ -254,7 +259,10 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                 onNavigateToModels = { viewModel.navigateTo(AniobRoute.MODELS) },
                 onNavigateToStats = { viewModel.navigateTo(AniobRoute.STATS) },
                 onNavigateToOnboarding = { viewModel.navigateTo(AniobRoute.ONBOARDING) },
-                onNavigateToTrust = { viewModel.navigateTo(AniobRoute.TRUST) }
+                onNavigateToTrust = { viewModel.navigateTo(AniobRoute.TRUST) },
+                onSaveBaseUrl = { url -> viewModel.setOmniRouteBaseUrl(url) },
+                onTestConnection = { key, url, model -> viewModel.testOmniRouteSettings(key, url, model) },
+                onLoadModels = { key, url -> viewModel.refreshOmniRouteModels(key, url) }
             )
 
             AniobRoute.ONBOARDING -> AniobSetupConciergeScreen(
@@ -269,7 +277,8 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                 onRunDemoTask = {
                     viewModel.resetToChat()
                     viewModel.submitTask("Open Settings")
-                }
+                },
+                onNavigateToSettings = { viewModel.navigateTo(AniobRoute.SETTINGS) }
             )
 
             AniobRoute.SKILLS -> AniobSkillsScreen(
@@ -363,15 +372,28 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Mode: ${FailureReasonCopy.providerLabel(uiState.autoRouterMode)}", fontWeight = FontWeight.Bold)
                     Text("Brain: $installedModel")
-                    Text("Cloud: " + if (cloudReady) "ready (${uiState.omnirouteModel})" else "not set up")
+                    Text("Cloud: " + if (cloudReady) "ready (${uiState.omnirouteModel.ifBlank { "auto" }})" else "not set up")
                     Text(reason, style = MaterialTheme.typography.bodyMedium)
                 }
             },
             confirmButton = {
-                Button(onClick = {
-                    showWhyModelDialog = false
-                    viewModel.navigateTo(AniobRoute.MODELS)
-                }) { Text("Manage brains") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            showWhyModelDialog = false
+                            viewModel.navigateTo(AniobRoute.SETTINGS)
+                        },
+                        modifier = Modifier.testTag("why_model_cloud_settings_btn")
+                    ) {
+                        Text("Cloud setup")
+                    }
+                    Button(onClick = {
+                        showWhyModelDialog = false
+                        viewModel.navigateTo(AniobRoute.MODELS)
+                    }) {
+                        Text("Manage brains")
+                    }
+                }
             },
             dismissButton = {
                 TextButton(onClick = { showWhyModelDialog = false }) { Text("Dismiss") }
