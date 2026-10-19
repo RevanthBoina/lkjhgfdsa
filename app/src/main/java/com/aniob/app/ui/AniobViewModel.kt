@@ -2880,7 +2880,9 @@ class AniobViewModel(
                     break
                 } else if (res.terminalState == StepResult.TerminalState.FAIL) {
                     finalOutcome = Outcome.FAILED
-                    terminalReason = res.verification?.reason ?: "Step failed or rejected"
+                    terminalReason = (res.action as? AniobAction.Fail)?.reason
+                        ?: res.verification?.reason
+                        ?: "Step failed or rejected"
                     break
                 }
 
