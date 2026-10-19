@@ -211,8 +211,8 @@ class AniobBridgeServer(
 
             when (command) {
                 "DUMP_HIERARCHY" -> {
-                    val a11y = AniobAccessibilityService.instance
-                    val screenState = a11y?.captureCurrentScreenState()
+                    val accessibility = AniobAccessibilityService.instance
+                    val screenState = accessibility?.captureCurrentScreenState()
                     JSONObject().apply {
                         put("status", "OK")
                         put("packageName", screenState?.packageName)

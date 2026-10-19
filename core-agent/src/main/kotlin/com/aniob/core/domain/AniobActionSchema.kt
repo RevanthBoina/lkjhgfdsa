@@ -136,6 +136,126 @@ Coordinates are NOT valid. target is required for TAP, LONG_PRESS and INPUT_TEXT
         }
     }
 
+    /**
+     * Parses the burst reply used by the multi-action conditions:
+     * ```
+     * {"thought":"open wifi then tap scan","is_complete":false,
+     *  "actions":[{"type":"tap","id":2},{"type":"input","id":4,"text":"home"},{"type":"back"}]}
+     * ```
+     *
+     * `type` is `tap`, `input`, `scroll` or `back`; `id` is the sequential element id from the
+     * observation (not a pixel, not a resource id). Returns null when nothing usable is present so
+     * the caller can fall back to the single-action parser instead of failing the step.
+     */
+    fun parseActionBurstOrNull(json: String): ActionBurst? {
+        val array = arrayAfter(json, "actions") ?: return null
+        val thought = str(json, "thought").orEmpty().take(120)
+        val isComplete = bool(json, "is_complete") ?: false
+
+        val actions = ArrayList<AniobAction>(ActionBurst.MAX_ACTIONS)
+        for (element in splitObjects(array)) {
+            if (actions.size >= ActionBurst.MAX_ACTIONS) break
+            val action = burstAction(element, thought) ?: continue
+            actions.add(action)
+        }
+        if (actions.isEmpty()) {
+            return if (isComplete) {
+                ActionBurst(thought, isComplete = true, actions = emptyList())
+            } else {
+                null
+            }
+        }
+        return ActionBurst(thought, isComplete, actions)
+    }
+
+    /** Maps one burst element (`{"type":"tap","id":2,...}`) onto a canonical action. */
+    private fun burstAction(element: String, thought: String): AniobAction? {
+        val type = str(element, "type")?.trim()?.lowercase() ?: return null
+        val target = int(element, "id")?.let { SemanticTarget.SomIndex(it) }
+        return when (type) {
+            "tap", "click" -> target?.let { AniobAction.Tap(it, thought) }
+            "input", "type", "input_text" -> {
+                val text = str(element, "text").orEmpty()
+                if (target != null && text.isNotBlank()) {
+                    AniobAction.InputText(target, text, clearFirst = bool(element, "clear_first") ?: false, thought = thought)
+                } else {
+                    null
+                }
+            }
+            // A bare scroll gesture: swiping up reveals the content below, which is what "scroll"
+            // means in a plan. An explicit direction is honoured when the model supplies one.
+            "scroll", "swipe" -> {
+                val direction = when (str(element, "direction")?.lowercase()) {
+                    "up" -> SwipeDirection.UP
+                    "down" -> SwipeDirection.DOWN
+                    "left" -> SwipeDirection.LEFT
+                    "right" -> SwipeDirection.RIGHT
+                    else -> SwipeDirection.UP
+                }
+                AniobAction.Swipe(direction = direction, thought = thought)
+            }
+            "back", "system_key", "press_back" -> AniobAction.PressKey(KeyType.BACK, thought)
+            "wait" -> AniobAction.Wait(durationMs = (int(element, "duration_ms") ?: 800).toLong(), thought = thought)
+            else -> null
+        }
+    }
+
+    /** Substring between the brackets after `"field": [`, honouring strings and nesting. */
+    private fun arrayAfter(json: String, field: String): String? {
+        val key = Regex("\"$field\"\\s*:\\s*\\[", RegexOption.DOT_MATCHES_ALL).find(json) ?: return null
+        val start = key.range.last + 1
+        var depth = 1
+        var inString = false
+        var escaped = false
+        var i = start
+        while (i < json.length) {
+            val c = json[i]
+            when {
+                escaped -> escaped = false
+                c == '\\' && inString -> escaped = true
+                c == '"' -> inString = !inString
+                !inString && c == '[' -> depth++
+                !inString && c == ']' -> {
+                    depth--
+                    if (depth == 0) return json.substring(start, i)
+                }
+            }
+            i++
+        }
+        return null
+    }
+
+    /** Splits a JSON array body into its top-level object literals. */
+    private fun splitObjects(array: String): List<String> {
+        val objects = ArrayList<String>(ActionBurst.MAX_ACTIONS)
+        var depth = 0
+        var inString = false
+        var escaped = false
+        var start = -1
+        for (i in array.indices) {
+            val c = array[i]
+            when {
+                escaped -> escaped = false
+                c == '\\' && inString -> escaped = true
+                c == '"' -> inString = !inString
+                inString -> Unit
+                c == '{' -> {
+                    if (depth == 0) start = i
+                    depth++
+                }
+                c == '}' -> {
+                    depth--
+                    if (depth == 0 && start >= 0) {
+                        objects.add(array.substring(start, i + 1))
+                        start = -1
+                        if (objects.size >= ActionBurst.MAX_ACTIONS) return objects
+                    }
+                }
+            }
+        }
+        return objects
+    }
+
     /** Lenient parse: null instead of throwing. Used where a caller prefers a fallback path. */
     fun parseActionJsonOrNull(json: String): AniobAction? =
         try {

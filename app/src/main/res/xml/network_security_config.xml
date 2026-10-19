@@ -1,4 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  OmniRoute (the Cloud AI gateway) is normally self-hosted on a computer on the same Wi-Fi and
+  serves plain HTTP on port 20128. Android's network security config has no way to express
+  "private network only" (it accepts host names, not CIDR ranges), so cleartext is permitted at
+  the platform level and the app itself is the gate: AniobProviderConfig.validateBaseUrl allows
+  http:// only for loopback, the emulator alias, RFC1918 private addresses, link-local addresses
+  and mDNS/`.local` names. Any public address must be https://.
+
+  Do not add new network calls to public http hosts on the strength of this policy: the platform
+  will allow them, and only AniobProviderConfig.validateBaseUrl keeps the gateway path honest.
+  Any new caller must apply the same local-network rule.
+-->
 <network-security-config>
     <debug-overrides>
         <trust-anchors>
@@ -11,9 +23,4 @@
             <certificates src="system" />
         </trust-anchors>
     </base-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">127.0.0.1</domain>
-        <domain includeSubdomains="false">localhost</domain>
-        <domain includeSubdomains="false">10.0.2.2</domain>
-    </domain-config>
 </network-security-config>

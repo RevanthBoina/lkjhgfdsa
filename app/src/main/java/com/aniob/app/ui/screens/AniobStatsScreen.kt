@@ -39,7 +39,9 @@ import java.util.*
 @Composable
 fun AniobStatsScreen(
     uiState: AniobUiState,
-    onBack: () -> Unit = {}
+    onBack: () -> Unit = {},
+    onResearchOverride: (Boolean) -> Unit = {},
+    onClearResearch: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
@@ -305,13 +307,103 @@ fun AniobStatsScreen(
                 }
             }
 
+            // Research metrics: the paper's three numbers for the active ablation mode, plus the
+            // manual verdict used when deterministic verification cannot decide a run.
+            item {
+                val lastRun = uiState.researchLastRun
+                val summary = uiState.researchSummary
+                Card(
+                    modifier = Modifier.fillMaxWidth().testTag("card_research_metrics"),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                ) {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Research metrics",
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Text(
+                                text = uiState.ablationMode.label,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                        Text(
+                            text = uiState.researchStatusLine ?: "No task measured yet in this install.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                        if (summary != null) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Mean latency", color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                Text(String.format(Locale.US, "%.2f s", summary.meanLatencySeconds))
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Mean model requests per task", color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                Text(String.format(Locale.US, "%.2f", summary.meanLlmCallsPerTask))
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Task success rate", color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                Text(String.format(Locale.US, "%.1f%%", summary.successRatePercent))
+                            }
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Runs in this mode", color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                Text("${summary.runs}")
+                            }
+                        }
+                        if (lastRun != null) {
+                            Text(
+                                text = if (lastRun.manuallyOverridden) {
+                                    "Last verdict was set manually."
+                                } else {
+                                    "Last verdict came from automatic verification."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(
+                                    onClick = { onResearchOverride(true) },
+                                    enabled = !uiState.isRunning,
+                                    modifier = Modifier.testTag("btn_research_pass")
+                                ) {
+                                    Text("Mark pass")
+                                }
+                                OutlinedButton(
+                                    onClick = { onResearchOverride(false) },
+                                    enabled = !uiState.isRunning,
+                                    modifier = Modifier.testTag("btn_research_fail")
+                                ) {
+                                    Text("Mark fail")
+                                }
+                            }
+                        }
+                        TextButton(
+                            onClick = onClearResearch,
+                            enabled = !uiState.isRunning,
+                            modifier = Modifier.testTag("btn_research_clear")
+                        ) {
+                            Text("Clear saved runs")
+                        }
+                    }
+                }
+            }
+
             // Provider Breakdown
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
                 ) {
-                    val fastPathCount = scores.count { it.providerUsed == "FAST_PATH" || it.providerUsed == "FASTPATH" || it.providerUsed == "INTENT" }
+                    val fastPathCount = scores.count { it.providerUsed == "FAST_PATH" || it.providerUsed == "FASTPATH" ||
+                            it.providerUsed == "INTENT" || it.providerUsed == "REMEMBER" }
                     val localCount = scores.count { it.providerUsed == "LOCAL_SLM" }
                     val cloudCount = scores.count { it.providerUsed == "OMNIROUTE_CLOUD" }
                     Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

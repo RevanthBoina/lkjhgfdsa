@@ -11,8 +11,21 @@ import com.aniob.core.domain.AniobAction
  * Reduces perceive_ms from ~80ms p50 to ~40ms during predictable workflows.
  */
 class AniobObservationPolicy(
-    private val maxBurstSteps: Int = 3
+    maxBurstSteps: Int = 3
 ) {
+
+    /**
+     * Live burst ceiling. Research ablation switches this at task start: 3 for the burst modes,
+     * 1 for BASELINE / INTENT_SHORTCUT_ONLY so every step performs a full observation.
+     * Defaults to the constructor value, so non-experimental behaviour is unchanged.
+     */
+    @Volatile
+    private var burstLimit: Int = maxBurstSteps.coerceAtLeast(1)
+
+    /** Changes the burst ceiling without recreating the policy (keeps action history). */
+    fun setBurstLimit(maxBurstSteps: Int) {
+        burstLimit = maxBurstSteps.coerceAtLeast(1)
+    }
 
     data class ActionHistoryItem(
         val action: AniobAction,
@@ -58,7 +71,7 @@ class AniobObservationPolicy(
     @Synchronized
     fun shouldObserve(): Boolean {
         // Always observe if no previous actions or burst limit reached
-        if (recentActions.size < 2 || currentBurstCount >= maxBurstSteps) {
+        if (recentActions.size < 2 || currentBurstCount >= burstLimit) {
             currentBurstCount = 0
             return true
         }

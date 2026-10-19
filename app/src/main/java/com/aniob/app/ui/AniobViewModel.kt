@@ -17,6 +17,12 @@ import com.aniob.app.background.AniobForegroundService
 import com.aniob.app.db.SessionScoreEntity
 import com.aniob.app.model.AniobModelDownloader
 import com.aniob.app.provider.AniobOmniRouteProvider
+import com.aniob.app.provider.AniobProviderConfig
+import com.aniob.app.research.AblationMode
+import com.aniob.app.research.ResearchRun
+import com.aniob.app.research.ResearchSummaryRow
+import com.aniob.app.provider.OmniRouteConnectionStatus
+import com.aniob.app.provider.testOmniRouteConnection
 import com.aniob.app.service.AniobAccessibilityService
 import com.aniob.app.telemetry.AniobDeviceTelemetry
 import com.aniob.app.ui.chat.ChatMessage
@@ -53,6 +59,9 @@ import com.aniob.core.ladder.AniobIntentResolver
 import com.aniob.core.ladder.AniobPlanningAgent
 import com.aniob.core.ladder.ResolvedIntentShortcut
 import com.aniob.core.ladder.TaskProgress
+import com.aniob.core.memory.RememberAction
+import com.aniob.core.memory.RememberCache
+import com.aniob.core.verify.FastVerify
 import com.aniob.core.logging.AniobExecutionTracker
 import com.aniob.core.memory.AniobHippocampusTracker
 import com.aniob.core.memory.AniobSharedKnowledgeStore
@@ -117,7 +126,7 @@ data class AniobUiState(
     val interruptedSummary: TaskSummary? = null,
     /** UX-6: last completed task, rendered as a card on next open (Quiet Return). */
     val lastSummary: TaskSummary? = null,
-    /** UX-6: a11y was revoked mid-run; recovery banner until the user re-enables. */
+    /** UX-6: accessibility access was revoked mid-run; recovery banner until the user re-enables. */
     val accessibilityRecoveryNeeded: Boolean = false,
     /** UX-4: pending approval the user must actually see. */
     val confirmRequest: ConfirmRequest? = null,
@@ -140,7 +149,32 @@ data class AniobUiState(
     /** UX-5: names of skills the user has disabled; matcher skips these. */
     val disabledSkills: Set<String> = emptySet(),
     /** Staged draft from share or incoming intent that requires user confirmation/submission */
-    val pendingInputPrefill: String? = null
+    val pendingInputPrefill: String? = null,
+    /** Result of the last Cloud AI save / connection test, rendered as a banner in Settings. */
+    val cloudTest: CloudTestUiState = CloudTestUiState(),
+    /** Research: ablation condition that the next task will run under. */
+    val ablationMode: AblationMode = AblationMode.DEFAULT,
+    /** Research: one-line HUD for the last finished task (`[MODE] Latency… | Calls… | Success…`). */
+    val researchStatusLine: String? = null,
+    /** Research: increments per finished run so the host can fire a one-shot toast. */
+    val researchRunSequence: Long = 0L,
+    /** Research: last finished run, shown with the manual override in the Stats screen. */
+    val researchLastRun: ResearchRun? = null,
+    /** Research: running averages for [ablationMode]. */
+    val researchSummary: ResearchSummaryRow? = null
+)
+
+/** Outcomes of saving or testing the Cloud AI (OmniRoute) settings. */
+enum class CloudTestResult { NONE, SAVED, SUCCESS, BAD_KEY, UNREACHABLE, INVALID_SETUP }
+
+/**
+ * Settings feedback for the Cloud AI card. [message] is short, user-facing copy that explains the
+ * concrete next step; [testing] disables the buttons while the probe is in flight.
+ */
+data class CloudTestUiState(
+    val testing: Boolean = false,
+    val result: CloudTestResult = CloudTestResult.NONE,
+    val message: String? = null
 )
 
 class AniobViewModel(
@@ -149,6 +183,13 @@ class AniobViewModel(
 ) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(AniobUiState())
+
+    /**
+     * Zero-LLM replay cache. Declared with the other state (before [init]) so the asynchronous
+     * file load can never race the property initialiser; until the load lands a lookup misses.
+     */
+    @Volatile
+    private var rememberCache: RememberCache = RememberCache()
 
     /** Back-stack owned by the ViewModel (UX-0 §2). Survives rotation; root CHAT is re-derived. */
     private val _navBackStack = MutableStateFlow(restoreNavBackStack())
@@ -373,35 +414,53 @@ class AniobViewModel(
      */
     private val secretStore = com.aniob.app.data.AniobSecretStore(app)
 
-    private fun isOmniRouteReady(): Boolean {
-        val state = _uiState.value
-        return state.omnirouteApiKey.isNotBlank() ||
-            (state.omnirouteBaseUrl.isNotBlank() && AniobOmniRouteProvider.isLocalGateway(state.omnirouteBaseUrl))
-    }
+    private fun isOmniRouteReady(): Boolean = isCloudConfigured()
 
     private fun getOmniRouteProvider(sessionId: String? = null): AniobOmniRouteProvider {
         return AniobOmniRouteProvider(
             apiKey = _uiState.value.omnirouteApiKey,
-            baseUrl = _uiState.value.omnirouteBaseUrl,
-            model = com.aniob.app.provider.AniobProviderConfig.coerceModel(_uiState.value.omnirouteModel),
-            sessionId = sessionId
+            baseUrl = AniobProviderConfig.normalizeBaseUrl(_uiState.value.omnirouteBaseUrl)
+                .ifBlank { AniobProviderConfig.OMNIROUTE_DEFAULT_BASE_URL },
+            model = AniobProviderConfig.sanitizeModel(_uiState.value.omnirouteModel),
+            sessionId = sessionId,
+            // Research metric #2: one count per outbound generation request. No-ops when no
+            // instrumented task is running (for example a chat-only Q&A).
+            onLlmRequest = { app.researchTelemetry.recordLlmCall() }
         )
     }
+
+    /** Cloud AI is usable only with both a stored key and a valid gateway address. */
+    private fun isCloudConfigured(): Boolean =
+        AniobProviderConfig.isConfigured(_uiState.value.omnirouteApiKey, _uiState.value.omnirouteBaseUrl)
 
     init {
         val prefs = app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
         // Key comes from encrypted storage (which migrates and then deletes any plaintext copy an
-        // older build wrote). Model is coerced because OmniRoute only honours "auto".
+        // older build wrote). The model is only sanitised: OmniRoute accepts "auto", auto/<mode>
+        // and provider/model ids, so a stored value is honoured unless it is unusable.
         val savedApiKey = secretStore.getOmniRouteApiKey()
-        val savedModel = com.aniob.app.provider.AniobProviderConfig.coerceModel(
+        val savedModel = AniobProviderConfig.sanitizeModel(
             prefs.getString("omniroute_model", "auto") ?: "auto"
         )
         val savedBaseUrl = secretStore.getOmniRouteBaseUrl()
         val savedMode = prefs.getString("autorouter_mode", "auto") ?: "auto"
+        // Research state survives process death with the app's files, so a batch keeps its mode
+        // and the HUD can show the previous run immediately after a cold start.
+        val researchMode = app.researchTelemetry.mode
+        val lastResearchRun = app.researchTelemetry.lastRunOrNull()
+        val researchSummaryRow = lastResearchRun?.let { app.researchTelemetry.summaryFor(it.mode) }
         val savedQueued = prefs.getString("queued_prompt", null)
         localFailCount = prefs.getInt("local_fail_count", 0)
         disabledSkills = (prefs.getStringSet("disabled_skills", emptySet()) ?: emptySet()).toMutableSet()
         executionRouter.setDisabledSkills(disabledSkills)
+        // Zero-LLM replay: the ladder asks this callback before any model rung. The cache object
+        // is loaded off the main thread; until then a lookup simply misses.
+        executionRouter.rememberLookup = { goal, screen ->
+            rememberCache.lookup(goal, screen)
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            rememberCache = app.rememberCacheFile.load()
+        }
 
         _uiState.update {
             it.copy(
@@ -416,11 +475,17 @@ class AniobViewModel(
                 ) { SafetyLevel.STANDARD },
                 fastPathEnabled = prefs.getBoolean("fastpath_enabled", true),
                 safetyGateEnabled = prefs.getBoolean("safety_gate_enabled", true),
-                disabledSkills = disabledSkills.toSet()
+                disabledSkills = disabledSkills.toSet(),
+                ablationMode = researchMode,
+                researchLastRun = lastResearchRun,
+                researchStatusLine = lastResearchRun?.let { app.researchTelemetry.hudLine(it) },
+                researchSummary = researchSummaryRow
             )
         }
 
-        executionRouter.fastPathEnabled = _uiState.value.fastPathEnabled
+        // The ablation mode owns the effective switches; the FastPath preference is ANDed with it
+        // so a mode without remember-replay cannot silently re-enable it.
+        applyAblationMode(_uiState.value.ablationMode)
 
         // UX-4: an OFF safety level is never silently retained — re-arm on every process start.
         if (_uiState.value.safetyLevel == SafetyLevel.OFF) {
@@ -880,10 +945,174 @@ class AniobViewModel(
 
     /** REAL switch: OFF gates the replay lookup — proven by a zero-replay-hits test. */
     fun setFastPathEnabled(enabled: Boolean) {
-        executionRouter.fastPathEnabled = enabled
         app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
             .edit().putBoolean("fastpath_enabled", enabled).apply()
         _uiState.update { it.copy(fastPathEnabled = enabled) }
+        // Re-derive the effective replay flag: a mode without remember-replay keeps it off even
+        // when the user switch is on.
+        applyAblationMode(_uiState.value.ablationMode)
+    }
+
+    // =========================================================================================
+    // Research: ablation selection, metrics HUD and manual verdict override
+    // =========================================================================================
+
+    /**
+     * Switches the experimental condition for the next task.
+     *
+     * Persisted in the telemetry manager's prefs (not `aniob_prefs`) so the CSV and the mode that
+     * produced it cannot drift apart. The change is applied to the real switches immediately.
+     */
+    fun setAblationMode(mode: AblationMode) {
+        app.researchTelemetry.mode = mode
+        applyAblationMode(mode)
+        _uiState.update { it.copy(ablationMode = mode, researchStatusLine = null) }
+        // The summary lives on disk; refresh it off the main thread.
+        viewModelScope.launch(Dispatchers.IO) {
+            val summary = app.researchTelemetry.summaryFor(mode)
+            _uiState.update { it.copy(researchSummary = summary) }
+        }
+    }
+
+    /**
+     * Applies a mode to the mechanisms that exist today. Called on init, on every mode change and
+     * at the start of each task, so a stale switch can never survive into a measured run.
+     */
+    internal fun applyAblationMode(mode: AblationMode) {
+        executionRouter.intentShortcutsEnabled = mode.intentShortcuts
+        executionRouter.fastPathEnabled = mode.rememberReplay && _uiState.value.fastPathEnabled
+        observationPolicy.setBurstLimit(
+            if (mode.actionBursts) OBSERVATION_BURST_LIMIT else OBSERVATION_BURST_LIMIT_SINGLE_STEP
+        )
+        // Static flag: the service may connect after this call, and the first capture of the run
+        // must already use the condition that was selected for it.
+        AniobAccessibilityService.setFastObservation(mode.fastObservation)
+        AniobAccessibilityService.instance?.setResearchFastDeltaVerify(mode.fastDeltaVerify)
+        // Remember replay is on only where the experiment says so, and only while the user's
+        // FastPath switch is also on.
+        executionRouter.rememberReplayEnabled = mode.rememberReplay && _uiState.value.fastPathEnabled
+    }
+
+    /**
+     * Manual verdict for the last finished run, used when the deterministic verifier cannot judge
+     * an outcome. Rewrites the last CSV row (flagged as manual) and refreshes the HUD.
+     */
+    fun overrideResearchOutcome(success: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val updated = app.researchTelemetry.overrideLastOutcome(success)
+            if (updated != null) {
+                val line = app.researchTelemetry.hudLine(updated)
+                _uiState.update { current ->
+                    current.copy(
+                        researchLastRun = updated,
+                        researchStatusLine = line,
+                        researchSummary = app.researchTelemetry.summaryFor(updated.mode),
+                        researchRunSequence = current.researchRunSequence + 1
+                    )
+                }
+            }
+        }
+    }
+
+    // =========================================================================================
+    // Remember: zero-LLM replay cache
+    // =========================================================================================
+
+    /** One verified transition of the current run; persisted only when the task succeeds. */
+    private data class RememberTransition(
+        val screen: AniobScreenState,
+        val action: AniobAction,
+        val node: AniobNode?
+    )
+
+    /**
+     * Stores this run's verified transitions, keyed by goal keywords, package and the screen the
+     * action was planned on. [mode] is the condition the run started under, so a settings change
+     * mid-task cannot seed a cache the run never read.
+     */
+    private fun persistRememberTransitions(
+        mode: AblationMode,
+        goal: String,
+        transitions: List<RememberTransition>
+    ) {
+        if (transitions.isEmpty()) return
+        if (!mode.rememberReplay || !_uiState.value.fastPathEnabled) return
+
+        var recorded = 0
+        for (transition in transitions) {
+            val descriptor = RememberAction.fromAction(
+                action = transition.action,
+                node = transition.node,
+                screen = transition.screen
+            ) ?: continue
+            val ok = rememberCache.record(
+                goal = goal,
+                packageName = transition.screen.packageName,
+                preActionScreenHash = FastVerify.screenIdentity(transition.screen),
+                actions = listOf(descriptor)
+            )
+            if (ok) recorded++
+        }
+        if (recorded == 0) return
+        val snapshot = rememberCache
+        viewModelScope.launch(Dispatchers.IO) {
+            app.rememberCacheFile.save(snapshot)
+        }
+    }
+
+    /**
+     * One bitmap for the tier-2 verify or for a visual Reason step. Returns null when the service
+     * is gone or the capture fails; callers treat that as "no pixels", never as an error.
+     */
+    private suspend fun captureVerifyScreenshot(): String? {
+        val service = AniobAccessibilityService.instance ?: return null
+        return try {
+            val snap = service.captureScreenshotAsync()
+            snap.bitmap?.let { bmp ->
+                try {
+                    val stream = java.io.ByteArrayOutputStream()
+                    bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, stream)
+                    android.util.Base64.encodeToString(stream.toByteArray(), android.util.Base64.NO_WRAP)
+                } finally {
+                    bmp.recycle()
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Publishes a run that the abnormal-exit safety net just closed (Stop, cancellation, crash of a
+     * step) so the HUD/Toast line still appears for it. Normal completions publish in
+     * [updateToIdle]; this is only for runs closed outside that path.
+     */
+    private fun publishResearchRun(run: ResearchRun?) {
+        if (run == null) return
+        val line = app.researchTelemetry.hudLine(run)
+        val summary = app.researchTelemetry.summaryFor(run.mode)
+        _uiState.update { current ->
+            current.copy(
+                researchLastRun = run,
+                researchStatusLine = line,
+                researchSummary = summary,
+                researchRunSequence = current.researchRunSequence + 1
+            )
+        }
+    }
+
+    /** Deletes stored research CSVs so the next batch starts clean. */
+    fun clearResearchData() {
+        viewModelScope.launch(Dispatchers.IO) {
+            app.researchTelemetry.clearAll()
+            _uiState.update {
+                it.copy(
+                    researchLastRun = null,
+                    researchStatusLine = null,
+                    researchSummary = null
+                )
+            }
+        }
     }
 
     fun isSafetyGateEnabled(): Boolean = _uiState.value.safetyGateEnabled
@@ -1049,41 +1278,151 @@ class AniobViewModel(
         _uiState.update { it.copy(autoRouterMode = mode) }
     }
 
-    @JvmOverloads
-    fun updateSettings(
-        apiKey: String,
-        model: String,
-        baseUrl: String = _uiState.value.omnirouteBaseUrl
-    ) {
-        val prefs = app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE)
-        val trimmedKey = apiKey.trim()
-        val trimmedUrl = baseUrl.trim()
-        // The key is a secret: encrypted store only. Model and gateway URL stay in prefs.
-        secretStore.setOmniRouteApiKey(trimmedKey)
-        secretStore.setOmniRouteBaseUrl(trimmedUrl)
-        val coerced = com.aniob.app.provider.AniobProviderConfig.coerceModel(model)
-        prefs.edit().putString("omniroute_model", coerced).apply()
-        val statusMsg = if (trimmedKey.isNotBlank() || com.aniob.app.provider.AniobOmniRouteProvider.isLocalGateway(trimmedUrl)) {
-            "Saved ✓ · Model: $coerced"
-        } else {
-            "Cloud API key cleared"
+    /**
+     * Persists the Cloud AI (OmniRoute) settings entered in Settings.
+     *
+     * The key goes to the Keystore-backed secret store; the gateway address and model are not
+     * secrets and stay in the ordinary prefs file. Both a key and a valid address are required
+     * before cloud routing is allowed, because `localhost` on a phone is the phone itself. Clearing
+     * both fields is a real "turn Cloud AI off" action, not a validation failure.
+     */
+    fun saveCloudSettings(apiKey: String, model: String, baseUrl: String) {
+        val address = AniobProviderConfig.normalizeBaseUrl(baseUrl)
+        val key = apiKey.trim()
+
+        if (key.isEmpty() && address.isEmpty()) {
+            secretStore.setOmniRouteApiKey("")
+            secretStore.setOmniRouteBaseUrl("")
+            app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE).edit()
+                .putString("omniroute_model", AniobProviderConfig.OMNIROUTE_MODEL).apply()
+            _uiState.update {
+                it.copy(
+                    omnirouteApiKey = "",
+                    omnirouteBaseUrl = "",
+                    omnirouteModel = AniobProviderConfig.OMNIROUTE_MODEL,
+                    omnirouteConnectionStatus = "Cloud API key cleared",
+                    cloudTest = CloudTestUiState(
+                        result = CloudTestResult.SAVED,
+                        message = "Cloud AI is off. Add a key whenever you want it back."
+                    )
+                )
+            }
+            app.systemState.refresh()
+            return
         }
+
+        val validationError = when {
+            key.isEmpty() -> "Add the key from your OmniRoute dashboard."
+            address.isEmpty() -> "Add the address of the computer running OmniRoute."
+            else -> AniobProviderConfig.validateBaseUrl(address)
+                ?: AniobProviderConfig.validateModel(model)
+        }
+        if (validationError != null) {
+            _uiState.update {
+                it.copy(
+                    cloudTest = CloudTestUiState(
+                        result = CloudTestResult.INVALID_SETUP,
+                        message = validationError
+                    )
+                )
+            }
+            return
+        }
+        if (!secretStore.isAvailable) {
+            _uiState.update {
+                it.copy(
+                    cloudTest = CloudTestUiState(
+                        result = CloudTestResult.INVALID_SETUP,
+                        message = "This device cannot store the key securely, so Cloud AI stays off."
+                    )
+                )
+            }
+            return
+        }
+
+        val cleanedModel = AniobProviderConfig.sanitizeModel(model)
+        secretStore.setOmniRouteApiKey(key)
+        secretStore.setOmniRouteBaseUrl(address)
+        app.getSharedPreferences("aniob_prefs", Context.MODE_PRIVATE).edit()
+            .putString("omniroute_model", cleanedModel).apply()
         _uiState.update {
             it.copy(
-                omnirouteApiKey = trimmedKey,
-                omnirouteModel = coerced,
-                omnirouteBaseUrl = trimmedUrl,
-                omnirouteConnectionStatus = statusMsg
+                omnirouteApiKey = key,
+                omnirouteBaseUrl = address,
+                omnirouteModel = cleanedModel,
+                omnirouteConnectionStatus = "Saved ✓ · Model: $cleanedModel",
+                cloudTest = CloudTestUiState(
+                    result = CloudTestResult.SAVED,
+                    message = "Saved. Run Test connection to confirm the gateway answers."
+                )
             )
         }
         app.systemState.refresh()
     }
 
+    /**
+     * Probes the entered gateway/key without saving them, so a typo never replaces a working setup.
+     * Runs off the main thread via [testOmniRouteConnection] and publishes the outcome to the
+     * Settings banner.
+     */
+    fun testCloudConnection(apiKey: String, baseUrl: String) {
+        if (_uiState.value.cloudTest.testing) return
+        val key = apiKey.trim()
+        val address = AniobProviderConfig.normalizeBaseUrl(baseUrl)
+        val validationError = when {
+            key.isEmpty() -> "Add the key from your OmniRoute dashboard."
+            address.isEmpty() -> "Add the address of the computer running OmniRoute."
+            else -> AniobProviderConfig.validateBaseUrl(address)
+        }
+        if (validationError != null) {
+            _uiState.update {
+                it.copy(
+                    cloudTest = CloudTestUiState(
+                        result = CloudTestResult.INVALID_SETUP,
+                        message = validationError
+                    )
+                )
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(cloudTest = CloudTestUiState(testing = true)) }
+            val status = testOmniRouteConnection(key, address)
+            val (result, message) = when (status) {
+                OmniRouteConnectionStatus.SUCCESS ->
+                    CloudTestResult.SUCCESS to "The gateway answered for this key. Save to keep it."
+                OmniRouteConnectionStatus.BAD_KEY ->
+                    CloudTestResult.BAD_KEY to "The gateway rejected this key. Copy it again from the OmniRoute dashboard."
+                OmniRouteConnectionStatus.UNREACHABLE ->
+                    CloudTestResult.UNREACHABLE to "No usable answer from that address. Check Wi-Fi and the address, confirm OmniRoute is running, and that it has at least one provider connected."
+            }
+            _uiState.update {
+                it.copy(cloudTest = CloudTestUiState(result = result, message = message))
+            }
+        }
+    }
+
+    /** Clears stale feedback as soon as the user edits a field. */
+    fun clearCloudTestResult() {
+        if (_uiState.value.cloudTest != CloudTestUiState()) {
+            _uiState.update { it.copy(cloudTest = CloudTestUiState()) }
+        }
+    }
+
+    /** Backwards-compatible entry point that keeps the previously saved gateway address. */
+    @JvmOverloads
+    fun updateSettings(apiKey: String, model: String, baseUrl: String = _uiState.value.omnirouteBaseUrl) {
+        saveCloudSettings(apiKey, model, baseUrl)
+    }
+
     /** Sets the OmniRoute gateway base URL. Not a secret, so it is persisted in plaintext prefs. */
     fun setOmniRouteBaseUrl(baseUrl: String) {
-        val trimmed = baseUrl.trim()
-        secretStore.setOmniRouteBaseUrl(trimmed)
-        _uiState.update { it.copy(omnirouteBaseUrl = trimmed) }
+        val address = AniobProviderConfig.normalizeBaseUrl(baseUrl)
+        secretStore.setOmniRouteBaseUrl(address)
+        _uiState.update {
+            it.copy(omnirouteBaseUrl = address, cloudTest = CloudTestUiState())
+        }
     }
 
     /**
@@ -1107,8 +1446,6 @@ class AniobViewModel(
                 baseUrl = baseUrl.trim(),
                 model = com.aniob.app.provider.AniobProviderConfig.coerceModel(model)
             )
-            // If user left baseUrl blank and a fallback gateway succeeded (e.g. omniroute.online or 10.0.2.2),
-            // keep the resolved endpoint visible in the status message.
             _uiState.update {
                 it.copy(
                     omnirouteTesting = false,
@@ -1481,7 +1818,7 @@ class AniobViewModel(
                 // Do not initialize native memory for an explicitly cloud-only request.
                 if (_uiState.value.autoRouterMode != "cloud-only") refreshLocalEngine()
                 val trigger = AniobExternalAiTrigger(
-                    cloudProvider = if (isOmniRouteReady()) getOmniRouteProvider(sessionId = taskId) else null,
+                    cloudProvider = if (isCloudConfigured()) getOmniRouteProvider(sessionId = taskId) else null,
                     localProvider = localLlmProvider,
                     sharedKnowledgeStore = sharedKnowledgeStore
                 )
@@ -1550,8 +1887,17 @@ class AniobViewModel(
                 return@launch
             }
 
-            // Task is self-contained -> Proceed directly
-            executeTaskPipeline(task, generation)
+            // Task is self-contained -> Proceed directly. The finally closes the research run when
+            // the pipeline is cancelled (Stop) or throws before its own endTask call.
+            try {
+                executeTaskPipeline(task, generation)
+            } finally {
+                publishResearchRun(
+                    app.researchTelemetry.endTaskIfActive(
+                        failureReason = if (_uiState.value.isRunning) "interrupted" else "stopped"
+                    )
+                )
+            }
         }
     }
 
@@ -1653,7 +1999,15 @@ class AniobViewModel(
             if (!runDoctorPreflight(updatedTask, clarifiedPrompt, resolvedShortcut)) {
                 return@launch
             }
-            executeTaskPipeline(updatedTask, gen)
+            try {
+                executeTaskPipeline(updatedTask, gen)
+            } finally {
+                publishResearchRun(
+                    app.researchTelemetry.endTaskIfActive(
+                        failureReason = if (_uiState.value.isRunning) "interrupted" else "stopped"
+                    )
+                )
+            }
         }
     }
 
@@ -1670,6 +2024,12 @@ class AniobViewModel(
      */
     private suspend fun executeTaskPipeline(task: AniobTask, taskGeneration: Long = activeGeneration) {
         if (taskGeneration != activeGeneration) return
+        // Research instrumentation: pin this run to the persisted ablation mode, flip the real
+        // switches, then reset counters and start the elapsed-realtime clock. Everything below is
+        // measured; nothing above it is.
+        val researchMode = app.researchTelemetry.mode
+        applyAblationMode(researchMode)
+        app.researchTelemetry.startTask(task.clarifiedGoal.ifBlank { task.rawPrompt }, researchMode)
         persistRunningMarker(task, 0, "Task started")
 
         watchdog.reset()
@@ -1722,10 +2082,10 @@ class AniobViewModel(
 
         // Background automation integrity: minimize Aniob chat UI and run foreground service
         AniobBackgroundController.onTaskStarted(app, task.rawPrompt)
-        delay(500) // Allow WindowManager to minimize Aniob so a11y perceives the target app
+        delay(500) // Allow WindowManager to minimize Aniob so the service perceives the target app
 
-        val a11y = AniobAccessibilityService.instance
-        var screenBefore: AniobScreenState? = a11y?.captureCurrentScreenState()
+        val accessibility = AniobAccessibilityService.instance
+        var screenBefore: AniobScreenState? = accessibility?.captureCurrentScreenState()
 
         fun recordTrajectory(
             stepIndex: Int,
@@ -1838,14 +2198,20 @@ class AniobViewModel(
                     _uiState.update { it.copy(blockedActions = blockedRecords.toList()) }
                 }
             },
-            settle = { _, capture ->
-                AniobWaitForIdle.waitForIdle(1000)
-                delay(400)
-                capture()
-            }
+            // Dispatch already polled for the transition (FastVerify); a second fixed wait here
+            // would only re-add the latency this change removes.
+            settle = { _, capture -> capture() }
         )
 
         val maxSteps = agentLimits.maxStepsPerTask
+        // A bitmap taken by the tier-2 verify is reused by the next Reason step instead of being
+        // captured twice. The structural identity it belongs to is stored with it, so a bitmap
+        // can never leak onto a different screen; cleared once consumed.
+        var pendingVerifyScreenshot: Pair<String, String>? = null
+        // Verified transitions of this run, persisted only if the task ends successfully.
+        val rememberTransitions = mutableListOf<RememberTransition>()
+        // Screen on which the last replay changed nothing; the cache is skipped there next time.
+        var stalledReplayIdentity: String? = null
         var finalOutcome: Outcome? = null
         var terminalReason: String = ""
         var stepResult: StepResult? = null
@@ -1868,7 +2234,7 @@ class AniobViewModel(
                 // Check Observation Policy: burst if predictable, else full capture
                 val captured = if (wasPaused || observationPolicy.shouldObserve() || screenBefore == null) {
                     screenReads++; screenCaptureCount++
-                    val fresh = a11y?.captureCurrentScreenState() ?: AniobScreenState(
+                    val fresh = accessibility?.captureCurrentScreenState() ?: AniobScreenState(
                         packageName = "com.aniob.app",
                         treeHash = "mock_hash_${currentStep}",
                         nodes = listOf(
@@ -1885,14 +2251,14 @@ class AniobViewModel(
                 }
 
                 // Session validation: do not trust a cached app session blindly.
-                val foregroundBefore = a11y?.currentForegroundPackage()
+                val foregroundBefore = accessibility?.currentForegroundPackage()
                 val reuseCheck = appSessionManager.ensureReusableOrInvalidate(
                     packageName = captured.packageName,
                     liveForegroundPackage = foregroundBefore,
                     liveScreenState = captured
                 )
                 var currentScreen = captured
-                val liveService = a11y
+                val liveService = accessibility
                 if (!reuseCheck.valid && liveService != null) {
                     if (foregroundBefore == "com.aniob.app") {
                         app.eventLogger.info("AniobViewModel", "Aniob is still foregrounded; minimizing to reveal target app")
@@ -1934,38 +2300,77 @@ class AniobViewModel(
                 }
 
                 val userRouting = _uiState.value.autoRouterMode.lowercase()
-                val ladderResult = executionRouter.planStep(
-                    taskPrompt = task.clarifiedGoal,
-                    screenState = currentScreen,
-                    stepIndex = currentStep,
-                    taskSignature = task.rawPrompt.lowercase(),
-                    powerState = powerState,
-                    installedModelId = effectiveModelId,
-                    lastLocalFailCount = localFailCount,
-                    isModelFileMissing = isModelFileMissing,
-                    previousProgress = taskProgress,
-                    userRoutingMode = userRouting,
-                    lastObservedResult = if (currentStep > 0) "Step ${currentStep - 1} observed" else null
-                )
+                val planLadder = {
+                    executionRouter.planStep(
+                        taskPrompt = task.clarifiedGoal,
+                        screenState = currentScreen,
+                        stepIndex = currentStep,
+                        taskSignature = task.rawPrompt.lowercase(),
+                        powerState = powerState,
+                        installedModelId = effectiveModelId,
+                        lastLocalFailCount = localFailCount,
+                        isModelFileMissing = isModelFileMissing,
+                        previousProgress = taskProgress,
+                        userRoutingMode = userRouting,
+                        lastObservedResult = if (currentStep > 0) "Step ${currentStep - 1} observed" else null
+                    )
+                }
+                var ladderResult = planLadder()
+                // A replay that left the screen exactly as it found it must not be replayed again
+                // on that same screen: the cache would keep dispatching the same action. Re-plan
+                // once with the cache off so the model gets the step (the documented fallback).
+                if (ladderResult is AniobExecutionRouter.ExecutionPlanResult.RememberReplay &&
+                    FastVerify.screenIdentity(currentScreen) == stalledReplayIdentity
+                ) {
+                    app.eventLogger.info("AniobViewModel", "Remember replay made no progress; falling back to the model")
+                    executionRouter.rememberReplayEnabled = false
+                    ladderResult = planLadder()
+                    executionRouter.rememberReplayEnabled =
+                        researchMode.rememberReplay && _uiState.value.fastPathEnabled
+                }
                 if (ladderResult is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch) {
                     taskProgress = ladderResult.progress ?: taskProgress
                 }
 
-                val proposal: StepPipeline.Proposal
+                var proposal: StepPipeline.Proposal
                 var targetNode: AniobNode? = null
+                // Filled by a model burst or a remember-cache replay; executed below.
+                var plannedBurst: ActionBurst? = null
                 when (ladderResult) {
                     is AniobExecutionRouter.ExecutionPlanResult.DirectIntent -> {
                         primaryProvider = "INTENT"
                         decisionReason = ladderResult.reason
+                        app.researchTelemetry.markIntentShortcutUsed()
                         _uiState.update { it.copy(statusMessage = "Executing direct system intent...") }
                         proposal = StepPipeline.Proposal.DirectIntent(
                             action = AniobAction.Finish(summary = "Intent dispatched: ${ladderResult.shortcut.targetPackage}"),
                             label = "INTENT"
                         )
                     }
+                    is AniobExecutionRouter.ExecutionPlanResult.RememberReplay -> {
+                        primaryProvider = "REMEMBER"
+                        decisionReason = ladderResult.reason
+                        app.researchTelemetry.markRememberCacheHit()
+                        _uiState.update {
+                            it.copy(
+                                statusMessage = "Replaying ${ladderResult.actions.size} remembered action(s)...",
+                                lastRoutingReason = ladderResult.reason,
+                                lastProviderUsed = primaryProvider
+                            )
+                        }
+                        // The replay is dispatched like a burst: every action is re-grounded on the
+                        // live window, and the last one keeps the normal step pipeline so Verify runs.
+                        plannedBurst = ActionBurst(
+                            thought = "remembered ${ladderResult.actions.size} action(s)",
+                            isComplete = false,
+                            actions = ladderResult.actions
+                        )
+                        proposal = StepPipeline.Proposal.Model(ladderResult.actions.last(), primaryProvider)
+                    }
                     is AniobExecutionRouter.ExecutionPlanResult.FastPathStep -> {
                         primaryProvider = "FASTPATH"
                         decisionReason = ladderResult.reason
+                        app.researchTelemetry.markRememberCacheHit()
                         _uiState.update { it.copy(statusMessage = "FastPath replay step ${currentStep + 1}...") }
                         proposal = StepPipeline.Proposal.FastPath(ladderResult.action)
                         targetNode = ladderResult.action.semanticTarget()?.let {
@@ -2030,15 +2435,28 @@ class AniobViewModel(
                             }
                         }
 
+                        // The cloud path can parse a burst; the local resolver is single-action, so
+                        // the local prompt keeps the one-action shape.
+                        val burstEnabled = researchMode.actionBursts && !localCanDrive
                         val executorRequest = taskContext.buildExecutorRequest(
                             screen = currentScreen,
                             activeSubgoal = taskProgress?.summary,
                             lastAction = taskContext.trajectory.lastOrNull()?.describeAction(),
-                            lastResult = taskContext.condensedHistory.lastOrNull()
+                            lastResult = taskContext.condensedHistory.lastOrNull(),
+                            burstMode = burstEnabled
                         )
                         val executorPrompt = executorRequest.toPromptString()
                         val baseSystemPrompt = configLoader.prompt("system_prompt.txt") ?: "System: Android Agent. Reply with a single JSON tool call."
-                        val systemPrompt = if (baseSystemPrompt.contains("ACTION_JSON_SCHEMA")) {
+                        val systemPrompt = if (burstEnabled) {
+                            // The bundled prompt insists on one action per reply; the burst
+                            // contract is appended so it overrides that line instead of fighting it.
+                            baseSystemPrompt +
+                                "\n\nBURST MODE: ignore the single-action rule above. Reply with ONE compact JSON " +
+                                "object and nothing else:\n" +
+                                "{\"thought\": \"brief 10-word plan\", \"is_complete\": false, " +
+                                "\"actions\": [{\"type\": \"tap|input|scroll|back\", \"id\": 2, \"text\": \"optional input\"}]}\n" +
+                                "1-3 actions, only targets already visible, no pixel coordinates, under 60 tokens."
+                        } else if (baseSystemPrompt.contains("ACTION_JSON_SCHEMA")) {
                             baseSystemPrompt
                         } else {
                             "$baseSystemPrompt\n\nSchema:\n${com.aniob.core.domain.AniobActionSchema.ACTION_JSON_SCHEMA}"
@@ -2055,55 +2473,92 @@ class AniobViewModel(
 
                         suspend fun runOmniRouteStep(): AniobAction {
                             val omniroute = getOmniRouteProvider(sessionId = task.id)
-                            val needsVision = (localFailCount > 0) || task.rawPrompt.contains(Regex("(?i)look|see|inspect|read|image|photo|visual"))
+                            val promptAsksForVisualInspection = (localFailCount > 0) || task.rawPrompt.contains(
+                                Regex("(?i)look|see|inspect|read|image|photo|visual")
+                            )
                             val isSensitiveScreen = currentScreen.nodes.any {
                                 it.isPassword || it.viewId.contains(Regex("(?i)password|pwd|otp|pin|cvv|card_number"))
                             }
-                            val screenshotBase64 = if (needsVision && !isSensitiveScreen && a11y != null) {
-                                val snap = a11y.captureScreenshotAsync()
-                                snap.bitmap?.let { bmp ->
-                                    try {
-                                        val stream = java.io.ByteArrayOutputStream()
-                                        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, stream)
-                                        android.util.Base64.encodeToString(stream.toByteArray(), android.util.Base64.NO_WRAP)
-                                    } finally {
-                                        bmp.recycle()
-                                    }
-                                }
+                            // Observe cost: the bitmap is the expensive half of perception, so the
+                            // compact conditions only pay for it when the tree is sparse or the
+                            // previous verify failed. Baseline pays on every step by design.
+                            val labeledInteractive = com.aniob.core.perception.ObserveCapturePolicy
+                                .labeledInteractiveCount(currentScreen.nodes)
+                            val previousStepFailed = stepResult?.verification?.isSuccessful == false
+                            // A tier-2 verify only spends a bitmap when nothing in the tree moved,
+                            // which is exactly the visual-popup / no-op-tap case: hand those pixels
+                            // to this Reason step instead of dropping them.
+                            val screenIdentityNow = com.aniob.core.verify.FastVerify.screenIdentity(currentScreen)
+                            val reusedScreenshot = pendingVerifyScreenshot
+                                ?.takeIf { it.first == screenIdentityNow }
+                                ?.second
+                            pendingVerifyScreenshot = null
+                            val wantsPixels = reusedScreenshot != null ||
+                                com.aniob.core.perception.ObserveCapturePolicy
+                                    .shouldCaptureScreenshot(
+                                        fastObservation = researchMode.fastObservation,
+                                        labeledInteractiveNodes = labeledInteractive,
+                                        previousStepFailed = previousStepFailed,
+                                        visionRequested = promptAsksForVisualInspection
+                                    )
+                            val screenshotBase64 = if (wantsPixels && !isSensitiveScreen && accessibility != null) {
+                                reusedScreenshot ?: captureVerifyScreenshot()
                             } else null
-                            val raw = omniroute.getNextActionRaw(systemPrompt, activePrompt, screenshotBase64)
+                            // A burst reply is a handful of tokens; a tight budget keeps the
+                            // decode short and stops a chatty model from padding the plan.
+                            val raw = omniroute.getNextActionRaw(
+                                systemPrompt,
+                                activePrompt,
+                                screenshotBase64,
+                                maxTokens = if (burstEnabled) BURST_MAX_OUTPUT_TOKENS else 512
+                            )
                             totalTokens += ((systemPrompt.length + activePrompt.length) / 4).coerceAtLeast(150)
                             return raw.fold(
                                 onSuccess = { text ->
                                     totalTokens += (text.length / 4).coerceAtLeast(1)
-                                    val executorDecode = AniobDecodeConfig.forRole(AniobDecodeConfig.Role.EXECUTOR)
-                                    var structured = AniobStructuredOutput.parseOrRepair(
-                                        raw = text,
-                                        screenState = currentScreen,
-                                        decode = executorDecode
-                                    )
-                                    if (structured.usedFallback) {
-                                        val repairMsg = "${AniobStructuredOutput.repairPrompt(text)}\n\nOriginal Request:\n$executorPrompt"
-                                        val repaired = runCatching {
-                                            omniroute.getNextActionRaw(
-                                                systemPrompt,
-                                                repairMsg,
-                                                screenshotBase64
-                                            ).getOrNull()
-                                        }.getOrNull()
-                                        if (repaired != null) {
-                                            totalTokens += ((repairMsg.length + repaired.length) / 4).coerceAtLeast(1)
-                                            structured = AniobStructuredOutput.parseOrRepair(
-                                                raw = repaired,
-                                                screenState = currentScreen,
-                                                decode = executorDecode
-                                            )
+                                    // Burst reply: several actions for the screen we just observed.
+                                    val burst = if (burstEnabled) {
+                                        com.aniob.core.domain.AniobActionSchema.parseActionBurstOrNull(text)
+                                    } else {
+                                        null
+                                    }
+                                    if (burst != null) {
+                                        plannedBurst = burst
+                                        if (burst.isComplete) {
+                                            AniobAction.Finish(burst.thought.ifBlank { "Burst complete" })
+                                        } else {
+                                            burst.actions.last()
                                         }
+                                    } else {
+                                        val executorDecode = AniobDecodeConfig.forRole(AniobDecodeConfig.Role.EXECUTOR)
+                                        var structured = AniobStructuredOutput.parseOrRepair(
+                                            raw = text,
+                                            screenState = currentScreen,
+                                            decode = executorDecode
+                                        )
+                                        if (structured.usedFallback) {
+                                            val repairMsg = "${AniobStructuredOutput.repairPrompt(text)}\n\nOriginal Request:\n$executorPrompt"
+                                            val repaired = runCatching {
+                                                omniroute.getNextActionRaw(
+                                                    systemPrompt,
+                                                    repairMsg,
+                                                    screenshotBase64
+                                                ).getOrNull()
+                                            }.getOrNull()
+                                            if (repaired != null) {
+                                                totalTokens += ((repairMsg.length + repaired.length) / 4).coerceAtLeast(1)
+                                                structured = AniobStructuredOutput.parseOrRepair(
+                                                    raw = repaired,
+                                                    screenState = currentScreen,
+                                                    decode = executorDecode
+                                                )
+                                            }
+                                        }
+                                        if (structured.usedFallback) {
+                                            app.eventLogger.warn("AniobViewModel", "Cloud output unusable: ${structured.reason}")
+                                        }
+                                        structured.action
                                     }
-                                    if (structured.usedFallback) {
-                                        app.eventLogger.warn("AniobViewModel", "Cloud output unusable: ${structured.reason}")
-                                    }
-                                    structured.action
                                 },
                                 onFailure = { error ->
                                     AniobAction.Fail("Cloud action generation failed: ${error.message ?: "network error"}")
@@ -2111,9 +2566,10 @@ class AniobViewModel(
                             )
                         }
 
-                        val canEscalateToCloud = userRouting != "local-only" && isOmniRouteReady() && powerState.isNetworkAvailable
+                        val canEscalateToCloud = userRouting != "local-only" && isCloudConfigured() && powerState.isNetworkAvailable
 
                         val plannedAction = if (localCanDrive) {
+                            app.researchTelemetry.recordLocalInference()
                             val gen = localLlmClient.generateStepResult(
                                 systemPrompt,
                                 activePrompt
@@ -2160,7 +2616,7 @@ class AniobViewModel(
                         } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD && isOmniRouteReady()) {
                             runOmniRouteStep()
                         } else if (decision.target == RouteTarget.OMNIROUTE_CLOUD) {
-                            AniobAction.Fail("OmniRoute cloud API key is missing")
+                            AniobAction.Fail("Cloud AI is not set up — add your OmniRoute key and gateway address in Settings")
                         } else {
                             AniobAction.Fail("No capable provider available: ${decision.reason}")
                         }
@@ -2193,15 +2649,41 @@ class AniobViewModel(
 
                 val captureLambda: suspend () -> AniobScreenState = {
                     screenReads++; screenCaptureCount++
-                    a11y?.captureCurrentScreenState() ?: currentScreen
+                    accessibility?.captureCurrentScreenState() ?: currentScreen
+                }
+
+                // The screen the action was planned on: the two-tier verifier compares against it.
+                var dispatchOrigin: AniobScreenState = currentScreen
+
+                /**
+                 * Waits for the dispatched action to show up, then returns the screen to verify
+                 * against. Tier 1 polls window events every 50 ms (max 800 ms) and stops on the
+                 * first structural change or expected text; only a timeout buys a bitmap, which is
+                 * kept for the next Reason step because an unchanged tree is exactly what a visual
+                 * popup or a no-op tap looks like.
+                 */
+                suspend fun awaitTransition(act: AniobAction): AniobScreenState? {
+                    if (accessibility == null) return null
+                    val fast = com.aniob.core.verify.FastVerify.await(
+                        preAction = dispatchOrigin,
+                        expectedTexts = com.aniob.core.verify.FastVerify.expectedTexts(act, resolvedCriteria),
+                        windowEvents = { accessibility.windowEventSequence() },
+                        capturePoll = { accessibility.captureCurrentScreenState() },
+                        screenshot = { captureVerifyScreenshot() }
+                    )
+                    fast.screenshotBase64?.let { bitmap ->
+                        val id = com.aniob.core.verify.FastVerify
+                            .screenIdentity(fast.screen ?: dispatchOrigin)
+                        if (id.isNotBlank()) pendingVerifyScreenshot = id to bitmap
+                    }
+                    return fast.screen ?: accessibility.captureCurrentScreenState()
                 }
 
                 val dispatchLambda: suspend (AniobAction) -> StepPipeline.DispatchOutcome = { act ->
                     when {
                         proposal is StepPipeline.Proposal.DirectIntent && ladderResult is AniobExecutionRouter.ExecutionPlanResult.DirectIntent -> {
                             val ok = dispatchSystemIntent(ladderResult.shortcut)
-                            AniobWaitForIdle.waitForIdle(800)
-                            val screenAfter = a11y?.captureCurrentScreenState()
+                            val screenAfter = awaitTransition(act)
                             actionsDispatched++
                             StepPipeline.DispatchOutcome(dispatched = ok, reason = act.describeAction(), screenAfter = screenAfter)
                         }
@@ -2212,10 +2694,9 @@ class AniobViewModel(
                             StepPipeline.DispatchOutcome(dispatched = false, reason = act.reason)
                         }
                         else -> {
-                            val ok = if (a11y != null) executeActionSync(a11y, act) else true
+                            val ok = if (accessibility != null) executeActionSync(accessibility, act) else true
                             actionsDispatched++
-                            AniobWaitForIdle.waitForIdle(600)
-                            val screenAfter = a11y?.captureCurrentScreenState()
+                            val screenAfter = awaitTransition(act)
                             StepPipeline.DispatchOutcome(dispatched = ok, screenAfter = screenAfter)
                         }
                     }
@@ -2244,6 +2725,95 @@ class AniobViewModel(
                     decision == ConfirmDecision.APPROVE_ONCE || decision == ConfirmDecision.APPROVE_FOR_TASK
                 }
 
+                // ---------------------------------------------------------------------------
+                // Act: run the burst head before the step pipeline sees the last action.
+                // Each action is re-grounded on a fresh observation, and the burst stops as soon
+                // as the screen navigates away or a target disappears.
+                // ---------------------------------------------------------------------------
+                var burstAbort: String? = null
+                if (plannedBurst != null && plannedBurst!!.head.isNotEmpty()) {
+                    val burst = plannedBurst!!
+                    var burstScreen = currentScreen
+                    for ((offset, burstAction) in burst.head.withIndex()) {
+                        if (taskGeneration != activeGeneration || !_uiState.value.isRunning) {
+                            burstAbort = "run ended"
+                            break
+                        }
+                        // The first action uses the observation the plan was built on. Later
+                        // actions re-read the window: ids are re-assigned on every capture.
+                        val liveScreen = if (offset == 0) {
+                            burstScreen
+                        } else {
+                            accessibility?.captureCurrentScreenState() ?: burstScreen
+                        }
+                        if (offset > 0) {
+                            val verdict = com.aniob.core.perception.BurstTargetGuard
+                                .check(burstAction, currentScreen, liveScreen)
+                            if (!verdict.allowed) {
+                                burstAbort = verdict.reason
+                                break
+                            }
+                        }
+                        val target = com.aniob.core.perception.BurstTargetGuard
+                            .findTarget(burstAction, currentScreen, liveScreen)
+                        val dispatchable = if (target != null) {
+                            com.aniob.core.perception.BurstTargetGuard.retarget(burstAction, target)
+                        } else {
+                            burstAction
+                        }
+                        dispatchOrigin = liveScreen
+                        val outcome = dispatchLambda(dispatchable)
+                        // One counted step per dispatched action, including the burst.
+                        app.researchTelemetry.recordStep()
+                        burstScreen = outcome.screenAfter ?: liveScreen
+                        if (!outcome.dispatched) {
+                            burstAbort = "action ${offset + 1} did not dispatch"
+                            break
+                        }
+                        // Only a dispatched action becomes a replayable transition.
+                        rememberTransitions.add(
+                            RememberTransition(screen = liveScreen, action = dispatchable, node = target)
+                        )
+                    }
+                }
+
+                // The last planned action still goes through the pipeline so Verify runs on it. It
+                // is re-grounded against the post-burst screen first; if it is gone, the burst is
+                // closed with a provisional finish and the step goes straight to verification.
+                if (plannedBurst != null && burstAbort == null && plannedBurst!!.tail != null) {
+                    val tail = plannedBurst!!.tail!!
+                    // With no head there is nothing to re-observe: the tail was planned on
+                    // `currentScreen`, and re-reading would only re-index the same window.
+                    val liveScreen = if (plannedBurst!!.head.isEmpty()) {
+                        currentScreen
+                    } else {
+                        accessibility?.captureCurrentScreenState() ?: currentScreen
+                    }
+                    val verdict = com.aniob.core.perception.BurstTargetGuard.check(tail, currentScreen, liveScreen)
+                    if (!verdict.allowed) {
+                        burstAbort = verdict.reason
+                    } else {
+                        val target = com.aniob.core.perception.BurstTargetGuard.findTarget(tail, currentScreen, liveScreen)
+                        if (target != null) {
+                            proposal = StepPipeline.Proposal.Model(
+                                com.aniob.core.perception.BurstTargetGuard.retarget(tail, target),
+                                primaryProvider
+                            )
+                        }
+                        currentScreen = liveScreen
+                    }
+                }
+                if (plannedBurst != null && burstAbort != null) {
+                    app.eventLogger.warn("AniobViewModel", "Burst stopped: $burstAbort")
+                    _uiState.update { it.copy(statusMessage = "Burst stopped: $burstAbort") }
+                    proposal = StepPipeline.Proposal.Model(
+                        AniobAction.Finish("Burst stopped: $burstAbort"),
+                        primaryProvider
+                    )
+                    targetNode = null
+                }
+
+                dispatchOrigin = currentScreen
                 val res = stepPipe.executeStep(
                     ctx = taskContext,
                     planningScreen = currentScreen,
@@ -2254,6 +2824,22 @@ class AniobViewModel(
                     targetNode = targetNode
                 )
                 stepResult = res
+                app.researchTelemetry.recordStep()
+                if (ladderResult is AniobExecutionRouter.ExecutionPlanResult.RememberReplay) {
+                    stalledReplayIdentity = if (
+                        FastVerify.screenIdentity(res.nextCtx.lastScreenState ?: currentScreen) ==
+                        FastVerify.screenIdentity(currentScreen)
+                    ) {
+                        FastVerify.screenIdentity(currentScreen)
+                    } else {
+                        null
+                    }
+                }
+                if (res.verification?.isSuccessful == true || res.terminalState == StepResult.TerminalState.SUCCESS) {
+                    rememberTransitions.add(
+                        RememberTransition(screen = currentScreen, action = res.action, node = targetNode)
+                    )
+                }
                 taskContext = res.nextCtx
                 observationPolicy.recordActionOutcome(proposal.action, currentScreen.packageName, res.verification?.isSuccessful == true)
 
@@ -2284,10 +2870,12 @@ class AniobViewModel(
         }
 
         if (taskGeneration != activeGeneration) {
+            // A newer task took ownership; record this one honestly but do not touch the live UI.
+            app.researchTelemetry.endTask(isSuccess = false, failureReason = "superseded")
             return
         }
 
-        val finalScreen = a11y?.captureCurrentScreenState() ?: screenBefore ?: AniobScreenState(packageName = "com.aniob.app")
+        val finalScreen = accessibility?.captureCurrentScreenState() ?: screenBefore ?: AniobScreenState(packageName = "com.aniob.app")
         val criteriaEvaluations = resolvedCriteria?.evaluateCriteria(finalScreen, currentStep) ?: emptyList()
         val evidenceItems = criteriaEvaluations.map { ev ->
             EvidenceItem(
@@ -2334,6 +2922,27 @@ class AniobViewModel(
             Outcome.INTERRUPTED -> "Task interrupted"
             Outcome.FAILED -> "Task terminated: ${terminalReason.ifBlank { "Unmet criteria" }}"
         }
+
+        // Research metric closure: latency comes from elapsedRealtime inside the manager, LLM calls
+        // and steps were counted as they happened, and success is the deterministic verdict above.
+        // endTask appends the row, rewrites the summary table and logs RESEARCH_METRICS.
+        val researchFailureReason = when {
+            isSuccess -> ""
+            finalOutcome == Outcome.STOPPED -> "stopped"
+            finalOutcome == Outcome.INTERRUPTED -> "interrupted"
+            finalOutcome == Outcome.UNVERIFIED -> terminalReason.ifBlank { "unverified" }
+            else -> terminalReason.ifBlank { "unmet_criteria" }
+        }
+        if (isSuccess) {
+            persistRememberTransitions(
+                mode = researchMode,
+                goal = task.clarifiedGoal.ifBlank { task.rawPrompt },
+                transitions = rememberTransitions
+            )
+        }
+        val researchRun = app.researchTelemetry.endTask(isSuccess, researchFailureReason)
+        val researchLine = researchRun?.let { app.researchTelemetry.hudLine(it) }
+        val researchSummaryRow = researchRun?.let { app.researchTelemetry.summaryFor(it.mode) }
 
         val consolidatedSkill = if (isSuccess) {
             hippocampusTracker.consolidateOnSuccess(
@@ -2455,7 +3064,16 @@ class AniobViewModel(
             it.copy(
                 statusMessage = resultSummary,
                 lastProviderUsed = primaryProvider,
-                chatMessages = it.chatMessages + assistantMessage
+                chatMessages = it.chatMessages + assistantMessage,
+                researchStatusLine = researchLine ?: it.researchStatusLine,
+                researchLastRun = researchRun ?: it.researchLastRun,
+                researchSummary = researchSummaryRow ?: it.researchSummary,
+                // The sequence only moves for a recorded run, which is what fires the HUD toast.
+                researchRunSequence = if (researchRun != null) {
+                    it.researchRunSequence + 1
+                } else {
+                    it.researchRunSequence
+                }
             )
         }
     }
@@ -2483,12 +3101,12 @@ class AniobViewModel(
     ): DeterministicVerifier.VerificationResult =
         DeterministicVerifier.verifyFinish(criteria, finalScreen, steps)
 
-    private suspend fun executeActionSync(a11y: AniobAccessibilityService?, action: AniobAction): Boolean {
+    private suspend fun executeActionSync(accessibility: AniobAccessibilityService?, action: AniobAction): Boolean {
         // Block until the UI is quiescent so we never dispatch into a running animation.
         AniobWaitForIdle.waitForIdle(1000)
-        if (a11y == null) return false
+        if (accessibility == null) return false
         val deferred = CompletableDeferred<Boolean>()
-        a11y.executeAction(action) { success ->
+        accessibility.executeAction(action) { success ->
             deferred.complete(success)
         }
         return withTimeoutOrNull(SWIPE_CALLBACK_TIMEOUT_SECONDS * 1000L) { deferred.await() } ?: false
@@ -2507,20 +3125,27 @@ class AniobViewModel(
      * long-list failure mode where a valid element below the fold is reported as not found.
      */
     private suspend fun executeVerifyAndRecover(
-        a11y: AniobAccessibilityService?,
+        accessibility: AniobAccessibilityService?,
         action: AniobAction,
         taskPrompt: String,
         currentScreen: AniobScreenState
     ): VerifiedStep {
-        executeActionSync(a11y, action)
-        delay(600)
-        val screenAfter = a11y?.captureCurrentScreenState() ?: currentScreen
+        executeActionSync(accessibility, action)
+        // Same two-tier wait the step pipeline uses: no fixed settle delay here either.
+        val fast = FastVerify.await(
+            preAction = currentScreen,
+            expectedTexts = FastVerify.expectedTexts(action, null),
+            windowEvents = { accessibility?.windowEventSequence() },
+            capturePoll = { accessibility?.captureCurrentScreenState() },
+            screenshot = { captureVerifyScreenshot() }
+        )
+        val screenAfter = fast.screen ?: accessibility?.captureCurrentScreenState() ?: currentScreen
         val verification = DeterministicVerifier.verify(action, currentScreen, screenAfter)
 
         val recoverable = action.semanticTarget() != null && isTargetLikelyMissing(verification)
         if (!recoverable) return VerifiedStep(screenAfter, action, verification, false)
 
-        return scrollRecoverAndRetry(a11y, action, taskPrompt, currentScreen)
+        return scrollRecoverAndRetry(accessibility, action, taskPrompt, currentScreen)
             ?: VerifiedStep(screenAfter, action, verification, false)
     }
 
@@ -2533,12 +3158,12 @@ class AniobViewModel(
     }
 
     private suspend fun scrollRecoverAndRetry(
-        a11y: AniobAccessibilityService?,
+        accessibility: AniobAccessibilityService?,
         action: AniobAction,
         taskPrompt: String,
         currentScreen: AniobScreenState
     ): VerifiedStep? {
-        val service = a11y ?: return null
+        val service = accessibility ?: return null
         val keywords = promptKeywords(taskPrompt)
 
         fun matches(node: AniobNode): Boolean {
@@ -2573,9 +3198,15 @@ class AniobViewModel(
             "AniobViewModel",
             "Scroll-until-found revealed node ${revealedNode.id} after ${scrollResult.swipes} swipes"
         )
-        executeActionSync(a11y, retryAction)
-        delay(600)
-        val screenAfter = service.captureCurrentScreenState()
+        executeActionSync(accessibility, retryAction)
+        val retryWait = FastVerify.await(
+            preAction = revealedScreen,
+            expectedTexts = FastVerify.expectedTexts(retryAction, null),
+            windowEvents = { service.windowEventSequence() },
+            capturePoll = { service.captureCurrentScreenState() },
+            screenshot = { captureVerifyScreenshot() }
+        )
+        val screenAfter = retryWait.screen ?: service.captureCurrentScreenState()
         val verification = DeterministicVerifier.verify(retryAction, revealedScreen, screenAfter)
         return VerifiedStep(screenAfter, retryAction, verification, true)
     }
@@ -2748,6 +3379,15 @@ class AniobViewModel(
 
         /** How often a paused task re-checks the resume flag (UX-3 stop/pause responsiveness). */
         const val PAUSE_POLL_MS = 100L
+
+        /** Output budget for a burst reply (the schema asks for < 60 tokens). */
+        const val BURST_MAX_OUTPUT_TOKENS = 96
+
+        /** Observe-burst ceiling for burst modes (the shipping value). */
+        const val OBSERVATION_BURST_LIMIT = 3
+
+        /** Ceiling that forces a full observation before every action (BASELINE conditions). */
+        const val OBSERVATION_BURST_LIMIT_SINGLE_STEP = 1
 
         /** Trust Center keeps the last 20 decisions (UX-4). */
         const val CONFIRMATION_HISTORY_LIMIT = 20

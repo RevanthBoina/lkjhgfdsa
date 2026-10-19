@@ -38,7 +38,8 @@ data class ExecReport(
             stepLatencyMs = elapsedMs,
             verificationLatencyMs = 0L,
             tokensUsed = 0,
-            fastPathHit = providerUsed == "FASTPATH" || providerUsed == "INTENT",
+            fastPathHit = providerUsed == "FASTPATH" || providerUsed == "INTENT" ||
+                providerUsed == "REMEMBER",
             waterfallLevelUsed = 0,
             timestamp = timestamp,
             lastRoutingReason = decisionReason,

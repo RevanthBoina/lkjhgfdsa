@@ -4,9 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
-import android.widget.Toast
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -23,34 +21,42 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.aniob.app.provider.AniobProviderConfig
+import com.aniob.app.research.AblationMode
 import com.aniob.app.ui.AniobUiState
+import com.aniob.app.ui.CloudTestResult
+import com.aniob.app.ui.components.BannerKind
+import com.aniob.app.ui.components.StatusBanner
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AniobSettingsScreen(
     uiState: AniobUiState,
-    onSaveSettings: (String, String) -> Unit,
+    onSaveSettings: (String, String, String) -> Unit,
+    onTestConnection: (String, String) -> Unit,
+    onCloudInputChanged: () -> Unit = {},
     onAutoRouterModeChanged: (String) -> Unit = {},
+    onAblationModeChanged: (AblationMode) -> Unit = {},
     onFastPathChanged: (Boolean) -> Unit = {},
     onSafetyGateChanged: (Boolean) -> Unit = {},
     onBack: () -> Unit = {},
     onNavigateToModels: () -> Unit = {},
     onNavigateToStats: () -> Unit = {},
     onNavigateToOnboarding: () -> Unit = {},
-    onNavigateToTrust: () -> Unit = {},
-    onSaveBaseUrl: (String) -> Unit = {},
-    onTestConnection: (String, String, String) -> Unit = { _, _, _ -> },
-    onLoadModels: (String, String) -> Unit = { _, _ -> }
+    onNavigateToTrust: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    var apiKeyInput by remember(uiState.omnirouteApiKey) { mutableStateOf(uiState.omnirouteApiKey) }
-    var baseUrlInput by remember(uiState.omnirouteBaseUrl) { mutableStateOf(uiState.omnirouteBaseUrl) }
+    var apiKeyInput by remember { mutableStateOf(uiState.omnirouteApiKey) }
     var apiKeyVisible by remember { mutableStateOf(false) }
-    var selectedModel by remember(uiState.omnirouteModel) { mutableStateOf(uiState.omnirouteModel.ifBlank { "auto" }) }
-    var autoRouterMode by remember(uiState.autoRouterMode) { mutableStateOf(uiState.autoRouterMode) }
+    var baseUrlInput by remember { mutableStateOf(uiState.omnirouteBaseUrl) }
+    var selectedModel by remember { mutableStateOf(uiState.omnirouteModel) }
+    var autoRouterMode by remember { mutableStateOf(uiState.autoRouterMode) }
     var showAdvancedDetails by remember { mutableStateOf(false) }
+
+    // A save can normalise the address/model (trim, blank → auto); mirror that back into the fields.
+    LaunchedEffect(uiState.omnirouteBaseUrl) { baseUrlInput = uiState.omnirouteBaseUrl }
+    LaunchedEffect(uiState.omnirouteModel) { selectedModel = uiState.omnirouteModel }
 
     Scaffold(
         topBar = {
@@ -85,7 +91,7 @@ fun AniobSettingsScreen(
                         color = MaterialTheme.colorScheme.primary
                     )
                     Text(
-                        text = "Controls whether tasks execute locally on-device or escalate to Omniroute cloud.",
+                        text = "Controls whether tasks execute locally on-device or escalate to OmniRoute cloud.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -94,7 +100,7 @@ fun AniobSettingsScreen(
                         Triple("auto", "Auto (Recommended)", "Smart local-first, cloud when battery/vision requires"),
                         Triple("local-first", "Local-First", "Prefer on-device, cloud only for vision/complex"),
                         Triple("local-only", "Local-Only", "Never use cloud, offline mode, fail if impossible"),
-                        Triple("cloud-only", "Cloud-Only", "Always use cloud (Omniroute)"),
+                        Triple("cloud-only", "Cloud-Only", "Always use cloud (OmniRoute)"),
                         Triple("balanced", "Balanced", "Local for simple tasks, cloud for research/creative")
                     )
 
@@ -126,6 +132,61 @@ fun AniobSettingsScreen(
                     }
                 }
             }
+            // Research ablation selector: the condition the next measured task runs under.
+            Card(modifier = Modifier.fillMaxWidth().testTag("card_ablation_mode")) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "Research mode",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "Pick the condition before a test batch. It changes how the agent works, not what it can do.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    AblationMode.entries.forEach { mode ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onAblationModeChanged(mode) }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = uiState.ablationMode == mode,
+                                onClick = { onAblationModeChanged(mode) },
+                                modifier = Modifier.testTag("radio_ablation_${mode.id}")
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = mode.label,
+                                    fontWeight = FontWeight.SemiBold,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    text = mode.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = "Each finished task is appended to research_runs.csv; averages are kept in research_summary_table.csv inside the app's files folder.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
             // Quick Navigation Shortcuts Card
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
@@ -163,246 +224,157 @@ fun AniobSettingsScreen(
                 }
             }
 
-            // Cloud Provider Settings Section (OmniRoute Gateway)
+            // Cloud AI (self-hosted OmniRoute gateway) setup.
+            val cloudTest = uiState.cloudTest
+            val addressError = if (baseUrlInput.isBlank()) null
+                else AniobProviderConfig.validateBaseUrl(baseUrlInput)
             Card(modifier = Modifier.fillMaxWidth().testTag("omniroute_config_card")) {
                 Column(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    val isConfigured = uiState.omnirouteApiKey.isNotBlank() || apiKeyInput.isNotBlank()
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "OmniRoute Cloud API (Remote Reasoning)",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = "Connect your OmniRoute gateway (375+ providers, 150+ free tiers, 16-factor auto-fallback).",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Badge(
-                            containerColor = if (isConfigured) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                            modifier = Modifier.testTag("omniroute_status_badge")
-                        ) {
-                            Text(
-                                text = if (isConfigured) "Active ✓" else "Not set",
-                                color = if (isConfigured) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        }
-                    }
+                    Text(
+                        text = "Cloud AI (OmniRoute)",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
 
                     Text(
-                        text = "Gateway Server",
-                        style = MaterialTheme.typography.labelMedium
+                        text = "Add the key from your OmniRoute dashboard for fast answers and cloud automation.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+
+                    when (cloudTest.result) {
+                        CloudTestResult.SAVED -> StatusBanner(
+                            kind = BannerKind.SUCCESS,
+                            title = "Saved",
+                            body = cloudTest.message,
+                            modifier = Modifier.testTag("banner_cloud_status")
+                        )
+                        CloudTestResult.SUCCESS -> StatusBanner(
+                            kind = BannerKind.SUCCESS,
+                            title = "Connected",
+                            body = cloudTest.message,
+                            modifier = Modifier.testTag("banner_cloud_status")
+                        )
+                        CloudTestResult.BAD_KEY -> StatusBanner(
+                            kind = BannerKind.ERROR,
+                            title = "Key rejected",
+                            body = cloudTest.message,
+                            modifier = Modifier.testTag("banner_cloud_status")
+                        )
+                        CloudTestResult.UNREACHABLE -> StatusBanner(
+                            kind = BannerKind.ERROR,
+                            title = "Gateway unreachable",
+                            body = cloudTest.message,
+                            modifier = Modifier.testTag("banner_cloud_status")
+                        )
+                        CloudTestResult.INVALID_SETUP -> StatusBanner(
+                            kind = BannerKind.WARNING,
+                            title = "Check these details",
+                            body = cloudTest.message,
+                            modifier = Modifier.testTag("banner_cloud_status")
+                        )
+                        CloudTestResult.NONE -> Unit
+                    }
+                    if (cloudTest.testing) {
+                        StatusBanner(
+                            kind = BannerKind.INFO,
+                            title = "Testing connection…",
+                            body = "Asking the gateway for one short reply.",
+                            modifier = Modifier.testTag("banner_cloud_status")
+                        )
+                    }
+                    if (cloudTest.result == CloudTestResult.NONE &&
+                        apiKeyInput.isNotBlank() &&
+                        baseUrlInput.isBlank()
                     ) {
-                        FilterChip(
-                            selected = baseUrlInput.isBlank(),
-                            onClick = { baseUrlInput = "" },
-                            label = { Text("Auto (Local + Cloud)") },
-                            modifier = Modifier.testTag("chip_url_auto")
-                        )
-                        FilterChip(
-                            selected = baseUrlInput == AniobProviderConfig.OMNIROUTE_CLOUD_BASE_URL,
-                            onClick = { baseUrlInput = AniobProviderConfig.OMNIROUTE_CLOUD_BASE_URL },
-                            label = {
-                                Text(
-                                    text = "Cloud (omniroute.online)"
-                                )
-                            },
-                            modifier = Modifier.testTag("chip_url_cloud")
-                        )
-                        FilterChip(
-                            selected = baseUrlInput == AniobProviderConfig.OMNIROUTE_DEFAULT_BASE_URL,
-                            onClick = { baseUrlInput = AniobProviderConfig.OMNIROUTE_DEFAULT_BASE_URL },
-                            label = { Text("Local (:20128)") },
-                            modifier = Modifier.testTag("chip_url_local")
-                        )
-                        FilterChip(
-                            selected = baseUrlInput == AniobProviderConfig.OMNIROUTE_EMULATOR_BASE_URL,
-                            onClick = { baseUrlInput = AniobProviderConfig.OMNIROUTE_EMULATOR_BASE_URL },
-                            label = { Text("Emulator (:20128)") },
-                            modifier = Modifier.testTag("chip_url_emulator")
+                        // Migration path: an older build could store a key without an address.
+                        StatusBanner(
+                            kind = BannerKind.WARNING,
+                            title = "One more step",
+                            body = "Add the gateway address to finish cloud setup.",
+                            modifier = Modifier.testTag("banner_cloud_status")
                         )
                     }
 
                     OutlinedTextField(
                         value = baseUrlInput,
-                        onValueChange = { baseUrlInput = it },
-                        label = { Text("Gateway Server Address") },
-                        placeholder = {
+                        onValueChange = {
+                            baseUrlInput = it
+                            onCloudInputChanged()
+                        },
+                        label = { Text("Gateway address") },
+                        placeholder = { Text("http://192.168.1.20:20128/v1") },
+                        supportingText = {
                             Text(
-                                text = "${AniobProviderConfig.OMNIROUTE_CLOUD_BASE_URL} or ${AniobProviderConfig.OMNIROUTE_DEFAULT_BASE_URL}"
+                                addressError
+                                    ?: "Where OmniRoute runs. Plain http is accepted on your local network only."
                             )
                         },
-                        trailingIcon = {
-                            if (baseUrlInput.isNotEmpty()) {
-                                IconButton(onClick = { baseUrlInput = "" }) {
-                                    Icon(Icons.Default.Clear, contentDescription = "Reset server address")
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth().testTag("input_omniroute_url"),
+                        isError = addressError != null,
+                        modifier = Modifier.fillMaxWidth().testTag("input_omniroute_base_url"),
                         singleLine = true
                     )
 
                     OutlinedTextField(
                         value = apiKeyInput,
-                        onValueChange = { apiKeyInput = it },
-                        label = { Text("Cloud Access Key") },
-                        placeholder = { Text("sk-...") },
+                        onValueChange = {
+                            apiKeyInput = it
+                            onCloudInputChanged()
+                        },
+                        label = { Text("OmniRoute key") },
+                        placeholder = { Text("Paste the key from your dashboard") },
                         visualTransformation = if (apiKeyVisible) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
                         trailingIcon = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (apiKeyInput.isNotEmpty()) {
-                                    IconButton(onClick = { apiKeyInput = "" }) {
-                                        Icon(Icons.Default.Clear, contentDescription = "Clear key")
-                                    }
-                                }
-                                IconButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
-                                    Icon(
-                                        imageVector = if (apiKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                        contentDescription = if (apiKeyVisible) "Hide secret key" else "Reveal secret key"
-                                    )
-                                }
+                            IconButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
+                                Icon(
+                                    imageVector = if (apiKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (apiKeyVisible) "Hide secret key" else "Reveal secret key"
+                                )
                             }
                         },
                         modifier = Modifier.fillMaxWidth().testTag("input_omniroute_key"),
                         singleLine = true
                     )
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Target Model & Auto-Combo Strategy",
-                            style = MaterialTheme.typography.labelMedium
-                        )
-                        TextButton(
-                            onClick = { onLoadModels(apiKeyInput.trim(), baseUrlInput.trim()) },
-                            modifier = Modifier.testTag("load_omniroute_models_button")
-                        ) {
-                            Text("Load Models", style = MaterialTheme.typography.labelSmall)
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        FilterChip(
-                            selected = selectedModel == "auto" || selectedModel.isBlank(),
-                            onClick = { selectedModel = "auto" },
-                            label = { Text("Auto") },
-                            modifier = Modifier.testTag("chip_auto")
-                        )
-                        FilterChip(
-                            selected = selectedModel == "auto/fast",
-                            onClick = { selectedModel = "auto/fast" },
-                            label = { Text("Fast") },
-                            modifier = Modifier.testTag("chip_auto_fast")
-                        )
-                        FilterChip(
-                            selected = selectedModel == "auto/smart",
-                            onClick = { selectedModel = "auto/smart" },
-                            label = { Text("Smart") },
-                            modifier = Modifier.testTag("chip_auto_smart")
-                        )
-                        FilterChip(
-                            selected = selectedModel == "auto/vision",
-                            onClick = { selectedModel = "auto/vision" },
-                            label = { Text("Vision") },
-                            modifier = Modifier.testTag("chip_auto_vision")
-                        )
-                        FilterChip(
-                            selected = selectedModel == "auto/coding",
-                            onClick = { selectedModel = "auto/coding" },
-                            label = { Text("Coding") },
-                            modifier = Modifier.testTag("chip_auto_coding")
-                        )
-                        FilterChip(
-                            selected = selectedModel == "auto/cheap",
-                            onClick = { selectedModel = "auto/cheap" },
-                            label = { Text("Free / Cheap") },
-                            modifier = Modifier.testTag("chip_auto_cheap")
-                        )
-                        FilterChip(
-                            selected = selectedModel == "gpt-4o" || selectedModel == "openai/gpt-4o",
-                            onClick = { selectedModel = "openai/gpt-4o" },
-                            label = { Text("gpt-4o") },
-                            modifier = Modifier.testTag("chip_gpt4o")
-                        )
-                        FilterChip(
-                            selected = selectedModel == "gpt-4o-mini" || selectedModel == "openai/gpt-4o-mini",
-                            onClick = { selectedModel = "openai/gpt-4o-mini" },
-                            label = { Text("gpt-4o-mini") },
-                            modifier = Modifier.testTag("chip_gpt4o_mini")
-                        )
-                    }
-
-                    if (uiState.omnirouteDiscoveredModels.isNotEmpty()) {
-                        Text(
-                            text = "Discovered Gateway Models (${uiState.omnirouteDiscoveredModels.size})",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            uiState.omnirouteDiscoveredModels.take(20).forEach { modelId ->
-                                FilterChip(
-                                    selected = selectedModel == modelId,
-                                    onClick = { selectedModel = modelId },
-                                    label = { Text(modelId, style = MaterialTheme.typography.labelSmall) }
-                                )
+                    Text(
+                        text = "Routing model",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        AniobProviderConfig.OMNIROUTE_MODEL_PRESETS.chunked(2).forEach { rowPresets ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                rowPresets.forEach { preset ->
+                                    FilterChip(
+                                        selected = selectedModel.trim() == preset,
+                                        onClick = {
+                                            selectedModel = preset
+                                            onCloudInputChanged()
+                                        },
+                                        label = { Text(modelPresetLabel(preset)) },
+                                        modifier = Modifier.testTag("chip_${preset.replace('/', '_')}")
+                                    )
+                                }
                             }
                         }
                     }
 
                     OutlinedTextField(
                         value = selectedModel,
-                        onValueChange = { selectedModel = it },
-                        label = { Text("Custom Model or Combo ID") },
-                        placeholder = { Text("auto, auto/fast, kimi/kimi-k3, cc/claude-sonnet-4-6") },
+                        onValueChange = {
+                            selectedModel = it
+                            onCloudInputChanged()
+                        },
+                        label = { Text("Model name") },
+                        supportingText = {
+                            Text("auto lets OmniRoute choose. Any provider/model name from the dashboard also works.")
+                        },
                         modifier = Modifier.fillMaxWidth().testTag("input_omniroute_model"),
                         singleLine = true
                     )
-
-                    if (uiState.omnirouteConnectionStatus.isNotBlank()) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.fillMaxWidth().testTag("omniroute_connection_status")
-                        ) {
-                            Text(
-                                text = uiState.omnirouteConnectionStatus,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                modifier = Modifier.padding(10.dp)
-                            )
-                        }
-                    }
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -410,36 +382,44 @@ fun AniobSettingsScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         OutlinedButton(
-                            onClick = {
-                                val normalizedModel = selectedModel.ifBlank { "auto" }
-                                onSaveBaseUrl(baseUrlInput.trim())
-                                onSaveSettings(apiKeyInput.trim(), normalizedModel)
-                                onTestConnection(apiKeyInput.trim(), baseUrlInput.trim(), normalizedModel)
-                            },
-                            enabled = !uiState.omnirouteTesting,
-                            modifier = Modifier.weight(1f).testTag("test_omniroute_button")
+                            onClick = { onTestConnection(apiKeyInput, baseUrlInput) },
+                            enabled = !cloudTest.testing,
+                            modifier = Modifier.weight(1f).testTag("btn_test_omniroute")
                         ) {
-                            Text(if (uiState.omnirouteTesting) "Testing..." else "Test Connection")
+                            Icon(Icons.Default.Wifi, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(if (cloudTest.testing) "Testing…" else "Test")
                         }
                         Button(
-                            onClick = {
-                                val normalizedModel = selectedModel.ifBlank { "auto" }
-                                onSaveBaseUrl(baseUrlInput.trim())
-                                onSaveSettings(apiKeyInput.trim(), normalizedModel)
-                                Toast.makeText(context, "Cloud provider settings saved", Toast.LENGTH_SHORT).show()
-                            },
+                            onClick = { onSaveSettings(apiKeyInput, selectedModel, baseUrlInput) },
+                            enabled = !cloudTest.testing,
                             modifier = Modifier.weight(1f).testTag("save_settings_button")
                         ) {
-                            Text("Save Provider Settings")
+                            Text("Save")
                         }
                     }
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.Start
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         TextButton(onClick = { showAdvancedDetails = !showAdvancedDetails }) {
-                            Text(if (showAdvancedDetails) "Hide Technical Details" else "Show Details")
+                            Text(if (showAdvancedDetails) "Hide details" else "Details")
+                        }
+                        TextButton(
+                            onClick = {
+                                runCatching {
+                                    context.startActivity(
+                                        Intent(Intent.ACTION_VIEW, Uri.parse(OMNIROUTE_HELP_URL)).apply {
+                                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                        }
+                                    )
+                                }
+                            },
+                            modifier = Modifier.testTag("btn_omniroute_help")
+                        ) {
+                            Text("Setup guide")
                         }
                     }
 
@@ -450,12 +430,10 @@ fun AniobSettingsScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(
-                                    text = "Gateway: ${AniobProviderConfig.resolveEndpoint(baseUrlInput)}",
-                                    style = MaterialTheme.typography.labelSmall
-                                )
-                                Text("Network: OpenAI-compatible SSE / ChatCompletions", style = MaterialTheme.typography.labelSmall)
-                                Text("Protocol: HTTPS / JSON Streaming", style = MaterialTheme.typography.labelSmall)
+                                Text("Protocol: OpenAI-compatible chat completions", style = MaterialTheme.typography.labelSmall)
+                                Text("Transport: HTTPS anywhere, or plain http on your own network", style = MaterialTheme.typography.labelSmall)
+                                Text("Key storage: encrypted with the Android Keystore; sent only to the address above", style = MaterialTheme.typography.labelSmall)
+                                Text("Vision: a screenshot is attached only when a task needs it, never when a secret field is on screen", style = MaterialTheme.typography.labelSmall)
                             }
                         }
                     }
@@ -586,3 +564,15 @@ fun AniobSettingsScreen(
         }
     }
 }
+
+/** Human labels for the OmniRoute model presets; the value sent on the wire is the raw id. */
+private fun modelPresetLabel(preset: String): String = when (preset) {
+    "auto" -> "Auto"
+    "auto/coding" -> "Coding"
+    "auto/fast" -> "Fast"
+    "auto/cheap" -> "Cheap"
+    else -> preset
+}
+
+/** Setup instructions live with the project the key comes from. */
+private const val OMNIROUTE_HELP_URL = "https://github.com/diegosouzapw/OmniRoute"

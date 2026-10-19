@@ -85,7 +85,7 @@ fun AniobChatScreen(
     val app = context.applicationContext as? com.aniob.app.AniobApplication
     val workflowState by (app?.workflowCoordinator?.workflowState?.collectAsState() ?: remember { mutableStateOf(null) })
     var promptInput by rememberSaveable { mutableStateOf("") }
-    val isConnected = systemState?.a11yConnected ?: AniobAccessibilityService.isServiceConnected
+    val isConnected = systemState?.accessibilityConnected ?: AniobAccessibilityService.isServiceConnected
     var bannerDismissed by remember { mutableStateOf(false) }
 
     LaunchedEffect(uiState.pendingInputPrefill) {
@@ -206,7 +206,7 @@ fun AniobChatScreen(
         }
 
         // 3. Setup reminder banner if skipped (PROMPT 4)
-        if (systemState != null && (!systemState.a11yConnected || !systemState.overlayGranted) && isConnected && !bannerDismissed) {
+        if (systemState != null && (!systemState.accessibilityConnected || !systemState.overlayGranted) && isConnected && !bannerDismissed) {
             Surface(
                 color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
                 shape = RoundedCornerShape(12.dp),
@@ -726,7 +726,7 @@ fun WhatsAppChatBubble(
                                     context.startActivity(intent)
                                 },
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                modifier = Modifier.testTag("doctor_enable_a11y_btn")
+                                modifier = Modifier.testTag("doctor_enable_accessibility_btn")
                             ) {
                                 Text("Enable", style = MaterialTheme.typography.labelSmall)
                             }

@@ -51,6 +51,16 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
         reducedMotion = AniobMotion.isReducedMotionEnabled(context)
     }
 
+    // Research HUD: one toast per finished task, fired by the sequence counter so recomposition
+    // cannot repeat it. The line is produced by ResearchTelemetryManager, not composed here.
+    LaunchedEffect(uiState.researchRunSequence) {
+        if (uiState.researchRunSequence > 0L) {
+            uiState.researchStatusLine?.let { line ->
+                Toast.makeText(context, line, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     // UX-0: BackHandler only pops the stack; double-back exits only when already at root CHAT.
     BackHandler {
         if (viewModel.navigateBack()) {
@@ -223,7 +233,9 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
 
             AniobRoute.STATS -> AniobStatsScreen(
                 uiState = uiState,
-                onBack = { viewModel.navigateBack() }
+                onBack = { viewModel.navigateBack() },
+                onResearchOverride = { success -> viewModel.overrideResearchOutcome(success) },
+                onClearResearch = { viewModel.clearResearchData() }
             )
 
             AniobRoute.MODELS -> AniobModelDownloadScreen(
@@ -236,8 +248,11 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
 
             AniobRoute.SETTINGS -> AniobSettingsScreen(
                 uiState = uiState,
-                onSaveSettings = { key, model -> viewModel.updateSettings(key, model) },
+                onSaveSettings = { key, model, address -> viewModel.saveCloudSettings(key, model, address) },
+                onTestConnection = { key, address -> viewModel.testCloudConnection(key, address) },
+                onCloudInputChanged = { viewModel.clearCloudTestResult() },
                 onAutoRouterModeChanged = { mode -> viewModel.setAutoRouterMode(mode) },
+                onAblationModeChanged = { mode -> viewModel.setAblationMode(mode) },
                 onFastPathChanged = { viewModel.setFastPathEnabled(it) },
                 onSafetyGateChanged = { viewModel.setSafetyGateEnabled(it) },
                 onBack = { viewModel.navigateBack() },
@@ -252,6 +267,10 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
 
             AniobRoute.ONBOARDING -> AniobSetupConciergeScreen(
                 systemState = systemState,
+                cloudReady = com.aniob.app.provider.AniobProviderConfig.isConfigured(
+                    uiState.omnirouteApiKey,
+                    uiState.omnirouteBaseUrl
+                ),
                 onBack = { viewModel.navigateBack() },
                 onNavigateToModels = { viewModel.navigateTo(AniobRoute.MODELS) },
                 onRefresh = { app.systemState.refresh() },
@@ -341,11 +360,10 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
 
     if (showWhyModelDialog) {
         val installedModel = viewModel.getInstalledModelName() ?: "No local model installed"
-        val cloudStatus = if (uiState.omnirouteApiKey.isNotBlank()) {
-            "Active (${uiState.omnirouteModel.ifBlank { "auto" }})"
-        } else {
-            "Not configured"
-        }
+        val cloudReady = com.aniob.app.provider.AniobProviderConfig.isConfigured(
+            uiState.omnirouteApiKey,
+            uiState.omnirouteBaseUrl
+        )
         val reason = viewModel.getModelChoiceReason()
         AlertDialog(
             onDismissRequest = { showWhyModelDialog = false },
@@ -353,8 +371,8 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Mode: ${FailureReasonCopy.providerLabel(uiState.autoRouterMode)}", fontWeight = FontWeight.Bold)
-                    Text("On-Device Brain: $installedModel")
-                    Text("Cloud Brain: $cloudStatus")
+                    Text("Brain: $installedModel")
+                    Text("Cloud: " + if (cloudReady) "ready (${uiState.omnirouteModel.ifBlank { "auto" }})" else "not set up")
                     Text(reason, style = MaterialTheme.typography.bodyMedium)
                 }
             },
@@ -367,7 +385,7 @@ fun AniobMainScreen(viewModel: AniobViewModel) {
                         },
                         modifier = Modifier.testTag("why_model_cloud_settings_btn")
                     ) {
-                        Text("Cloud API")
+                        Text("Cloud setup")
                     }
                     Button(onClick = {
                         showWhyModelDialog = false

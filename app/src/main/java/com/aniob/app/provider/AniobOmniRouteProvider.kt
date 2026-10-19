@@ -35,13 +35,22 @@ import kotlin.coroutines.resume
  *   and explicit `<provider>/<model>` or custom combo targets
  * - `x-omniroute-no-memory` and `X-OmniRoute-Session-Id` headers for deterministic UI action steps
  *   and LKGP / cache-affinity session stickiness.
+ *
+ * When [jsonMode] is enabled, all generation requests enforce `response_format:
+ * json_object` with temperature 0.1 so the ladder can trust structured output.
  */
 class AniobOmniRouteProvider(
     private val apiKey: String,
     private val baseUrl: String = AniobProviderConfig.OMNIROUTE_DEFAULT_BASE_URL,
     private val model: String = "auto",
     private val jsonMode: Boolean = false,
-    private val sessionId: String? = null
+    private val sessionId: String? = null,
+    /**
+     * Invoked once per outbound generation request, immediately before the socket is opened.
+     * `AniobViewModel` wires this to `ResearchTelemetryManager.recordLlmCall()`; the default no-op
+     * keeps tests and one-off callers unchanged. The Settings connection probe does not use it.
+     */
+    private val onLlmRequest: () -> Unit = {}
 ) : AniobCloudLlmProvider {
     override val name: String = "OMNIROUTE_CLOUD"
     override val isConfigured: Boolean get() = apiKey.isNotBlank() || isLocalGateway(baseUrl)
@@ -70,10 +79,10 @@ class AniobOmniRouteProvider(
             val effectiveModel = AniobProviderConfig.coerceModel(model)
             val payload = buildChatPayload(effectiveModel, messages, maxTokens = 1024, enforceJsonObject = jsonMode)
             val endpoints = AniobProviderConfig.candidateEndpoints(baseUrl)
-
             var lastError = "Unreachable"
             for (endpoint in endpoints) {
                 try {
+                    onLlmRequest()
                     val responseResult = executeWithJsonFallback(endpoint, payload, enforceJson = jsonMode)
                     val code = responseResult.code
                     val body = responseResult.body
@@ -124,7 +133,8 @@ class AniobOmniRouteProvider(
         baseUrl = baseUrl,
         model = model,
         jsonMode = true,
-        sessionId = sessionId
+        sessionId = sessionId,
+        onLlmRequest = onLlmRequest
     )
 
     private suspend fun streamingResult(
@@ -148,6 +158,7 @@ class AniobOmniRouteProvider(
             var lastError = "Request failed: gateway unreachable"
             for (endpoint in endpoints) {
                 try {
+                    onLlmRequest()
                     val responseResult = executeWithJsonFallback(endpoint, payload, enforceJson = jsonMode)
                     val code = responseResult.code
                     val body = responseResult.body
@@ -220,7 +231,9 @@ class AniobOmniRouteProvider(
     suspend fun getNextActionRaw(
         systemPrompt: String,
         userPrompt: String,
-        screenshotBase64: String? = null
+        screenshotBase64: String? = null,
+        /** Output budget for this call; burst replies are capped so decode latency stays low. */
+        maxTokens: Int = 512
     ): Result<String> = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
         try {
@@ -229,13 +242,14 @@ class AniobOmniRouteProvider(
             val payload = buildChatPayload(
                 targetModel = effectiveModel,
                 messages = messages,
-                maxTokens = 512,
+                maxTokens = maxTokens,
                 enforceJsonObject = true
             )
             val endpoints = AniobProviderConfig.candidateEndpoints(baseUrl)
             var lastFailure: Exception = IOException("OmniRoute gateway unreachable")
 
             for (endpoint in endpoints) {
+                onLlmRequest()
                 val attempt = executeAsyncWithJsonFallback(endpoint, payload)
                 if (attempt.isSuccess) {
                     val responseResult = attempt.getOrThrow()
@@ -518,10 +532,16 @@ suspend fun verifyOmniRouteGateway(
             message = "Enter your Cloud Access Key first."
         )
     }
-
+    if (AniobProviderConfig.validateBaseUrl(baseUrl) != null) {
+        return@withContext OmniRouteDiagnostics(
+            status = OmniRouteConnectionStatus.UNREACHABLE,
+            message = "Invalid gateway address: ${AniobProviderConfig.validateBaseUrl(baseUrl)}"
+        )
+    }
     val client = AniobHttpClientSingleton.client.newBuilder()
         .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .callTimeout(25, TimeUnit.SECONDS)
         .build()
 
     val discoveredModels = runCatching { fetchOmniRouteModels(trimmedKey, baseUrl) }.getOrDefault(emptyList())

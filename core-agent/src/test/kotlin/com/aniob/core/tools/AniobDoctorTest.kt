@@ -68,7 +68,7 @@ class AniobDoctorTest {
         )
 
         assertFalse("Missing accessibility must fail critical check", doctorResult.allPassed)
-        val a11yCheck = doctorResult.checks.find { it.name == "accessibility_connected" }
-        assertFalse(a11yCheck?.passed == true)
+        val accessibilityCheck = doctorResult.checks.find { it.name == "accessibility_connected" }
+        assertFalse(accessibilityCheck?.passed == true)
     }
 }

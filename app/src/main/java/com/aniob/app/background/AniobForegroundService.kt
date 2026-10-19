@@ -275,7 +275,7 @@ class AniobForegroundService : Service() {
             nm.cancel(WAITING_NOTIFICATION_ID)
         }
 
-        /** A11y revoked mid-run: recovery door with [Re-enable] [Stop task] (UX-6). */
+        /** Accessibility revoked mid-run: recovery door with [Re-enable] [Stop task] (UX-6). */
         fun notifyAccessibilityLost(context: Context) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
             ensureChannels(context, nm)
