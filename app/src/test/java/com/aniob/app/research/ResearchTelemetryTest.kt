@@ -12,8 +12,8 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * Pins the three research metrics: CSV fidelity, per-mode running averages, the HUD line format and
- * the manual override. The clock is injected, so latency assertions are exact and sleep-free.
+ * Pins the research metrics: CSV fidelity, per-mode running averages, the HUD line format and
+ * the manual override.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [33])
@@ -38,7 +38,11 @@ class ResearchTelemetryTest {
             success = true,
             failureReason = "",
             intentShortcutUsed = true,
-            rememberCacheHit = false
+            rememberCacheHit = false,
+            manuallyOverridden = false,
+            screenshots = 3,
+            promptTokens = 450,
+            studyPass = StudyPass.MEASURED
         )
         val parsed = ResearchRun.fromCsvRow(run.toCsvRow())
         requireNotNull(parsed)
@@ -48,46 +52,110 @@ class ResearchTelemetryTest {
     }
 
     @Test
+    fun legacyTwelveColumnRowsParseWithDefaults() {
+        val legacyRow = "1700000000000,BASELINE,Open Settings,10.500,2,0,3,true,,false,false,false"
+        val parsed = ResearchRun.fromCsvRow(legacyRow)
+        requireNotNull(parsed)
+        assertEquals(1700000000000L, parsed.timestampMs)
+        assertEquals(AblationMode.BASELINE, parsed.mode)
+        assertEquals("Open Settings", parsed.goal)
+        assertEquals(10.5, parsed.latencySeconds, 0.0001)
+        assertEquals(2, parsed.llmCalls)
+        assertEquals(0, parsed.localInferences)
+        assertEquals(3, parsed.steps)
+        assertTrue(parsed.success)
+        assertEquals("", parsed.failureReason)
+        assertFalse(parsed.intentShortcutUsed)
+        assertFalse(parsed.rememberCacheHit)
+        assertFalse(parsed.manuallyOverridden)
+        // Defaults for legacy rows:
+        assertEquals(0, parsed.screenshots)
+        assertEquals(0, parsed.promptTokens)
+        assertEquals(StudyPass.MEASURED, parsed.studyPass)
+    }
+
+    @Test
     fun headerAndMalformedRowsAreIgnored() {
         assertNull(ResearchRun.fromCsvRow(ResearchRun.HEADER))
         assertNull(ResearchRun.fromCsvRow(""))
         assertNull(ResearchRun.fromCsvRow("1000,BASELINE,only,three"))
-        assertNull(ResearchRun.fromCsvRow("not-a-number,BASELINE,goal,1.000,0,0,1,true,,false,false,false"))
+        assertNull(ResearchRun.fromCsvRow("not-a-number,BASELINE,goal,1.000,0,0,1,true,,false,false,false,0,0,MEASURED"))
     }
 
     @Test
-    fun summaryComputesRunningAveragesPerMode() {
+    fun summaryExcludesWarmupRunsAndComputesPaperMetrics() {
         val runs = listOf(
-            run(mode = AblationMode.BASELINE, latency = 10.0, calls = 2, success = true),
-            run(mode = AblationMode.BASELINE, latency = 20.0, calls = 4, success = false),
-            run(mode = AblationMode.FULL_HUMAN_SPEED, latency = 4.0, calls = 0, success = true)
+            // Baseline measured runs: mean latency = 15.0, sample std = 7.071
+            run(mode = AblationMode.BASELINE, latency = 10.0, calls = 2, steps = 2, screenshots = 2, tokens = 400, success = true, pass = StudyPass.MEASURED),
+            run(mode = AblationMode.BASELINE, latency = 20.0, calls = 4, steps = 4, screenshots = 4, tokens = 800, success = false, pass = StudyPass.MEASURED),
+            // Warm-up run for FULL_HUMAN_SPEED (must be excluded from summary)
+            run(mode = AblationMode.FULL_HUMAN_SPEED, latency = 12.0, calls = 3, steps = 5, screenshots = 5, tokens = 600, success = true, pass = StudyPass.WARMUP),
+            // Measured run for FULL_HUMAN_SPEED: mean latency = 3.0
+            run(mode = AblationMode.FULL_HUMAN_SPEED, latency = 3.0, calls = 0, steps = 3, screenshots = 1, tokens = 0, success = true, pass = StudyPass.MEASURED)
         )
         val rows = ResearchSummaryTable.build(runs)
         assertEquals(
             listOf(AblationMode.BASELINE, AblationMode.FULL_HUMAN_SPEED),
             rows.map { it.mode }
         )
+
         val baseline = rows.first()
         assertEquals(2, baseline.runs)
         assertEquals(1, baseline.successes)
-        assertEquals(15.0, baseline.meanLatencySeconds, 0.0001)
-        assertEquals(3.0, baseline.meanLlmCallsPerTask, 0.0001)
         assertEquals(50.0, baseline.successRatePercent, 0.0001)
+        assertEquals(15.0, baseline.meanLatencySeconds, 0.0001)
+        // Sample std-dev: sqrt(((10 - 15)^2 + (20 - 15)^2) / (2 - 1)) = sqrt(50) = 7.0710678
+        assertEquals(Math.sqrt(50.0), baseline.stdLatencySeconds, 0.0001)
+        // Mean latency per step: (10.0 / 2 + 20.0 / 4) / 2 = (5.0 + 5.0) / 2 = 5.0
+        assertEquals(5.0, baseline.meanLatencyPerStepSeconds, 0.0001)
+        assertEquals(3.0, baseline.meanLlmCallsPerTask, 0.0001)
+        assertEquals(3.0, baseline.meanUiStepsPerTask, 0.0001)
+        assertEquals(3.0, baseline.meanScreenshotsPerTask, 0.0001)
+        // Tokens per call: (400 + 800) / (2 + 4) = 1200 / 6 = 200.0
+        assertEquals(200.0, baseline.meanPromptTokensPerCall, 0.0001)
+        assertEquals("1.00x", baseline.speedupVsBaseline)
 
         val full = rows.last()
+        assertEquals(1, full.runs)
+        assertEquals(1, full.successes)
         assertEquals(100.0, full.successRatePercent, 0.0001)
+        assertEquals(3.0, full.meanLatencySeconds, 0.0001)
+        assertEquals(0.0, full.stdLatencySeconds, 0.0001) // n <= 1 -> 0.00
+        assertEquals(1.0, full.meanLatencyPerStepSeconds, 0.0001) // 3.0 / 3
         assertEquals(0.0, full.meanLlmCallsPerTask, 0.0001)
+        assertEquals(3.0, full.meanUiStepsPerTask, 0.0001)
+        assertEquals(1.0, full.meanScreenshotsPerTask, 0.0001)
+        assertEquals(0.0, full.meanPromptTokensPerCall, 0.0001) // 0 calls -> 0.00
+        // Speedup vs baseline: baseline mean (15.0) / this mode mean (3.0) = 5.00x
+        assertEquals("5.00x", full.speedupVsBaseline)
     }
 
     @Test
-    fun summaryOmitsModesWithoutRunsAndWritesStableCsv() {
+    fun speedupWithoutBaselineIsEmptyString() {
+        val runs = listOf(
+            run(mode = AblationMode.INTENT_SHORTCUT_ONLY, latency = 5.0, calls = 1, steps = 2, screenshots = 2, tokens = 200, success = true)
+        )
+        val rows = ResearchSummaryTable.build(runs)
+        assertEquals(1, rows.size)
+        assertEquals("", rows.first().speedupVsBaseline)
+    }
+
+    @Test
+    fun summaryOmitsModesWithoutRunsAndWritesExactHeader() {
         val csv = ResearchSummaryTable.toCsv(
-            ResearchSummaryTable.build(listOf(run(AblationMode.INTENT_SHORTCUT_ONLY, 5.0, 1, true)))
+            ResearchSummaryTable.build(listOf(run(AblationMode.INTENT_SHORTCUT_ONLY, 5.0, 1, 2, 1, 300, true)))
         )
         val lines = csv.trim().split("\n")
         assertEquals(ResearchSummaryTable.HEADER, lines[0])
+        assertEquals(
+            "Ablation_Mode,Mode_Code,Tasks_Evaluated,Tasks_Succeeded,Task_Success_Rate_Pct," +
+                "Mean_End_to_End_Latency_Sec,Std_Latency_Sec,Mean_Latency_Per_Step_Sec," +
+                "Mean_LLM_API_Calls_Per_Task,Mean_UI_Steps_Per_Task,Mean_Screenshots_Per_Task," +
+                "Mean_Prompt_Tokens_Per_Call,Speedup_vs_Baseline",
+            lines[0]
+        )
         assertEquals(2, lines.size)
-        assertTrue(lines[1].startsWith("INTENT_SHORTCUT_ONLY,1,1,5.00,1.00,100.0"))
+        assertTrue(lines[1].startsWith("2. Intent shortcuts only (+ OS intent teleportation layer),INTENT_SHORTCUT_ONLY,1,1,100.00,5.00,0.00,2.50,1.00,2.00,1.00,300.00,"))
     }
 
     @Test
@@ -104,27 +172,36 @@ class ResearchTelemetryTest {
     }
 
     @Test
-    fun ablationFlagsMatchTheDocumentedTable() {
+    fun ablationFlagsAndPaperLabelsMatchSpecification() {
         assertFalse(AblationMode.BASELINE.intentShortcuts)
         assertFalse(AblationMode.BASELINE.actionBursts)
         assertFalse(AblationMode.BASELINE.fastDeltaVerify)
         assertFalse(AblationMode.BASELINE.fastObservation)
         assertFalse(AblationMode.BASELINE.rememberReplay)
+        assertEquals("Baseline (full observation; one action per turn)", AblationMode.BASELINE.paperLabel)
 
         assertTrue(AblationMode.INTENT_SHORTCUT_ONLY.intentShortcuts)
         assertFalse(AblationMode.INTENT_SHORTCUT_ONLY.actionBursts)
         assertFalse(AblationMode.INTENT_SHORTCUT_ONLY.rememberReplay)
+        assertEquals("Intent shortcuts only (+ OS intent teleportation layer)", AblationMode.INTENT_SHORTCUT_ONLY.paperLabel)
 
         assertTrue(AblationMode.BURST_AND_FAST_OBSERVE.intentShortcuts)
         assertTrue(AblationMode.BURST_AND_FAST_OBSERVE.actionBursts)
         assertTrue(AblationMode.BURST_AND_FAST_OBSERVE.fastDeltaVerify)
         assertTrue(AblationMode.BURST_AND_FAST_OBSERVE.fastObservation)
         assertFalse(AblationMode.BURST_AND_FAST_OBSERVE.rememberReplay)
+        assertEquals("Burst and fast observe (+ pruned accessibility tree + action bursts + event-driven verify)", AblationMode.BURST_AND_FAST_OBSERVE.paperLabel)
 
         assertTrue(AblationMode.FULL_HUMAN_SPEED.intentShortcuts)
         assertTrue(AblationMode.FULL_HUMAN_SPEED.actionBursts)
         assertTrue(AblationMode.FULL_HUMAN_SPEED.fastObservation)
         assertTrue(AblationMode.FULL_HUMAN_SPEED.rememberReplay)
+        assertEquals("Full human speed (+ online verified replay cache)", AblationMode.FULL_HUMAN_SPEED.paperLabel)
+
+        // Ensure zero commas in any paper label:
+        AblationMode.entries.forEach { mode ->
+            assertFalse("Paper label must not have commas: ${mode.paperLabel}", mode.paperLabel.contains(","))
+        }
 
         assertEquals(AblationMode.FULL_HUMAN_SPEED, AblationMode.DEFAULT)
         assertEquals(AblationMode.BASELINE, AblationMode.fromId("baseline"))
@@ -132,7 +209,7 @@ class ResearchTelemetryTest {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Store: the exact file behaviour shared by the manager
+    // Store: file behaviour shared by the manager
     // ---------------------------------------------------------------------------------------------
 
     @Test
@@ -140,8 +217,8 @@ class ResearchTelemetryTest {
         val dir = java.io.File(context.cacheDir, "research-store-${System.nanoTime()}")
         val store = ResearchRunStore(dir)
 
-        store.append(run(AblationMode.BASELINE, 10.0, 2, true))
-        store.append(run(AblationMode.BASELINE, 20.0, 4, false))
+        store.append(run(AblationMode.BASELINE, 10.0, 2, 2, 1, 100, true))
+        store.append(run(AblationMode.BASELINE, 20.0, 4, 4, 2, 200, false))
 
         val runsFile = store.runsFile()
         val lines = runsFile.readLines()
@@ -152,7 +229,7 @@ class ResearchTelemetryTest {
         store.rewriteSummary()
         val summaryLines = store.summaryFile().readLines()
         assertEquals(ResearchSummaryTable.HEADER, summaryLines.first())
-        assertEquals("BASELINE,2,1,15.00,3.00,50.0", summaryLines[1])
+        assertTrue(summaryLines[1].startsWith("1. Baseline (full observation; one action per turn),BASELINE,2,1,50.00,15.00,"))
 
         runsFile.appendText("garbage,not,a,run\n")
         assertEquals("a damaged line is skipped, not fatal", 2, store.read().size)
@@ -172,10 +249,12 @@ class ResearchTelemetryTest {
         val logs = mutableListOf<String>()
         val manager = ResearchTelemetryManager(context, clock = { now }, logger = { logs.add(it) })
 
-        manager.startTask("Open Settings", AblationMode.BASELINE)
+        manager.startTask("Open Settings", AblationMode.BASELINE, StudyPass.MEASURED)
         now += 12_500
         manager.recordLlmCall()
         manager.recordStep()
+        manager.recordScreenCapture()
+        manager.recordPromptTokens(250)
         manager.markIntentShortcutUsed()
         val run = manager.endTask(isSuccess = true)
 
@@ -183,6 +262,9 @@ class ResearchTelemetryTest {
         assertEquals(12.5, run.latencySeconds, 0.0001)
         assertEquals(1, run.llmCalls)
         assertEquals(1, run.steps)
+        assertEquals(1, run.screenshots)
+        assertEquals(250, run.promptTokens)
+        assertEquals(StudyPass.MEASURED, run.studyPass)
         assertTrue(run.intentShortcutUsed)
         assertTrue(run.success)
 
@@ -192,26 +274,30 @@ class ResearchTelemetryTest {
 
         val summaryText = manager.summaryFile().readText()
         assertTrue(summaryText.startsWith(ResearchSummaryTable.HEADER))
-        assertTrue(summaryText.contains("BASELINE,1,1,12.50,1.00,100.0"))
+        assertTrue(summaryText.contains("1. Baseline (full observation; one action per turn),BASELINE,1,1,100.00,12.50,0.00,12.50,1.00,1.00,1.00,250.00,1.00x"))
 
         assertTrue(
             "HUD line must be logged verbatim: $logs",
             logs.contains("[BASELINE] Latency: 12.50s | LLM Calls: 1 | Success Rate: 100.0%")
         )
-        assertTrue(logs.any { it.startsWith("TASK_END mode=BASELINE latency_s=12.500") })
+        assertTrue(logs.any { it.startsWith("TASK_END mode=BASELINE pass=MEASURED latency_s=12.500") })
     }
 
     @Test
-    fun overrideRewritesTheLastRowInsteadOfAppending() {
+    fun overrideRewritesTheLastRowPreservingAllFields() {
         var now = 0L
         val manager = ResearchTelemetryManager(context, clock = { now }, logger = {})
 
-        manager.startTask("first", AblationMode.BASELINE)
+        manager.startTask("first", AblationMode.BASELINE, StudyPass.MEASURED)
         now += 10_000
         manager.endTask(isSuccess = true)
 
-        manager.startTask("second", AblationMode.BASELINE)
+        manager.startTask("second", AblationMode.BASELINE, StudyPass.WARMUP)
         now += 20_000
+        manager.recordLlmCall()
+        manager.recordStep()
+        manager.recordScreenCapture()
+        manager.recordPromptTokens(350)
         manager.endTask(isSuccess = true)
 
         val updated = manager.overrideLastOutcome(false)
@@ -219,25 +305,31 @@ class ResearchTelemetryTest {
         assertFalse(updated.success)
         assertTrue(updated.manuallyOverridden)
         assertEquals("second", updated.goal)
+        assertEquals(AblationMode.BASELINE, updated.mode)
+        assertEquals(StudyPass.WARMUP, updated.studyPass)
+        assertEquals(1, updated.screenshots)
+        assertEquals(350, updated.promptTokens)
+        assertEquals(1, updated.llmCalls)
+        assertEquals(1, updated.steps)
 
         val rows = manager.allRuns()
         assertEquals(2, rows.size)
-        assertTrue(rows.last().manuallyOverridden)
-        assertFalse(rows.last().success)
-
-        val summary = manager.summaryFor(AblationMode.BASELINE)
-        requireNotNull(summary)
-        assertEquals(2, summary.runs)
-        assertEquals(50.0, summary.successRatePercent, 0.0001)
-        assertEquals(15.0, summary.meanLatencySeconds, 0.0001)
+        val lastOnDisk = rows.last()
+        assertTrue(lastOnDisk.manuallyOverridden)
+        assertFalse(lastOnDisk.success)
+        assertEquals(StudyPass.WARMUP, lastOnDisk.studyPass)
+        assertEquals(1, lastOnDisk.screenshots)
+        assertEquals(350, lastOnDisk.promptTokens)
     }
 
     @Test
-    fun modeIsPersistedAcrossManagerInstances() {
+    fun modeAndStudyPassArePersistedAcrossManagerInstances() {
         val first = ResearchTelemetryManager(context, logger = {})
         first.mode = AblationMode.BURST_AND_FAST_OBSERVE
+        first.studyPass = StudyPass.WARMUP
         val second = ResearchTelemetryManager(context, logger = {})
         assertEquals(AblationMode.BURST_AND_FAST_OBSERVE, second.mode)
+        assertEquals(StudyPass.WARMUP, second.studyPass)
     }
 
     @Test
@@ -245,6 +337,8 @@ class ResearchTelemetryTest {
         val manager = ResearchTelemetryManager(context, logger = {})
         manager.recordLlmCall()
         manager.recordStep()
+        manager.recordScreenCapture()
+        manager.recordPromptTokens(100)
         manager.markRememberCacheHit()
         assertNull(manager.endTask(isSuccess = true))
         assertFalse(manager.isTaskActive)
@@ -257,6 +351,8 @@ class ResearchTelemetryTest {
         val manager = ResearchTelemetryManager(context, clock = { now }, logger = {})
         manager.startTask("first", AblationMode.BASELINE)
         repeat(5) { manager.recordLlmCall() }
+        repeat(3) { manager.recordScreenCapture() }
+        manager.recordPromptTokens(500)
         now += 1_000
         manager.endTask(isSuccess = false, failureReason = "unmet_criteria")
 
@@ -268,6 +364,8 @@ class ResearchTelemetryTest {
         requireNotNull(second)
         assertEquals(1, second.llmCalls)
         assertEquals(0, second.steps)
+        assertEquals(0, second.screenshots)
+        assertEquals(0, second.promptTokens)
         assertEquals("unmet_criteria", manager.allRuns().first().failureReason)
     }
 
@@ -309,7 +407,11 @@ class ResearchTelemetryTest {
         mode: AblationMode,
         latency: Double,
         calls: Int,
-        success: Boolean
+        steps: Int = 1,
+        screenshots: Int = 0,
+        tokens: Int = 0,
+        success: Boolean,
+        pass: StudyPass = StudyPass.MEASURED
     ) = ResearchRun(
         timestampMs = 1L,
         mode = mode,
@@ -317,10 +419,13 @@ class ResearchTelemetryTest {
         latencySeconds = latency,
         llmCalls = calls,
         localInferences = 0,
-        steps = 1,
+        steps = steps,
         success = success,
         failureReason = if (success) "" else "unmet_criteria",
         intentShortcutUsed = false,
-        rememberCacheHit = false
+        rememberCacheHit = false,
+        screenshots = screenshots,
+        promptTokens = tokens,
+        studyPass = pass
     )
 }

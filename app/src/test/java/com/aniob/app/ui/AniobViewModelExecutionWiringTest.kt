@@ -60,4 +60,25 @@ class AniobViewModelExecutionWiringTest {
         val doctorResult = vm.checkDoctorPreflight("open website https://example.com")
         assertTrue("Offline/intent shortcut must pass doctor preflight even without model downloads", doctorResult.allPassed)
     }
+
+    @Test
+    fun updateSettingsPersistsOmniRouteKeyModelAndBaseUrlAndRefreshesSystemState() {
+        val app = ApplicationProvider.getApplicationContext<AniobApplication>()
+        val vm = AniobViewModel(app)
+
+        vm.updateSettings(
+            apiKey = "sk-test-omniroute-123",
+            model = "auto/smart",
+            baseUrl = "https://omniroute.online/v1"
+        )
+
+        assertEquals("sk-test-omniroute-123", vm.uiState.value.omnirouteApiKey)
+        assertEquals("auto/smart", vm.uiState.value.omnirouteModel)
+        assertEquals("https://omniroute.online/v1", vm.uiState.value.omnirouteBaseUrl)
+        assertTrue("SystemState modelReady must be true after saving OmniRoute API key", app.systemState.state.value.modelReady)
+        assertTrue("Active brain label must reflect Cloud when configured", vm.getActiveBrainLabel().contains("Cloud"))
+
+        // Clean up test state
+        vm.updateSettings(apiKey = "", model = "auto", baseUrl = "")
+    }
 }

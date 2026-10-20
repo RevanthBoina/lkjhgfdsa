@@ -182,6 +182,14 @@ object AniobAutoRouter {
             )
         }
 
+        if (mode == "balanced" && screenState.nodes.size > 40) {
+            return RouteDecision(
+                RouteTarget.OMNIROUTE_CLOUD,
+                "Balanced policy: complex screen (${screenState.nodes.size} nodes) -> escalate to Omniroute cloud",
+                requiresVision = false
+            )
+        }
+
         return RouteDecision(RouteTarget.LOCAL_SLM, "Default local-first for 8GB RAM phones, model ${installedModelId ?: "SLM"}", false, installedModelId)
     }
 

@@ -33,10 +33,29 @@ object AniobProviderConfig {
 
     const val API_ROOT = "/v1"
 
-    const val CHAT_COMPLETIONS_PATH = "/chat/completions"
+    /** Android emulator host loopback for desktop OmniRoute instances on :20128. */
+    const val OMNIROUTE_EMULATOR_BASE_URL = "http://10.0.2.2:20128/v1"
 
-    /** Smart routing: OmniRoute picks the provider/model with the best available quota. */
+    /** Direct hosted endpoint, for users without a local gateway. */
+    const val OMNIROUTE_CLOUD_BASE_URL = "https://omniroute.online/v1"
+
+    const val CHAT_COMPLETIONS_PATH = "/chat/completions"
+    const val MODELS_PATH = "/models"
+
+    /** Default OmniRoute Auto-Combo model target. */
     const val OMNIROUTE_MODEL = "auto"
+
+    /** Built-in OmniRoute Auto-Combo routing channels (diegosouzapw/OmniRoute). */
+    val OMNIROUTE_AUTO_COMBOS: List<Pair<String, String>> = listOf(
+        "auto" to "Auto (16-Factor)",
+        "auto/fast" to "Fast",
+        "auto/smart" to "Smart",
+        "auto/vision" to "Vision",
+        "auto/coding" to "Coding",
+        "auto/cheap" to "Free / Cheap"
+    )
+
+    private val LEGACY_BARE_MODELS = setOf("gpt-4o", "gpt-4o-mini")
 
     /** Model presets offered as chips in Settings; any `provider/model` id is also accepted. */
     val OMNIROUTE_MODEL_PRESETS: List<String> = listOf("auto", "auto/coding", "auto/fast", "auto/cheap")
@@ -47,11 +66,20 @@ object AniobProviderConfig {
 
     private val LOCAL_SUFFIXES = listOf(".local", ".lan", ".home", ".internal")
 
-    /**
-     * Normalises a stored or user-supplied base URL: trims whitespace and trailing slashes only.
-     * The chat-completions path is appended by [resolveEndpoint], never stored.
-     */
     fun normalizeBaseUrl(baseUrl: String): String = baseUrl.trim().trimEnd('/')
+
+    /**
+     * Normalises a stored or user-supplied gateway URL into a `/v1` base URL.
+     */
+    fun resolveBaseUrl(baseUrl: String): String {
+        val raw = baseUrl.trim().ifBlank { OMNIROUTE_DEFAULT_BASE_URL }.trimEnd('/')
+        val withoutSubpath = when {
+            raw.endsWith(CHAT_COMPLETIONS_PATH) -> raw.removeSuffix(CHAT_COMPLETIONS_PATH).trimEnd('/')
+            raw.endsWith(MODELS_PATH) -> raw.removeSuffix(MODELS_PATH).trimEnd('/')
+            else -> raw
+        }
+        return if (withoutSubpath.endsWith("/v1")) withoutSubpath else "$withoutSubpath/v1"
+    }
 
     /**
      * Returns `null` when [baseUrl] is a usable gateway address, otherwise a short message that can
@@ -135,6 +163,7 @@ object AniobProviderConfig {
     fun sanitizeModel(model: String): String {
         val trimmed = model.trim()
         if (trimmed.isEmpty()) return OMNIROUTE_MODEL
+        if (trimmed.lowercase() in LEGACY_BARE_MODELS) return OMNIROUTE_MODEL
         return if (validateModel(trimmed) == null) trimmed else OMNIROUTE_MODEL
     }
 
@@ -144,18 +173,22 @@ object AniobProviderConfig {
 
     /**
      * Normalises a stored or user-supplied base URL into a full chat-completions endpoint.
-     *
-     * Blank falls back to [OMNIROUTE_DEFAULT_BASE_URL] and a value that already ends in the path is
-     * returned unchanged (after trailing-slash trimming), so the function is idempotent. A bare
-     * host such as `http://192.168.1.20:20128` (the address the dashboard prints) gets [API_ROOT]
-     * added; an explicit path — including a tokenized `/vscode/<key>/` alias or a reverse-proxy
-     * prefix — is left alone.
      */
     fun resolveEndpoint(baseUrl: String): String {
         val base = normalizeBaseUrl(baseUrl).ifBlank { OMNIROUTE_DEFAULT_BASE_URL }
         if (base.endsWith(CHAT_COMPLETIONS_PATH)) return base
         val root = if (hasExplicitPath(base)) base else base + API_ROOT
         return root + CHAT_COMPLETIONS_PATH
+    }
+
+    /**
+     * Normalises a base URL into the `/v1/models` catalog endpoint.
+     */
+    fun resolveModelsEndpoint(baseUrl: String): String {
+        val base = normalizeBaseUrl(baseUrl).ifBlank { OMNIROUTE_DEFAULT_BASE_URL }
+        if (base.endsWith(MODELS_PATH)) return base
+        val root = if (hasExplicitPath(base)) base else base + API_ROOT
+        return root + MODELS_PATH
     }
 
     private fun hasExplicitPath(value: String): Boolean {
@@ -166,6 +199,40 @@ object AniobProviderConfig {
             return true
         }
         return path.isNotBlank() && path != "/"
+    }
+
+    /**
+     * Ordered candidate `/v1/chat/completions` endpoints.
+     */
+    fun candidateEndpoints(baseUrl: String): List<String> {
+        val primary = resolveEndpoint(baseUrl)
+        val trimmed = baseUrl.trim()
+        return if (trimmed.isBlank() || trimmed.contains("localhost:20128") || trimmed.contains("127.0.0.1:20128")) {
+            listOf(
+                primary,
+                resolveEndpoint(OMNIROUTE_EMULATOR_BASE_URL),
+                resolveEndpoint(OMNIROUTE_CLOUD_BASE_URL)
+            ).distinct()
+        } else {
+            listOf(primary)
+        }
+    }
+
+    /**
+     * Ordered candidate `/v1/models` endpoints matching [candidateEndpoints].
+     */
+    fun candidateModelsEndpoints(baseUrl: String): List<String> {
+        val primary = resolveModelsEndpoint(baseUrl)
+        val trimmed = baseUrl.trim()
+        return if (trimmed.isBlank() || trimmed.contains("localhost:20128") || trimmed.contains("127.0.0.1:20128")) {
+            listOf(
+                primary,
+                resolveModelsEndpoint(OMNIROUTE_EMULATOR_BASE_URL),
+                resolveModelsEndpoint(OMNIROUTE_CLOUD_BASE_URL)
+            ).distinct()
+        } else {
+            listOf(primary)
+        }
     }
 
     /**

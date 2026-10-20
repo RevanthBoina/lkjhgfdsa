@@ -130,6 +130,9 @@ they appear only in the CSV, the log tag and the bracketed HUD prefix, never as 
 | Settings card title | Research mode |
 | Settings card body | Pick the condition before a test batch. It changes how the agent works, not what it can do. |
 | Settings card footer | Each finished task is appended to research_runs.csv; averages are kept in research_summary_table.csv inside the app's files folder. |
+| Study pass title | Study pass |
+| Study pass warm-up | Warm-up |
+| Study pass measured | Measured |
 | Mode label — baseline | Baseline |
 | Mode body — baseline | Full observation every step, one action per model call. No shortcuts, no replay. |
 | Mode label — shortcuts | Shortcuts only |

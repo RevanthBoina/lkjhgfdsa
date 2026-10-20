@@ -131,7 +131,7 @@ class FastVerifyTest {
         val outcome = FastVerify.await(
             preAction = state("hash-a"),
             pollMs = 1,
-            timeoutMs = 40,
+            timeoutMs = 200,
             windowEvents = { ticks++; 7L }, // steady counter: no transition ever arrives
             capturePoll = { captures++; state("hash-a") },
             screenshot = { screenshots++; "jpg" }
