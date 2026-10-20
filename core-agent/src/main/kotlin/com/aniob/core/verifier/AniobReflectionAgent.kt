@@ -111,6 +111,16 @@ class AniobReflectionAgent {
                 "The screen does not satisfy the task criteria yet (${deterministic.reason})."
             )
         }
+        // Nothing on this screen can confirm *or* deny the claim: there is no criterion to check.
+        // Every such Finish used to go to a judge that rejects by default, so a task that was
+        // actually done kept asking the model for another step and ended as "Task terminated".
+        // Once at least one action has run, accept the claim; the caller still reports the run as
+        // UNVERIFIED rather than SUCCESS, so this is not a claim of proof.
+        if (steps >= 2) {
+            return com.aniob.core.execution.ReflectionOutcome.confirmed(
+                "No machine-checkable criteria; finished after ${steps - 1} action(s), outcome unverified"
+            )
+        }
         return llmJudge(deterministic.reason)
     }
 }

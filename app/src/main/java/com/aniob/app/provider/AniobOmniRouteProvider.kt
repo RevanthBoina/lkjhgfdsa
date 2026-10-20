@@ -251,12 +251,17 @@ class AniobOmniRouteProvider(
         try {
             val messages = buildMessages(systemPrompt, userPrompt, screenshotBase64)
             val effectiveModel = resolveModelForVision(AniobProviderConfig.coerceModel(model), screenshotBase64)
+            // `response_format` is left out of the streaming request: several gateways reject it
+            // with a 400 for streamed completions, and a rejected request costs more time than the
+            // field saves. The prompt already asks for one bare JSON object and the scanner below
+            // tolerates prose around it, so the reply stays parseable. Temperature is kept.
             val payload = buildChatPayload(effectiveModel, messages, maxTokens, enforceJsonObject = true)
+                .apply { remove("response_format") }
                 .put("stream", true)
             var lastFailure: Exception = IOException("OmniRoute gateway unreachable")
             for (endpoint in AniobProviderConfig.candidateEndpoints(baseUrl)) {
                 onLlmRequest()
-                val attempt = streamReply(endpoint, payload, onFirstToken)
+                val attempt = streamOnce(endpoint, payload, onFirstToken)
                 if (attempt.isSuccess) {
                     val raw = attempt.getOrThrow()
                     AniobEgressLedger.record(
@@ -288,24 +293,6 @@ class AniobOmniRouteProvider(
         } catch (e: Exception) {
             Result.failure(e)
         }
-    }
-
-    /** Retries once without `response_format` when that is what the gateway rejected. */
-    private suspend fun streamReply(
-        endpoint: String,
-        payload: JSONObject,
-        onFirstToken: () -> Unit
-    ): Result<String> {
-        val attempt = streamOnce(endpoint, payload, onFirstToken)
-        if (attempt.isSuccess) return attempt
-        val error = attempt.exceptionOrNull()
-        if (error is StreamingRejected && payload.has("response_format")) {
-            val fallback = JSONObject(payload.toString()).apply { remove("response_format") }
-            val retried = streamOnce(endpoint, fallback, onFirstToken)
-            if (retried.isSuccess) return retried
-            if (retried.exceptionOrNull() !is StreamingRejected) return retried
-        }
-        return attempt
     }
 
     private suspend fun streamOnce(

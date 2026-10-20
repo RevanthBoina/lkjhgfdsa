@@ -99,6 +99,37 @@ class StepPipelineTest {
     }
 
     @Test
+    fun `finish without checkable criteria ends the run instead of looping to a failure`() = runBlocking {
+        val screenNow = screen("com.a", "Clock")
+        // No quoted text and no resolvable app name: nothing on screen can prove or disprove it.
+        val noCriteria = TaskContext(instruction = "set an alarm for 7:30", stepIndex = 1)
+        val result = pipeline().executeStep(
+            ctx = noCriteria,
+            planningScreen = screenNow,
+            proposal = StepPipeline.Proposal.Model(AniobAction.Finish("done"), "MOCK"),
+            capture = { screenNow },
+            dispatch = { StepPipeline.DispatchOutcome(true, screenAfter = screenNow) }
+        )
+        assertEquals(StepResult.TerminalState.SUCCESS, result.terminalState)
+        assertEquals(0, result.nextCtx.rejectedFinishCount)
+    }
+
+    @Test
+    fun `finish without criteria on the first step still asks for work`() = runBlocking {
+        val screenNow = screen("com.a", "Clock")
+        val noCriteria = TaskContext(instruction = "set an alarm for 7:30")
+        val result = pipeline().executeStep(
+            ctx = noCriteria,
+            planningScreen = screenNow,
+            proposal = StepPipeline.Proposal.Model(AniobAction.Finish("done"), "MOCK"),
+            capture = { screenNow },
+            dispatch = { StepPipeline.DispatchOutcome(true, screenAfter = screenNow) }
+        )
+        assertEquals(StepResult.TerminalState.CONTINUE, result.terminalState)
+        assertEquals(1, result.nextCtx.rejectedFinishCount)
+    }
+
+    @Test
     fun `three rejected finishes fail the task`() = runBlocking {
         val screenNow = screen("com.a", "Settings")
         val pipe = pipeline()

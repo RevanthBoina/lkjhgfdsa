@@ -131,17 +131,27 @@ class AniobForegroundService : Service() {
             instances.forEach { it.refreshNotification() }
         }
 
-        /** Quiet Return completion: Done-channel notification with a deep link (UX-6). */
-        fun finishWithNotification(context: Context, summary: String, isSuccess: Boolean = true) {
+        /** Completion notification on the Done channel, with a deep link into the result. */
+        fun finishWithNotification(
+            context: Context,
+            summary: String,
+            isSuccess: Boolean = true,
+            unverified: Boolean = false
+        ) {
             stopService(context)
-            if (isSuccess) {
-                notifyFinished(context, summary)
-            } else {
-                notifyFailure(context, summary)
+            when {
+                isSuccess -> notifyFinished(context, summary)
+                // Not a failure: the steps ran, the outcome could not be machine-checked.
+                unverified -> notifyFinished(context, summary, "Done, not verified: $currentPrompt")
+                else -> notifyFailure(context, summary)
             }
         }
 
-        private fun notifyFinished(context: Context, summary: String) {
+        private fun notifyFinished(
+            context: Context,
+            summary: String,
+            title: String = "✓ Done: $currentPrompt"
+        ) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
             ensureChannels(context, nm)
             val intent = Intent(context, MainActivity::class.java).apply {
@@ -154,7 +164,7 @@ class AniobForegroundService : Service() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             val notification = NotificationCompat.Builder(context, CHANNEL_DONE)
-                .setContentTitle("✓ Done: $currentPrompt")
+                .setContentTitle(title)
                 .setContentText(summary)
                 .setSmallIcon(R.drawable.ic_stat_aniob)
                 .setContentIntent(pi)

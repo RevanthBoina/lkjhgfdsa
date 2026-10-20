@@ -62,7 +62,6 @@ import com.aniob.core.ladder.AniobPlanningAgent
 import com.aniob.core.ladder.ResolvedIntentShortcut
 import com.aniob.core.ladder.TaskProgress
 import com.aniob.core.memory.RememberAction
-import com.aniob.core.metrics.StartupTimeline
 import com.aniob.core.memory.RememberCache
 import com.aniob.core.verify.FastVerify
 import com.aniob.core.logging.AniobExecutionTracker
@@ -2149,11 +2148,6 @@ class AniobViewModel(
         // Hippocampus: short-term episodic stream for this task ("hippocampus -> cortex" consolidation)
         hippocampusTracker.beginTask(task.id, task.clarifiedGoal)
 
-        // Time-to-first-action: every mark below is milliseconds from here, so logcat shows
-        // whether a slow start is the device, the model or the glue between them.
-        val startup = StartupTimeline()
-        startup.mark(StartupTimeline.FIRST_MARK)
-
         // Learned state (skills, FastPath trajectories) hydrates in parallel with the first
         // capture instead of in front of it. A cold cache must not delay step 0; the first task
         // after install simply plans from the model.
@@ -2175,10 +2169,8 @@ class AniobViewModel(
         // The old fixed 500 ms sleep is now a bounded poll on the foreground package: usually the
         // window manager wins in ~100 ms, and a device that is already backgrounded returns at once.
         awaitAppBackgrounded(accessibility)
-        startup.mark(StartupTimeline.MARK_BACKGROUNDED)
 
         var screenBefore: AniobScreenState? = accessibility?.captureCurrentScreenState()
-        startup.mark(StartupTimeline.MARK_CAPTURE)
 
         fun recordTrajectory(
             stepIndex: Int,
@@ -2307,8 +2299,6 @@ class AniobViewModel(
         var stalledReplayIdentity: String? = null
         var finalOutcome: Outcome? = null
         var terminalReason: String = ""
-        // Exactly one STARTUP_LATENCY line per run.
-        var startupLogged = false
         var stepResult: StepResult? = null
 
         try {
@@ -2400,7 +2390,6 @@ class AniobViewModel(
 
                 if (currentStep == 0) {
                     hydration?.await()
-                    startup.mark(StartupTimeline.MARK_HYDRATED)
                 }
 
                 val userRouting = _uiState.value.autoRouterMode.lowercase()
@@ -2432,7 +2421,6 @@ class AniobViewModel(
                     executionRouter.rememberReplayEnabled =
                         researchMode.rememberReplay && _uiState.value.fastPathEnabled
                 }
-                startup.mark(StartupTimeline.MARK_PLANNED)
                 if (ladderResult is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch) {
                     taskProgress = ladderResult.progress ?: taskProgress
                 }
@@ -2630,7 +2618,6 @@ class AniobViewModel(
                             } else null
                             // A burst reply is a handful of tokens; a tight budget keeps the
                             // decode short and stops a chatty model from padding the plan.
-                            startup.mark(StartupTimeline.MARK_PROMPT)
                             // Streaming + early parse: the action leaves the device the moment the
                             // reply's JSON object closes, instead of waiting for the model to stop
                             // talking, for the socket to close and for a full body read.
@@ -2638,8 +2625,7 @@ class AniobViewModel(
                                 systemPrompt = systemPrompt,
                                 userPrompt = activePrompt,
                                 screenshotBase64 = screenshotBase64,
-                                maxTokens = if (burstEnabled) BURST_MAX_OUTPUT_TOKENS else 512,
-                                onFirstToken = { startup.mark(StartupTimeline.MARK_TTFT) }
+                                maxTokens = if (burstEnabled) BURST_MAX_OUTPUT_TOKENS else 512
                             )
                             val promptEstTokens = (systemPrompt.length + activePrompt.length) / 4
                             app.researchTelemetry.recordPromptTokens(promptEstTokens)
@@ -2779,7 +2765,6 @@ class AniobViewModel(
                         }
                     }
                 }
-                startup.mark(StartupTimeline.MARK_ACTION)
 
                 persistRunningMarker(task, currentStep + 1, proposal.action.describeAction())
 
@@ -2800,6 +2785,13 @@ class AniobViewModel(
                  */
                 suspend fun awaitTransition(act: AniobAction): AniobScreenState? {
                     if (accessibility == null) return null
+                    // Opening an app that is already in front has nothing to wait for; using the
+                    // launch budget here would idle for seconds before the next step.
+                    if (act is AniobAction.OpenApp &&
+                        dispatchOrigin.packageName.equals(act.packageName, ignoreCase = true)
+                    ) {
+                        return dispatchOrigin
+                    }
                     // A cold app launch can take seconds on a busy phone; every other action keeps
                     // the 800 ms budget. The wait is still event-driven, so a fast launch returns
                     // as soon as the package actually changes.
@@ -2846,14 +2838,6 @@ class AniobViewModel(
                         }
                     }
                 }
-                // Time-to-first-action, once per run, in the same log stream as the step
-                // narration: `adb logcat -s AniobViewModel | grep STARTUP_LATENCY`.
-                if (!startupLogged) {
-                    startup.mark(StartupTimeline.MARK_DISPATCHED)
-                    startupLogged = true
-                    app.eventLogger.info("AniobViewModel", startup.logLine())
-                }
-
                 val confirmLambda: suspend (String) -> Boolean = { actionDesc ->
                     val consequence = com.aniob.core.safety.AniobConsequenceClassifier.classify(proposal.action, targetNode)
                     val humanWhat = StepNarration.narrate(proposal.action, targetNode).take(80)
@@ -3027,7 +3011,14 @@ class AniobViewModel(
             return
         }
 
-        val finalScreen = accessibility?.captureCurrentScreenState() ?: screenBefore ?: AniobScreenState(packageName = "com.aniob.app")
+        // A confirmed SUCCESS was checked against the screen the pipeline verified. A fresh capture
+        // here is the user's *next* screen (or Aniob's own window) and used to flip good runs to
+        // "not done". Every other outcome still reports against the live screen.
+        val finalScreen = if (stepResult?.terminalState == StepResult.TerminalState.SUCCESS) {
+            stepResult.nextCtx.lastScreenState ?: screenBefore ?: AniobScreenState(packageName = "com.aniob.app")
+        } else {
+            accessibility?.captureCurrentScreenState() ?: screenBefore ?: AniobScreenState(packageName = "com.aniob.app")
+        }
         val criteriaEvaluations = resolvedCriteria?.evaluateCriteria(finalScreen, currentStep) ?: emptyList()
         val evidenceItems = criteriaEvaluations.map { ev ->
             EvidenceItem(
@@ -3045,31 +3036,22 @@ class AniobViewModel(
                     terminalReason = "Maximum steps ($maxSteps) reached"
                     Outcome.FAILED
                 }
-                stepResult?.terminalState == StepResult.TerminalState.SUCCESS -> {
-                    if (resolvedCriteria != null && resolvedCriteria.hasObservableCheck) {
-                        val anyNonPassed = criteriaEvaluations.any { it.state != com.aniob.core.domain.CriterionState.PASSED }
-                        if (anyNonPassed || criteriaEvaluations.isEmpty()) Outcome.FAILED else Outcome.SUCCESS
-                    } else {
-                        Outcome.UNVERIFIED
-                    }
-                }
+                stepResult?.terminalState == StepResult.TerminalState.SUCCESS ->
+                    if (resolvedCriteria?.hasObservableCheck == true) Outcome.SUCCESS else Outcome.UNVERIFIED
                 stepResult?.terminalState == StepResult.TerminalState.FAIL -> Outcome.FAILED
                 else -> Outcome.FAILED
             }
-        } else if (finalOutcome == Outcome.SUCCESS) {
-            if (resolvedCriteria != null && resolvedCriteria.hasObservableCheck) {
-                val anyNonPassed = criteriaEvaluations.any { it.state != com.aniob.core.domain.CriterionState.PASSED }
-                if (anyNonPassed || criteriaEvaluations.isEmpty()) finalOutcome = Outcome.FAILED
-            } else {
-                finalOutcome = Outcome.UNVERIFIED
-            }
+        } else if (finalOutcome == Outcome.SUCCESS && resolvedCriteria?.hasObservableCheck != true) {
+            // Confirmed with no machine-checkable criterion: honest "unverified", never a failure.
+            finalOutcome = Outcome.UNVERIFIED
         }
 
         val totalDuration = System.currentTimeMillis() - startTime
         val isSuccess = (finalOutcome == Outcome.SUCCESS)
         val resultSummary = when (finalOutcome) {
             Outcome.SUCCESS -> "Task completed in ${totalDuration}ms (${currentStep + 1} steps)"
-            Outcome.UNVERIFIED -> "Task finished (${currentStep + 1} steps), but outcome could not be verified"
+            Outcome.UNVERIFIED ->
+                "Finished in ${totalDuration}ms (${currentStep + 1} steps); result not machine-verified"
             Outcome.STOPPED -> "Task stopped"
             Outcome.INTERRUPTED -> "Task interrupted"
             Outcome.FAILED -> "Task terminated: ${terminalReason.ifBlank { "Unmet criteria" }}"
@@ -3164,7 +3146,12 @@ class AniobViewModel(
         postSummaryCard(summaryCard)
         clearRunningMarker()
 
-        AniobBackgroundController.onTaskFinished(app, resultSummary, isSuccess = isSuccess)
+        AniobBackgroundController.onTaskFinished(
+            app,
+            resultSummary,
+            isSuccess = isSuccess,
+            unverified = finalOutcome == Outcome.UNVERIFIED
+        )
 
         val chatBadge = when (finalOutcome) {
             Outcome.SUCCESS -> "Success"
@@ -3178,7 +3165,7 @@ class AniobViewModel(
             role = "assistant",
             content = when (finalOutcome) {
                 Outcome.SUCCESS -> "Completed '${task.rawPrompt}' via $primaryProvider. Verified: ${evidenceItems.filter { it.met }.joinToString { it.label }.ifBlank { "All criteria" }}. $resultSummary"
-                Outcome.UNVERIFIED -> "Executed '${task.rawPrompt}' via $primaryProvider, but completion could not be verified automatically (${terminalReason.ifBlank { "No observable criteria" }}). Needs manual review."
+                Outcome.UNVERIFIED -> "Finished '${task.rawPrompt}' via $primaryProvider. I could not verify the result automatically (${terminalReason.ifBlank { "no machine-checkable criteria" }}), so give the screen a quick look."
                 Outcome.STOPPED -> "Stopped '${task.rawPrompt}'. Earlier changes were not undone."
                 Outcome.INTERRUPTED -> "Interrupted '${task.rawPrompt}'."
                 Outcome.FAILED -> "Failed '${task.rawPrompt}': ${terminalReason.ifBlank { "Unmet criteria" }}. Left unverified: ${evidenceItems.filter { !it.met }.joinToString { it.label }.ifBlank { "All criteria" }}."
