@@ -24,7 +24,9 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.7'
+          # AGP 9.1.1 requires Gradle >= 9.3.1 (AGENTS.md documents 9.3.1 as the toolchain).
+          # A wrapper is intentionally not committed, so this pin IS the build toolchain.
+          gradle-version: '9.3.1'
 
       - name: Run CI Preflight Guards
         run: |
