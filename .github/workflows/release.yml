@@ -37,7 +37,34 @@ jobs:
 
       - name: Build Android Release APK
         run: |
-          gradle :app:assembleRelease --stacktrace
+          set -o pipefail
+          gradle :app:assembleRelease --stacktrace 2>&1 | tee build.log
+
+      # Failure diagnostics: the Actions log archive is not always reachable outside GitHub, so a
+      # failed build publishes the compiler/Gradle errors as a commit comment on the tagged commit.
+      - name: Publish build failure diagnostics
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -f build.log ]; then
+            echo "no build.log captured"
+            exit 0
+          fi
+          {
+            echo "**Release build failed for \`${{ github.ref_name }}\`** (${{ github.sha }})"
+            echo
+            echo "```"
+            grep -E "^(e: |w: .*error|FAILURE:|> Task .*FAILED|Caused by:|\* What went wrong:|\* Try:)" build.log | head -60
+            echo
+            echo "--- tail ---"
+            tail -60 build.log
+            echo "```"
+          } > /tmp/build-report.md 2>&1
+          gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" \
+            -f body="$(head -c 60000 /tmp/build-report.md)" > /dev/null \
+            && echo "diagnostics published as a commit comment" \
+            || echo "could not publish diagnostics"
 
       - name: Generate Checksum (SHA-256)
         run: |
