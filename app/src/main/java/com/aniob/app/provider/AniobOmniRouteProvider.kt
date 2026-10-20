@@ -278,6 +278,12 @@ class AniobOmniRouteProvider(
                     return@withContext Result.failure(lastFailure)
                 }
             }
+            // A dropped SSE (proxy idle timeout, Wi-Fi handover) must not fail the whole task: the
+            // same request goes out once in the plain shape, which is what non-streaming gateways
+            // use anyway. Auth and shape rejections returned above and never reach this.
+            if (lastFailure is IOException) {
+                return@withContext getNextActionRaw(systemPrompt, userPrompt, screenshotBase64, maxTokens)
+            }
             Result.failure(lastFailure)
         } catch (e: Exception) {
             Result.failure(e)
@@ -604,8 +610,12 @@ class AniobOmniRouteProvider(
         const val DEFAULT_THROTTLE_MS = 60L
 
         internal fun isLocalGateway(url: String): Boolean {
-            val lower = url.trim().lowercase()
-            return lower.contains("localhost") || lower.contains("127.0.0.1") || lower.contains("10.0.2.2")
+            val host = try {
+                java.net.URI(AniobProviderConfig.normalizeBaseUrl(url)).host
+            } catch (e: Exception) {
+                null
+            } ?: return false
+            return AniobProviderConfig.isLocalNetworkHost(host)
         }
 
         internal fun resolveModelForVision(configuredModel: String, screenshotBase64: String?): String {

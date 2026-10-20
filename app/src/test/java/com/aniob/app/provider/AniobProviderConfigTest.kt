@@ -127,11 +127,17 @@ class AniobProviderConfigTest {
     }
 
     @Test
-    fun cloudNeedsBothAKeyAndAUsableAddress() {
+    fun cloudNeedsAnAddressAndAKeyOnlyOutsideTheLocalNetwork() {
         assertTrue(
             AniobProviderConfig.isConfigured("sk-endpoint", "http://192.168.1.20:20128/v1")
         )
-        assertFalse(AniobProviderConfig.isConfigured("", "http://192.168.1.20:20128/v1"))
+        // OmniRoute runs with REQUIRE_API_KEY=false by default, so a gateway on this network is a
+        // complete setup without a key. A public address still needs one.
+        assertTrue(AniobProviderConfig.isConfigured("", "http://192.168.1.20:20128/v1"))
+        assertTrue(AniobProviderConfig.isConfigured("", "http://localhost:20128"))
+        assertTrue(AniobProviderConfig.isConfigured("", "http://10.0.2.2:20128"))
+        assertFalse(AniobProviderConfig.isConfigured("", "https://omniroute.online"))
+        assertTrue(AniobProviderConfig.isConfigured("sk-endpoint", "https://omniroute.online"))
         assertFalse(AniobProviderConfig.isConfigured("sk-endpoint", ""))
         assertFalse(AniobProviderConfig.isConfigured("sk-endpoint", "http://gateway.example.com/v1"))
     }

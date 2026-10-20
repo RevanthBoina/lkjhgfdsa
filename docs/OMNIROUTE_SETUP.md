@@ -28,6 +28,11 @@ curl http://localhost:20128/v1/models -H "Authorization: Bearer YOUR_KEY"
 Dashboard → **Endpoints**. This is the key OmniRoute issues to *clients*; it is not an upstream
 provider key from OpenAI/Anthropic. A request with an upstream key returns 401/403 here.
 
+A gateway started with `REQUIRE_API_KEY=false` (the default for a self-hosted install) has no key
+to copy. Leave the key field empty and enter the address: a gateway on this device, the emulator
+or your local network is accepted without one. Any address outside that range still needs a key,
+so a public endpoint is never used without an explicit key.
+
 ## 3. Reach the gateway from the phone
 
 The phone is not the computer running OmniRoute, so `localhost` will not work. Pick one:
@@ -79,8 +84,8 @@ Clearing the key *and* the address and pressing Save turns Cloud AI off.
   screen.
 - The key is never logged. `providers.yaml` documents the same contract; the Kotlin
   `AniobProviderConfig` is the executable source of truth.
-- Keyless gateways (`REQUIRE_API_KEY=false`) still need a non-empty value in the key field; any
-  placeholder such as `local-gateway` works because the gateway ignores it.
+- Keyless gateways (`REQUIRE_API_KEY=false`) need no value in the key field when the address is on
+  this device or the local network; the request then carries no `Authorization` header at all.
 
 ## Troubleshooting
 

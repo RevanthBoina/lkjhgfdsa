@@ -435,7 +435,10 @@ class AniobViewModel(
         )
     }
 
-    /** Cloud AI is usable only with both a stored key and a valid gateway address. */
+    /**
+     * A stored key and a valid address, or a keyless gateway on this device / the local network
+     * (OmniRoute's default `REQUIRE_API_KEY=false` setup).
+     */
     private fun isCloudConfigured(): Boolean =
         AniobProviderConfig.isConfigured(_uiState.value.omnirouteApiKey, _uiState.value.omnirouteBaseUrl)
 
@@ -1370,8 +1373,10 @@ class AniobViewModel(
         }
 
         val validationError = when {
-            key.isEmpty() -> "Add the key from your OmniRoute dashboard."
             address.isEmpty() -> "Add the address of the computer running OmniRoute."
+            // A self-hosted gateway on this device or the local network usually has no key.
+            key.isEmpty() && !AniobProviderConfig.isKeylessGatewayAllowed(address) ->
+                "Add the key from your OmniRoute dashboard."
             else -> AniobProviderConfig.validateBaseUrl(address)
                 ?: AniobProviderConfig.validateModel(model)
         }
@@ -1428,8 +1433,9 @@ class AniobViewModel(
         val key = apiKey.trim()
         val address = AniobProviderConfig.normalizeBaseUrl(baseUrl)
         val validationError = when {
-            key.isEmpty() -> "Add the key from your OmniRoute dashboard."
             address.isEmpty() -> "Add the address of the computer running OmniRoute."
+            key.isEmpty() && !AniobProviderConfig.isKeylessGatewayAllowed(address) ->
+                "Add the key from your OmniRoute dashboard."
             else -> AniobProviderConfig.validateBaseUrl(address)
         }
         if (validationError != null) {
