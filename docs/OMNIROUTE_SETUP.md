@@ -79,8 +79,8 @@ Clearing the key *and* the address and pressing Save turns Cloud AI off.
   screen.
 - The key is never logged. `providers.yaml` documents the same contract; the Kotlin
   `AniobProviderConfig` is the executable source of truth.
-- Keyless gateways (`REQUIRE_API_KEY=false`) still need a non-empty value in the key field; any
-  placeholder such as `local-gateway` works because the gateway ignores it.
+- Keyless gateways (`REQUIRE_API_KEY=false`) need no value in the key field when the address is on
+  this device or the local network; the request then carries no `Authorization` header at all.
 
 ## Troubleshooting
 

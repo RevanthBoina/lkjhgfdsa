@@ -39,7 +39,7 @@ data class ExecReport(
             verificationLatencyMs = 0L,
             tokensUsed = 0,
             fastPathHit = providerUsed == "FASTPATH" || providerUsed == "INTENT" ||
-                providerUsed == "REMEMBER",
+                providerUsed == "REMEMBER" || providerUsed == "APP_LAUNCH",
             waterfallLevelUsed = 0,
             timestamp = timestamp,
             lastRoutingReason = decisionReason,

@@ -167,9 +167,26 @@ object AniobProviderConfig {
         return if (validateModel(trimmed) == null) trimmed else OMNIROUTE_MODEL
     }
 
-    /** True when both a key and a valid gateway address are present. */
+    /** True when the address is usable and the gateway needs no key, or a key is present. */
     fun isConfigured(apiKey: String, baseUrl: String): Boolean =
-        apiKey.isNotBlank() && validateBaseUrl(baseUrl) == null
+        validateBaseUrl(baseUrl) == null && (apiKey.isNotBlank() || isKeylessGatewayAllowed(baseUrl))
+
+    /**
+     * True when [baseUrl] points at a gateway this device can reach without a key.
+     *
+     * OmniRoute runs with `REQUIRE_API_KEY=false` by default, so the common self-hosted setup has
+     * no key at all. Demanding one there made a perfectly reachable gateway look unconfigured and
+     * kept the app on the local model (or on nothing). A key is still required for any address
+     * outside the loopback/emulator/private-LAN ranges, where an open endpoint would be a leak.
+     */
+    fun isKeylessGatewayAllowed(baseUrl: String): Boolean {
+        val host = try {
+            URI(normalizeBaseUrl(baseUrl)).host
+        } catch (e: Exception) {
+            null
+        }
+        return host != null && isLocalNetworkHost(host)
+    }
 
     /**
      * Normalises a stored or user-supplied base URL into a full chat-completions endpoint.

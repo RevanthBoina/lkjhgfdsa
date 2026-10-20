@@ -18,11 +18,42 @@ enum class AniobIntent {
 object AniobTaskIntentClassifier {
 
     private val deviceVerbs = listOf(
-        "open", "tap", "click", "press", "swipe", "type", "input", "send", "book", "launch",
-        "turn on", "turn off", "enable", "disable", "go to", "navigate", "play", "search in",
-        "call", "text", "message", "set alarm", "create", "delete", "install", "uninstall",
-        "close", "restart", "toggle", "switch"
+        "open", "launch", "start", "run", "go to", "navigate", "tap", "click", "press", "swipe",
+        "scroll", "drag", "long press", "type", "input", "fill", "enter", "select", "send",
+        "reply", "call", "text", "message", "book", "order", "buy", "checkout", "pay", "transfer",
+        "turn on", "turn off", "enable", "disable", "toggle", "switch", "connect", "disconnect",
+        "pair", "play", "pause", "resume", "skip", "stop", "search", "search in", "find",
+        "set", "take", "record", "screenshot", "increase", "decrease", "check", "remind",
+        "add", "remove", "delete", "rename", "share", "save", "copy", "paste", "download",
+        "upload", "install", "uninstall", "create", "close", "restart"
     )
+
+    /**
+     * "can you", "please", "I need to" … say how the request is phrased, not what it asks for.
+     * They are stripped before the imperative test so a politely worded command still automates
+     * instead of being answered as a question.
+     */
+    private val preamblePrefixes = listOf(
+        "please", "kindly", "can you", "could you", "would you", "will you",
+        "i want to", "i need to", "i would like to", "i'd like to", "help me",
+        "let's", "lets", "go ahead and", "just", "now"
+    )
+
+    /** Removes stacked openers, e.g. "please can you just open settings". */
+    internal fun stripPreamble(prompt: String): String {
+        var text = prompt.trim()
+        var stripped = true
+        while (stripped) {
+            stripped = false
+            for (prefix in preamblePrefixes) {
+                if (text.startsWith("$prefix ")) {
+                    text = text.removePrefix("$prefix ").trim()
+                    stripped = true
+                }
+            }
+        }
+        return text
+    }
 
     private val knowledgePrefixes = listOf(
         "what is", "who is", "when is", "where is", "why", "how to", "how does", "explain",
@@ -41,7 +72,7 @@ object AniobTaskIntentClassifier {
     )
 
     fun classify(prompt: String): AniobIntent {
-        val lower = prompt.lowercase().trim()
+        val lower = stripPreamble(prompt.lowercase().trim())
         if (lower.isBlank()) return AniobIntent.EXTERNAL_AI_QUERY
 
         val hasQuestionWord = lower.startsWith("what") || lower.startsWith("who") ||

@@ -7,6 +7,7 @@ import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.SwipeDirection
 import com.aniob.app.network.AniobHttpClientSingleton
 import com.aniob.core.external.AniobCloudLlmProvider
+import com.aniob.core.speed.JsonPrefix
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -59,6 +60,13 @@ class AniobOmniRouteProvider(
         AniobHttpClientSingleton.client.newBuilder()
             .readTimeout(60, TimeUnit.SECONDS)
             .build()
+
+    /**
+     * Cleared the first time a gateway answers the streaming shape with a 4xx, so a gateway that
+     * cannot stream costs one rejected round-trip per session instead of one per action.
+     */
+    @Volatile
+    private var streamingSupported = true
 
     override suspend fun generate(prompt: String, systemPrompt: String): String = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
@@ -193,6 +201,186 @@ class AniobOmniRouteProvider(
             msg
         }
     }
+
+    /**
+     * Warms the gateway connection (DNS + TLS + HTTP/2) with one cheap `GET /models`.
+     *
+     * The first chat request on a cold profile pays the handshake; doing it while the user is
+     * still reading the screen removes that from time-to-first-action. This is not a model call:
+     * nothing is generated and [onLlmRequest] is not invoked. Every failure is ignored.
+     */
+    suspend fun prewarm() = withContext(Dispatchers.IO) {
+        if (apiKey.isBlank() && !isLocalGateway(baseUrl)) return@withContext
+        runCatching {
+            val warmClient = client.newBuilder().callTimeout(4, TimeUnit.SECONDS).build()
+            for (endpoint in AniobProviderConfig.candidateModelsEndpoints(baseUrl)) {
+                val request = Request.Builder()
+                    .url(endpoint)
+                    .apply { if (apiKey.isNotBlank()) addHeader("Authorization", "Bearer ${apiKey.trim()}") }
+                    .get()
+                    .build()
+                if (warmClient.newCall(request).execute().use { it.isSuccessful }) return@runCatching
+            }
+        }
+        Unit
+    }
+
+    /**
+     * Streaming twin of [getNextActionRaw]: returns as soon as one complete JSON object is on the
+     * wire instead of waiting for the gateway to finish the reply.
+     *
+     * [onFirstToken] fires on the first content delta so the caller can timestamp time-to-first
+     * token. A gateway that answers the streaming shape with a 4xx is remembered in
+     * [streamingSupported] and every later step uses the plain call, so an incompatible gateway
+     * costs one rejected round-trip per session rather than one per action.
+     */
+    suspend fun getNextActionRawStreaming(
+        systemPrompt: String,
+        userPrompt: String,
+        screenshotBase64: String? = null,
+        maxTokens: Int = 512,
+        onFirstToken: () -> Unit = {}
+    ): Result<String> = withContext(Dispatchers.IO) {
+        if (apiKey.isBlank() && !isLocalGateway(baseUrl)) {
+            return@withContext Result.failure(IllegalStateException("Omniroute API key is not configured"))
+        }
+        if (!streamingSupported) {
+            return@withContext getNextActionRaw(systemPrompt, userPrompt, screenshotBase64, maxTokens)
+        }
+        val startTime = System.currentTimeMillis()
+        try {
+            val messages = buildMessages(systemPrompt, userPrompt, screenshotBase64)
+            val effectiveModel = resolveModelForVision(AniobProviderConfig.coerceModel(model), screenshotBase64)
+            // `response_format` is left out of the streaming request: several gateways reject it
+            // with a 400 for streamed completions, and a rejected request costs more time than the
+            // field saves. The prompt already asks for one bare JSON object and the scanner below
+            // tolerates prose around it, so the reply stays parseable. Temperature is kept.
+            val payload = buildChatPayload(effectiveModel, messages, maxTokens, enforceJsonObject = true)
+                .apply { remove("response_format") }
+                .put("stream", true)
+            var lastFailure: Exception = IOException("OmniRoute gateway unreachable")
+            for (endpoint in AniobProviderConfig.candidateEndpoints(baseUrl)) {
+                onLlmRequest()
+                val attempt = streamOnce(endpoint, payload, onFirstToken)
+                if (attempt.isSuccess) {
+                    val raw = attempt.getOrThrow()
+                    AniobEgressLedger.record(
+                        name,
+                        effectiveModel,
+                        userPrompt.length + systemPrompt.length,
+                        raw.length,
+                        System.currentTimeMillis() - startTime
+                    )
+                    return@withContext Result.success(raw)
+                }
+                val error = attempt.exceptionOrNull()
+                if (error is StreamingRejected) {
+                    streamingSupported = false
+                    return@withContext getNextActionRaw(systemPrompt, userPrompt, screenshotBase64, maxTokens)
+                }
+                lastFailure = error as? Exception ?: lastFailure
+                if (error?.message?.contains("(401)") == true || error?.message?.contains("(403)") == true) {
+                    return@withContext Result.failure(lastFailure)
+                }
+            }
+            // A dropped SSE (proxy idle timeout, Wi-Fi handover) must not fail the whole task: the
+            // same request goes out once in the plain shape, which is what non-streaming gateways
+            // use anyway. Auth and shape rejections returned above and never reach this.
+            if (lastFailure is IOException) {
+                return@withContext getNextActionRaw(systemPrompt, userPrompt, screenshotBase64, maxTokens)
+            }
+            Result.failure(lastFailure)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun streamOnce(
+        endpoint: String,
+        payload: JSONObject,
+        onFirstToken: () -> Unit
+    ): Result<String> {
+        val request = buildRequest(endpoint, payload, noMemory = true).newBuilder()
+            .addHeader("Accept", "text/event-stream")
+            .build()
+        val call = client.newCall(request)
+        return suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (continuation.isActive) continuation.resume(Result.failure(e))
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    val result: Result<String> = try {
+                        readReply(call, response, onFirstToken)
+                    } catch (e: Exception) {
+                        Result.failure(e)
+                    } finally {
+                        response.close()
+                    }
+                    if (continuation.isActive) continuation.resume(result)
+                }
+            })
+        }
+    }
+
+    /**
+     * Reads an SSE reply, returning the first complete JSON object as soon as it closes.
+     *
+     * Gateways that ignore `stream` answer with an ordinary JSON body; that shape is accepted too,
+     * so the caller never has to branch on the transport.
+     */
+    private fun readReply(call: Call, response: Response, onFirstToken: () -> Unit): Result<String> {
+        if (!response.isSuccessful) {
+            val text = runCatching { response.body?.string() }.getOrDefault("")
+            val message = "Omniroute Cloud API error (${response.code}): $text"
+            return Result.failure(
+                if (response.code in 400..499) StreamingRejected(message) else IOException(message)
+            )
+        }
+        val contentType = response.header("Content-Type").orEmpty().lowercase()
+        if (!contentType.contains("event-stream")) {
+            val body = response.body?.string().orEmpty()
+            val text = runCatching { extractAssistantContent(body) }.getOrElse { body }
+            if (text.isNotBlank()) onFirstToken()
+            return Result.success(text)
+        }
+        val source = response.body?.source() ?: return Result.failure(IOException("empty stream body"))
+        val accumulated = StringBuilder()
+        var firstDeltaSeen = false
+        try {
+            while (true) {
+                val line = source.readUtf8Line() ?: break
+                if (line.isBlank() || !line.startsWith("data:")) continue
+                val data = line.removePrefix("data:").trim()
+                if (data == "[DONE]") break
+                val delta = runCatching {
+                    JSONObject(data).getJSONArray("choices").getJSONObject(0)
+                        .getJSONObject("delta").optString("content")
+                }.getOrNull()
+                if (delta.isNullOrEmpty()) continue
+                if (!firstDeltaSeen) {
+                    firstDeltaSeen = true
+                    onFirstToken()
+                }
+                JsonPrefix.appendBounded(accumulated, delta)
+                val complete = JsonPrefix.firstCompleteObject(accumulated)
+                if (complete != null) {
+                    call.cancel() // the rest of the reply cannot improve the action
+                    return Result.success(complete)
+                }
+            }
+        } catch (_: IOException) {
+            // A cancel after a complete object lands here; the text below is still valid.
+        }
+        val text = accumulated.toString().trim()
+        if (text.isEmpty()) return Result.failure(IOException("stream produced no content"))
+        return Result.success(JsonPrefix.firstCompleteObject(text) ?: text)
+    }
+
+    /** A 4xx on the streaming shape; the caller retries once without `stream`. */
+    private class StreamingRejected(message: String) : IOException(message)
 
     private fun buildMessages(systemPrompt: String, userPrompt: String, screenshotBase64: String?): JSONArray {
         val messages = JSONArray()
@@ -409,8 +597,12 @@ class AniobOmniRouteProvider(
         const val DEFAULT_THROTTLE_MS = 60L
 
         internal fun isLocalGateway(url: String): Boolean {
-            val lower = url.trim().lowercase()
-            return lower.contains("localhost") || lower.contains("127.0.0.1") || lower.contains("10.0.2.2")
+            val host = try {
+                java.net.URI(AniobProviderConfig.normalizeBaseUrl(url)).host
+            } catch (e: Exception) {
+                null
+            } ?: return false
+            return AniobProviderConfig.isLocalNetworkHost(host)
         }
 
         internal fun resolveModelForVision(configuredModel: String, screenshotBase64: String?): String {

@@ -41,6 +41,7 @@ object FailureReasonCopy {
     fun providerLabel(code: String): String = when (code.uppercase()) {
         "FASTPATH" -> "Instant replay"
         "REMEMBER" -> "Remembered replay"
+        "APP_LAUNCH" -> "App shortcut"
         "LOCAL_SLM" -> "On-device"
         "OMNIROUTE_CLOUD" -> "Cloud"
         "INTENT" -> "System shortcut"

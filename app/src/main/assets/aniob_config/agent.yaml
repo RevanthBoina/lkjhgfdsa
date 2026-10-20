@@ -5,7 +5,7 @@ agent:
   min_sdk: 30
   target_sdk: 35
   max_nodes_per_screen: 60
-  max_steps_per_task: 25
+  max_steps_per_task: 50
   step_timeout_ms: 15000
   screenshot_max_dimension: 1120
   screenshot_jpeg_quality: 80

@@ -97,7 +97,7 @@ data class AniobDecodeConfig(
  * These replace hardcoded literals in the execution loop.
  */
 data class AgentLimits(
-    val maxStepsPerTask: Int = 25,
+    val maxStepsPerTask: Int = 50,
     val stepTimeoutMs: Long = 15_000L,
     val maxNodesPerScreen: Int = 60,
     val watchdogLoopThreshold: Int = 3,

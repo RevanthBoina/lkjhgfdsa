@@ -3,10 +3,54 @@ build/
 */build/
 .gradle/
 .kotlin/
+captures/
+.cxx/
+.externalNativeBuild/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
 
 # Local machine configuration
 local.properties
+*.iml
+.idea/
+.vscode/
 
 # Signing material (never commit keys/keystores)
 *.jks
 *.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+keystore.properties
+
+# Environment secrets: copy .env.example to .env and keep the real values local
+.env
+.env.*
+!.env.example
+
+# Logs and crash dumps
+*.log
+hs_err_pid*
+*.hprof
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Python tooling used by scripts/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Model weights are downloaded on device, never committed
+*.gguf
+*.onnx
+*.tflite
+*.safetensors

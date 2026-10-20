@@ -3,6 +3,7 @@ package com.aniob.core.ladder
 import com.aniob.core.domain.AniobAction
 import com.aniob.core.domain.AniobScreenState
 import com.aniob.core.domain.SemanticTarget
+import com.aniob.core.knowledge.AppCatalogEntry
 import com.aniob.core.tools.DevicePowerState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -220,5 +221,181 @@ class AniobExecutionRouterTest {
 
         assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.DirectIntent)
         assertEquals("the zero-millisecond intent rung stays first", 0, lookups)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Step-0 app launch
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    fun `app launch turns "open app and do x" into a zero-model first action`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.intentShortcutsEnabled = true
+        router.appLaunchResolver = { goal ->
+            if (goal.startsWith("Open Clock")) AppLaunchTarget("com.google.android.deskclock", "Clock") else null
+        }
+
+        val result = router.planStep(
+            taskPrompt = "Open Clock and set an alarm for 7:30 AM",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "open clock and set an alarm",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.AppLaunch)
+        val launch = result as AniobExecutionRouter.ExecutionPlanResult.AppLaunch
+        assertEquals("com.google.android.deskclock", launch.packageName)
+        assertEquals("Clock", launch.appName)
+    }
+
+    @Test
+    fun `app launch is gated by the shortcut switch`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.intentShortcutsEnabled = false
+        var calls = 0
+        router.appLaunchResolver = {
+            calls++
+            AppLaunchTarget("com.google.android.deskclock", "Clock")
+        }
+
+        val result = router.planStep(
+            taskPrompt = "Open Clock and set an alarm",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "open clock",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch)
+        assertEquals("the resolver must not even be consulted", 0, calls)
+    }
+
+    @Test
+    fun `app launch only applies to the first step`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.appLaunchResolver = { AppLaunchTarget("com.google.android.deskclock", "Clock") }
+
+        val result = router.planStep(
+            taskPrompt = "Open Clock and set an alarm",
+            screenState = screen,
+            stepIndex = 1,
+            taskSignature = "open clock",
+            powerState = power
+        )
+
+        assertTrue(result !is AniobExecutionRouter.ExecutionPlanResult.AppLaunch)
+    }
+
+    @Test
+    fun `an unresolved prompt falls through to the model`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.appLaunchResolver = { null }
+
+        val result = router.planStep(
+            taskPrompt = "Open Wi-Fi settings",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "open wi-fi settings",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch)
+    }
+
+    @Test
+    fun `a throwing resolver never breaks planning`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.appLaunchResolver = { error("catalog exploded") }
+
+        val result = router.planStep(
+            taskPrompt = "Open Clock and set an alarm for 7:30 AM",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "open clock",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch)
+    }
+
+    // --- step-0 app shortcut ---------------------------------------------------------
+    private val catalog = listOf(
+        AppCatalogEntry(packageName = "com.google.android.deskclock", appName = "Clock", aliases = listOf("alarm")),
+        AppCatalogEntry(packageName = "com.android.contacts", appName = "Contacts"),
+        AppCatalogEntry(packageName = "com.android.settings", appName = "Settings"),
+        AppCatalogEntry(packageName = "com.google.android.calculator", appName = "Calculator"),
+        AppCatalogEntry(packageName = "com.android.chrome", appName = "Chrome"),
+        AppCatalogEntry(packageName = "com.google.android.dialer", appName = "Phone"),
+        AppCatalogEntry(packageName = "com.example.settings", appName = "Settings Hub")
+    )
+
+    @Test
+    fun resolvesTheAppNamedAtTheStartOfAnImperative() {
+        assertEquals(
+            "com.google.android.deskclock",
+            AniobAppLaunchResolver.resolve("Open Clock and set an alarm for 7:30 AM", catalog)?.packageName
+        )
+        assertEquals(
+            "com.android.contacts",
+            AniobAppLaunchResolver.resolve("Open Contacts and search for John", catalog)?.packageName
+        )
+        assertEquals(
+            "com.google.android.calculator",
+            AniobAppLaunchResolver.resolve("Launch Calculator", catalog)?.packageName
+        )
+    }
+
+    @Test
+    fun theLongestMatchingNameWins() {
+        // "Settings Hub" and "Settings" both prefix-match; the more specific name is chosen.
+        val target = AniobAppLaunchResolver.resolve("Open Settings Hub and tap About", catalog)
+        assertEquals("com.example.settings", target?.packageName)
+    }
+
+    @Test
+    fun aMentionInsideASentenceNeverLaunches() {
+        assertNull(AniobAppLaunchResolver.resolve("Set an alarm in Clock for 7 am", catalog))
+        assertNull(AniobAppLaunchResolver.resolve("What is the Clock app", catalog))
+    }
+
+    @Test
+    fun aSubScreenNameDoesNotMatchAnApp() {
+        // "Wi-Fi settings" must not be read as the Settings app: the name is checked as a prefix.
+        assertNull(AniobAppLaunchResolver.resolve("Open Wi-Fi settings", catalog))
+    }
+
+    @Test
+    fun thePolitenessPrefixIsTolerated() {
+        assertEquals(
+            "com.android.chrome",
+            AniobAppLaunchResolver.resolve("please open the Chrome browser", catalog)?.packageName
+        )
+    }
+
+    @Test
+    fun anUninstalledAppIsNotLaunched() {
+        assertNull(
+            AniobAppLaunchResolver.resolve(
+                prompt = "Open Clock and set an alarm",
+                entries = catalog,
+                isInstalled = { false }
+            )
+        )
+    }
+
+    @Test
+    fun anEmptyCatalogOrPromptResolvesNothing() {
+        assertNull(AniobAppLaunchResolver.resolve("Open Clock", emptyList()))
+        assertNull(AniobAppLaunchResolver.resolve("", catalog))
+        assertNull(AniobAppLaunchResolver.resolve("Open", catalog))
+    }
+
+    @Test
+    fun aliasesResolveToTheirApp() {
+        assertEquals(
+            "com.google.android.deskclock",
+            AniobAppLaunchResolver.resolve("Open the alarm app", catalog)?.packageName
+        )
     }
 }
