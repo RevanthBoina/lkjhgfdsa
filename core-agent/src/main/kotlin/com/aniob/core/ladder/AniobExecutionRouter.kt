@@ -53,6 +53,14 @@ class AniobExecutionRouter(
      */
     var rememberLookup: ((String, AniobScreenState) -> List<AniobAction>?)? = null
 
+    /**
+     * App-name resolver supplied by the app layer: (goal) -> the app the task names, resolved
+     * against the installed-app catalog. Turns "open Clock and set an alarm" into a direct launch
+     * instead of a model round trip. Gated by [intentShortcutsEnabled]: it is the same class of
+     * zero-model pre-resolution as the system-intent shortcut.
+     */
+    var appLaunchResolver: ((String) -> AppLaunchTarget?)? = null
+
     /** UX-5: skills the user disabled are skipped by both matchers. */
     private var disabledSkills: Set<String> = emptySet()
 
@@ -68,6 +76,11 @@ class AniobExecutionRouter(
 
     sealed class ExecutionPlanResult {
         data class DirectIntent(val shortcut: ResolvedIntentShortcut, val reason: String) : ExecutionPlanResult()
+        /**
+         * Step 0 opens a named app directly. The package came from the installed-app catalog, so
+         * the step costs no model call; the next step plans on the app's own screen.
+         */
+        data class AppLaunch(val packageName: String, val appName: String, val reason: String) : ExecutionPlanResult()
         /**
          * A verified transition replayed from the remember cache. The list is dispatched in order
          * without any model call, so it costs 0 LLM requests.
@@ -103,6 +116,20 @@ class AniobExecutionRouter(
                 return ExecutionPlanResult.DirectIntent(
                     shortcut = intentShortcut,
                     reason = "Direct intent shortcut resolved in <15ms"
+                )
+            }
+        }
+
+        // Step 0.25: App launch (0 LLM). The task names an app the catalog already knows, so the
+        // first action is a single OpenApp intent instead of a model round trip that would have to
+        // decide the same thing from a screen full of icons.
+        if (stepIndex == 0 && intentShortcutsEnabled) {
+            val launch = runCatching { appLaunchResolver?.invoke(taskPrompt) }.getOrNull()
+            if (launch != null) {
+                return ExecutionPlanResult.AppLaunch(
+                    packageName = launch.packageName,
+                    appName = launch.appName,
+                    reason = "App shortcut: '${launch.appName}' is installed (0 LLM calls)"
                 )
             }
         }

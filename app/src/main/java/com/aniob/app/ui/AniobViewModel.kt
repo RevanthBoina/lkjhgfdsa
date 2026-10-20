@@ -55,11 +55,13 @@ import com.aniob.core.grillme.AniobGrillMeResult
 import com.aniob.core.intent.AniobIntent
 import com.aniob.core.intent.AniobTaskIntentClassifier
 import com.aniob.core.ladder.AniobExecutionRouter
+import com.aniob.core.ladder.AniobAppLaunchResolver
 import com.aniob.core.ladder.AniobIntentResolver
 import com.aniob.core.ladder.AniobPlanningAgent
 import com.aniob.core.ladder.ResolvedIntentShortcut
 import com.aniob.core.ladder.TaskProgress
 import com.aniob.core.memory.RememberAction
+import com.aniob.core.metrics.StartupTimeline
 import com.aniob.core.memory.RememberCache
 import com.aniob.core.verify.FastVerify
 import com.aniob.core.logging.AniobExecutionTracker
@@ -88,6 +90,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -430,9 +433,25 @@ class AniobViewModel(
         executionRouter.rememberLookup = { goal, screen ->
             rememberCache.lookup(goal, screen)
         }
+        // Step 0 app launch: "open Clock and …" resolves to a package here, so the first action
+        // costs no model call. The installed check keeps a stale catalog entry from launching a
+        // removed app.
+        executionRouter.appLaunchResolver = { goal ->
+            AniobAppLaunchResolver.resolve(
+                prompt = goal,
+                entries = com.aniob.core.knowledge.AniobAppCatalog.getInstance().getAll(),
+                isInstalled = { pkg ->
+                    runCatching { app.packageManager.getLaunchIntentForPackage(pkg) != null }
+                        .getOrDefault(false)
+                }
+            )
+        }
         viewModelScope.launch(Dispatchers.IO) {
             rememberCache = app.rememberCacheFile.load()
         }
+        // Warm the gateway connection (DNS + TLS + HTTP/2) while the user is still typing, so the
+        // first action does not pay for a cold handshake.
+        viewModelScope.launch(Dispatchers.IO) { prewarmGateway() }
 
         _uiState.update {
             it.copy(
@@ -1030,6 +1049,33 @@ class AniobViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             app.rememberCacheFile.save(snapshot)
         }
+    }
+
+    /**
+     * Waits until the chat window is really in the background, by watching the foreground package
+     * instead of sleeping a fixed 500 ms. Returns as soon as another app is in front; the cap keeps
+     * a stubborn window manager from stalling the run.
+     */
+    private suspend fun awaitAppBackgrounded(service: AniobAccessibilityService?) {
+        if (service == null) {
+            delay(120)
+            return
+        }
+        val deadline = System.currentTimeMillis() + BACKGROUND_WAIT_MAX_MS
+        while (System.currentTimeMillis() < deadline) {
+            val foreground = runCatching { service.currentForegroundPackage() }.getOrNull()
+            if (!foreground.isNullOrBlank() && foreground != app.packageName) return
+            delay(40)
+        }
+    }
+
+    /**
+     * Warms DNS/TLS/HTTP-2 for the gateway. Never throws and never counts as a model call: the
+     * request is a plain `GET /models`, so the first real action reuses the open connection.
+     */
+    private suspend fun prewarmGateway() {
+        if (!isCloudConfigured()) return
+        runCatching { getOmniRouteProvider().prewarm() }
     }
 
     /**
@@ -1993,12 +2039,36 @@ class AniobViewModel(
         // Hippocampus: short-term episodic stream for this task ("hippocampus -> cortex" consolidation)
         hippocampusTracker.beginTask(task.id, task.clarifiedGoal)
 
+        // Time-to-first-action: every mark below is milliseconds from here, so logcat shows
+        // whether a slow start is the device, the model or the glue between them.
+        val startup = StartupTimeline()
+        startup.mark(StartupTimeline.FIRST_MARK)
+
+        // Learned state (skills, FastPath trajectories) hydrates in parallel with the first
+        // capture instead of in front of it. A cold cache must not delay step 0; the first task
+        // after install simply plans from the model.
+        val hydration = if (_uiState.value.fastPathEnabled) {
+            viewModelScope.async(Dispatchers.Default) {
+                learningPipeline.awaitHydration(HYDRATION_BUDGET_MS)
+            }
+        } else {
+            null
+        }
+        // Warm the gateway again at task start: the user may have been idle long enough for the
+        // connection pool to drop the socket.
+        viewModelScope.launch(Dispatchers.IO) { prewarmGateway() }
+
         // Background automation integrity: minimize Aniob chat UI and run foreground service
         AniobBackgroundController.onTaskStarted(app, task.rawPrompt)
-        delay(500) // Allow WindowManager to minimize Aniob so the service perceives the target app
 
         val accessibility = AniobAccessibilityService.instance
+        // The old fixed 500 ms sleep is now a bounded poll on the foreground package: usually the
+        // window manager wins in ~100 ms, and a device that is already backgrounded returns at once.
+        awaitAppBackgrounded(accessibility)
+        startup.mark(StartupTimeline.MARK_BACKGROUNDED)
+
         var screenBefore: AniobScreenState? = accessibility?.captureCurrentScreenState()
+        startup.mark(StartupTimeline.MARK_CAPTURE)
 
         fun recordTrajectory(
             stepIndex: Int,
@@ -2127,6 +2197,8 @@ class AniobViewModel(
         var stalledReplayIdentity: String? = null
         var finalOutcome: Outcome? = null
         var terminalReason: String = ""
+        // Exactly one STARTUP_LATENCY line per run.
+        var startupLogged = false
         var stepResult: StepResult? = null
 
         try {
@@ -2144,8 +2216,15 @@ class AniobViewModel(
 
                 _uiState.update { it.copy(currentStep = currentStep + 1) }
 
+                // Step 0 already has a capture from the moment the task started; re-reading the
+                // same window only costs latency. Applies only while it is still fresh and the
+                // pause/takeover path is not involved.
+                val reuseStartCapture = currentStep == 0 && !wasPaused && screenBefore != null &&
+                    System.currentTimeMillis() - screenBefore.timestamp < START_CAPTURE_FRESH_MS
                 // Check Observation Policy: burst if predictable, else full capture
-                val captured = if (wasPaused || observationPolicy.shouldObserve() || screenBefore == null) {
+                val captured = if (reuseStartCapture) {
+                    screenBefore!!
+                } else if (wasPaused || observationPolicy.shouldObserve() || screenBefore == null) {
                     screenReads++; screenCaptureCount++
                     val fresh = accessibility?.captureCurrentScreenState() ?: AniobScreenState(
                         packageName = "com.aniob.app",
@@ -2208,8 +2287,9 @@ class AniobViewModel(
                 val effectiveModelId = resolvedModelId.takeIf { resolvedFileExists }
                 val isModelFileMissing = !resolvedFileExists
 
-                if (currentStep == 0 && _uiState.value.fastPathEnabled) {
-                    learningPipeline.awaitHydration()
+                if (currentStep == 0) {
+                    hydration?.await()
+                    startup.mark(StartupTimeline.MARK_HYDRATED)
                 }
 
                 val userRouting = _uiState.value.autoRouterMode.lowercase()
@@ -2241,6 +2321,7 @@ class AniobViewModel(
                     executionRouter.rememberReplayEnabled =
                         researchMode.rememberReplay && _uiState.value.fastPathEnabled
                 }
+                startup.mark(StartupTimeline.MARK_PLANNED)
                 if (ladderResult is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch) {
                     taskProgress = ladderResult.progress ?: taskProgress
                 }
@@ -2258,6 +2339,25 @@ class AniobViewModel(
                         proposal = StepPipeline.Proposal.DirectIntent(
                             action = AniobAction.Finish(summary = "Intent dispatched: ${ladderResult.shortcut.targetPackage}"),
                             label = "INTENT"
+                        )
+                    }
+                    is AniobExecutionRouter.ExecutionPlanResult.AppLaunch -> {
+                        primaryProvider = "APP_LAUNCH"
+                        decisionReason = ladderResult.reason
+                        app.researchTelemetry.markIntentShortcutUsed()
+                        _uiState.update {
+                            it.copy(
+                                statusMessage = "Opening ${ladderResult.appName}...",
+                                lastRoutingReason = ladderResult.reason,
+                                lastProviderUsed = primaryProvider
+                            )
+                        }
+                        proposal = StepPipeline.Proposal.Model(
+                            AniobAction.OpenApp(
+                                packageName = ladderResult.packageName,
+                                thought = "Open ${ladderResult.appName}"
+                            ),
+                            primaryProvider
                         )
                     }
                     is AniobExecutionRouter.ExecutionPlanResult.RememberReplay -> {
@@ -2438,11 +2538,16 @@ class AniobViewModel(
                             } else null
                             // A burst reply is a handful of tokens; a tight budget keeps the
                             // decode short and stops a chatty model from padding the plan.
-                            val raw = omniroute.getNextActionRaw(
-                                systemPrompt,
-                                activePrompt,
-                                screenshotBase64,
-                                maxTokens = if (burstEnabled) BURST_MAX_OUTPUT_TOKENS else 512
+                            startup.mark(StartupTimeline.MARK_PROMPT)
+                            // Streaming + early parse: the action leaves the device the moment the
+                            // reply's JSON object closes, instead of waiting for the model to stop
+                            // talking, for the socket to close and for a full body read.
+                            val raw = omniroute.getNextActionRawStreaming(
+                                systemPrompt = systemPrompt,
+                                userPrompt = activePrompt,
+                                screenshotBase64 = screenshotBase64,
+                                maxTokens = if (burstEnabled) BURST_MAX_OUTPUT_TOKENS else 512,
+                                onFirstToken = { startup.mark(StartupTimeline.MARK_TTFT) }
                             )
                             totalTokens += ((systemPrompt.length + activePrompt.length) / 4).coerceAtLeast(150)
                             raw.fold(
@@ -2525,6 +2630,7 @@ class AniobViewModel(
                         }
                     }
                 }
+                startup.mark(StartupTimeline.MARK_ACTION)
 
                 persistRunningMarker(task, currentStep + 1, proposal.action.describeAction())
 
@@ -2545,9 +2651,18 @@ class AniobViewModel(
                  */
                 suspend fun awaitTransition(act: AniobAction): AniobScreenState? {
                     if (accessibility == null) return null
+                    // A cold app launch can take seconds on a busy phone; every other action keeps
+                    // the 800 ms budget. The wait is still event-driven, so a fast launch returns
+                    // as soon as the package actually changes.
+                    val budget = if (act is AniobAction.OpenApp) {
+                        APP_LAUNCH_VERIFY_MS
+                    } else {
+                        com.aniob.core.verify.FastVerify.MAX_WAIT_MS
+                    }
                     val fast = com.aniob.core.verify.FastVerify.await(
                         preAction = dispatchOrigin,
                         expectedTexts = com.aniob.core.verify.FastVerify.expectedTexts(act, resolvedCriteria),
+                        timeoutMs = budget,
                         windowEvents = { accessibility.windowEventSequence() },
                         capturePoll = { accessibility.captureCurrentScreenState() },
                         screenshot = { captureVerifyScreenshot() }
@@ -2581,6 +2696,13 @@ class AniobViewModel(
                             StepPipeline.DispatchOutcome(dispatched = ok, screenAfter = screenAfter)
                         }
                     }
+                }
+                // Time-to-first-action, once per run, in the same log stream as the step
+                // narration: `adb logcat -s AniobViewModel | grep STARTUP_LATENCY`.
+                if (!startupLogged) {
+                    startup.mark(StartupTimeline.MARK_DISPATCHED)
+                    startupLogged = true
+                    app.eventLogger.info("AniobViewModel", startup.logLine())
                 }
 
                 val confirmLambda: suspend (String) -> Boolean = { actionDesc ->
@@ -3263,6 +3385,21 @@ class AniobViewModel(
 
         /** Output budget for a burst reply (the schema asks for < 60 tokens). */
         const val BURST_MAX_OUTPUT_TOKENS = 96
+
+        /**
+         * Budget for hydrating learned state before step 0 yields to the model. Hydration keeps
+         * running in the background; a cold cache must not add seconds to the first action.
+         */
+        const val HYDRATION_BUDGET_MS = 300L
+
+        /** Ceiling for waiting on the chat window to minimise (it used to be a fixed 500 ms). */
+        const val BACKGROUND_WAIT_MAX_MS = 500L
+
+        /** A start-of-task capture younger than this is reused for step 0 instead of re-read. */
+        const val START_CAPTURE_FRESH_MS = 1_500L
+
+        /** A cold app launch is allowed longer than a tap: the wait ends on the package change. */
+        const val APP_LAUNCH_VERIFY_MS = 4_000L
 
         /** Observe-burst ceiling for burst modes (the shipping value). */
         const val OBSERVATION_BURST_LIMIT = 3

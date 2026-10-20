@@ -7,6 +7,7 @@ import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.domain.SwipeDirection
 import com.aniob.app.network.AniobHttpClientSingleton
 import com.aniob.core.external.AniobCloudLlmProvider
+import com.aniob.core.speed.JsonPrefix
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -58,6 +59,13 @@ class AniobOmniRouteProvider(
         AniobHttpClientSingleton.client.newBuilder()
             .readTimeout(60, TimeUnit.SECONDS)
             .build()
+
+    /**
+     * Cleared the first time a gateway answers the streaming shape with a 4xx, so a gateway that
+     * cannot stream costs one rejected round-trip per session instead of one per action.
+     */
+    @Volatile
+    private var streamingSupported = true
 
     override suspend fun generate(prompt: String, systemPrompt: String): String = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
@@ -306,6 +314,197 @@ class AniobOmniRouteProvider(
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    /**
+     * Warms the gateway connection (DNS + TLS + HTTP/2) with one cheap `GET /models`.
+     *
+     * The first chat request on a cold profile pays the handshake; doing it while the user is
+     * still reading the screen removes that from time-to-first-action. This is not a model call:
+     * nothing is generated and [onLlmRequest] is not invoked. Every failure is ignored.
+     */
+    suspend fun prewarm() = withContext(Dispatchers.IO) {
+        if (apiKey.isBlank()) return@withContext
+        runCatching {
+            val endpoint = AniobProviderConfig.resolveEndpoint(baseUrl)
+                .removeSuffix(AniobProviderConfig.CHAT_COMPLETIONS_PATH) + "/models"
+            val request = Request.Builder()
+                .url(endpoint)
+                .addHeader("Authorization", "Bearer $apiKey")
+                .get()
+                .build()
+            // Same connection pool as the real calls, so the warmed socket is the one reused.
+            client.newBuilder()
+                .callTimeout(4, TimeUnit.SECONDS)
+                .build()
+                .newCall(request)
+                .execute()
+                .use { it.body?.string().orEmpty() }
+        }
+        Unit
+    }
+
+    /**
+     * Streams one action reply and returns as soon as the reply's JSON object is complete.
+     *
+     * A non-streaming call waits for the model to finish, for the server to close the body and for
+     * the whole payload to be read. With `stream = true` the deltas arrive as they are decoded, and
+     * the first balanced `{...}` is handed to the caller while the model is still talking; the call
+     * is then cancelled. Gateways that ignore `stream` (some `auto` upstreams do) are detected by
+     * content type and fall back to a plain body read, so behaviour never regresses to a failure.
+     */
+    suspend fun getNextActionRawStreaming(
+        systemPrompt: String,
+        userPrompt: String,
+        screenshotBase64: String? = null,
+        maxTokens: Int = 512,
+        onFirstToken: () -> Unit = {}
+    ): Result<String> = withContext(Dispatchers.IO) {
+        if (apiKey.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("Omniroute API key is not configured"))
+        }
+        if (!streamingSupported) {
+            // This gateway already refused the streaming shape once; go straight to the plain call.
+            return@withContext getNextActionRaw(systemPrompt, userPrompt, screenshotBase64, maxTokens)
+        }
+        val payload = JSONObject().apply {
+            put("model", model)
+            put("messages", buildActionMessages(systemPrompt, userPrompt, screenshotBase64))
+            put("temperature", 0.1)
+            put("max_tokens", maxTokens)
+            put("stream", true)
+            put("response_format", JSONObject().apply { put("type", "json_object") })
+        }
+        val request = Request.Builder()
+            .url(AniobProviderConfig.resolveEndpoint(baseUrl))
+            .addHeader("Authorization", "Bearer $apiKey")
+            .addHeader("Content-Type", "application/json")
+            .addHeader("Accept", "text/event-stream")
+            .post(payload.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+
+        onLlmRequest()
+        val call = client.newCall(request)
+        val streamed: Result<String> = suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (continuation.isActive) continuation.resume(Result.failure(e))
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    // readReply already returns a Result; wrapping it again would nest the types.
+                    val result: Result<String> = try {
+                        readReply(call, response, onFirstToken)
+                    } catch (e: Exception) {
+                        Result.failure(e)
+                    } finally {
+                        response.close()
+                    }
+                    if (continuation.isActive) continuation.resume(result)
+                }
+            })
+        }
+        // A gateway that refuses `stream` + `response_format` (4xx) must not cost the action: the
+        // same request is replayed once in the non-streaming shape, which every gateway accepts.
+        val error = streamed.exceptionOrNull()
+        if (error is StreamingRejected) {
+            streamingSupported = false
+            return@withContext getNextActionRaw(systemPrompt, userPrompt, screenshotBase64, maxTokens)
+        }
+        streamed
+    }
+
+    /** A 4xx on the streaming shape; the caller retries once without `stream`. */
+    private class StreamingRejected(message: String) : IOException(message)
+
+    /**
+     * Reads one reply, in either shape: SSE deltas (early exit on a complete object) or a plain
+     * JSON body when the gateway ignored `stream`.
+     */
+    private fun readReply(call: Call, response: Response, onFirstToken: () -> Unit): Result<String> {
+        val body = response.body ?: return Result.failure(IOException("empty response body"))
+        if (!response.isSuccessful) {
+            val text = runCatching { body.string() }.getOrDefault("")
+            val message = "Omniroute Cloud API error (${response.code}): $text"
+            return Result.failure(
+                if (response.code in 400..499) StreamingRejected(message) else IOException(message)
+            )
+        }
+        val contentType = body.contentType()?.toString().orEmpty()
+        if (!contentType.contains("event-stream", ignoreCase = true)) {
+            val text = body.string()
+            val parsed = runCatching {
+                JSONObject(text).getJSONArray("choices").getJSONObject(0)
+                    .getJSONObject("message").getString("content")
+            }.getOrNull()
+            return Result.success(parsed ?: text)
+        }
+
+        val accumulated = StringBuilder()
+        var firstDeltaSeen = false
+        try {
+            body.source().use { source ->
+                while (true) {
+                    val line = source.readUtf8Line() ?: break
+                    if (line.isEmpty() || line.startsWith(":")) continue
+                    if (!line.startsWith("data:")) continue
+                    val data = line.removePrefix("data:").trim()
+                    if (data == "[DONE]") break
+                    val delta = runCatching {
+                        JSONObject(data).getJSONArray("choices").getJSONObject(0)
+                            .getJSONObject("delta").optString("content")
+                    }.getOrNull()
+                    if (delta.isNullOrEmpty()) continue
+                    if (!firstDeltaSeen) {
+                        firstDeltaSeen = true
+                        onFirstToken()
+                    }
+                    JsonPrefix.appendBounded(accumulated, delta)
+                    val complete = JsonPrefix.firstCompleteObject(accumulated)
+                    if (complete != null) {
+                        call.cancel() // the rest of the reply cannot improve the action
+                        return Result.success(complete)
+                    }
+                }
+            }
+        } catch (_: IOException) {
+            // A cancel after a complete object lands here; the text below is still valid.
+        }
+        val text = accumulated.toString().trim()
+        if (text.isEmpty()) return Result.failure(IOException("stream produced no content"))
+        return Result.success(JsonPrefix.firstCompleteObject(text) ?: text)
+    }
+
+    /** The chat body shared by the streaming and non-streaming action calls. */
+    private fun buildActionMessages(
+        systemPrompt: String,
+        userPrompt: String,
+        screenshotBase64: String?
+    ): JSONArray {
+        val messages = JSONArray()
+        messages.put(JSONObject().apply {
+            put("role", "system")
+            put("content", systemPrompt)
+        })
+        val userContent = JSONArray()
+        userContent.put(JSONObject().apply {
+            put("type", "text")
+            put("text", userPrompt)
+        })
+        if (!screenshotBase64.isNullOrBlank()) {
+            userContent.put(JSONObject().apply {
+                put("type", "image_url")
+                put("image_url", JSONObject().apply {
+                    put("url", "data:image/jpeg;base64,$screenshotBase64")
+                })
+            })
+        }
+        messages.put(JSONObject().apply {
+            put("role", "user")
+            put("content", userContent)
+        })
+        return messages
     }
 
     companion object {

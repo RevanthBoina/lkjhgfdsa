@@ -221,4 +221,100 @@ class AniobExecutionRouterTest {
         assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.DirectIntent)
         assertEquals("the zero-millisecond intent rung stays first", 0, lookups)
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // Step-0 app launch
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    fun `app launch turns "open app and do x" into a zero-model first action`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.intentShortcutsEnabled = true
+        router.appLaunchResolver = { goal ->
+            if (goal.startsWith("Open Clock")) AppLaunchTarget("com.google.android.deskclock", "Clock") else null
+        }
+
+        val result = router.planStep(
+            taskPrompt = "Open Clock and set an alarm for 7:30 AM",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "open clock and set an alarm",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.AppLaunch)
+        val launch = result as AniobExecutionRouter.ExecutionPlanResult.AppLaunch
+        assertEquals("com.google.android.deskclock", launch.packageName)
+        assertEquals("Clock", launch.appName)
+    }
+
+    @Test
+    fun `app launch is gated by the shortcut switch`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.intentShortcutsEnabled = false
+        var calls = 0
+        router.appLaunchResolver = {
+            calls++
+            AppLaunchTarget("com.google.android.deskclock", "Clock")
+        }
+
+        val result = router.planStep(
+            taskPrompt = "Open Clock and set an alarm",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "open clock",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch)
+        assertEquals("the resolver must not even be consulted", 0, calls)
+    }
+
+    @Test
+    fun `app launch only applies to the first step`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.appLaunchResolver = { AppLaunchTarget("com.google.android.deskclock", "Clock") }
+
+        val result = router.planStep(
+            taskPrompt = "Open Clock and set an alarm",
+            screenState = screen,
+            stepIndex = 1,
+            taskSignature = "open clock",
+            powerState = power
+        )
+
+        assertTrue(result !is AniobExecutionRouter.ExecutionPlanResult.AppLaunch)
+    }
+
+    @Test
+    fun `an unresolved prompt falls through to the model`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.appLaunchResolver = { null }
+
+        val result = router.planStep(
+            taskPrompt = "Open Wi-Fi settings",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "open wi-fi settings",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch)
+    }
+
+    @Test
+    fun `a throwing resolver never breaks planning`() {
+        val router = AniobExecutionRouter(planningAgent = null)
+        router.appLaunchResolver = { error("catalog exploded") }
+
+        val result = router.planStep(
+            taskPrompt = "Open Clock and set an alarm for 7:30 AM",
+            screenState = screen,
+            stepIndex = 0,
+            taskSignature = "open clock",
+            powerState = power
+        )
+
+        assertTrue(result is AniobExecutionRouter.ExecutionPlanResult.ModelDispatch)
+    }
 }
