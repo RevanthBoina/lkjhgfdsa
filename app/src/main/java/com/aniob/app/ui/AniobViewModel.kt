@@ -55,9 +55,11 @@ import com.aniob.core.grillme.AniobGrillMeEngine
 import com.aniob.core.grillme.AniobGrillMeResult
 import com.aniob.core.intent.AniobIntent
 import com.aniob.core.intent.AniobTaskIntentClassifier
+import com.aniob.core.knowledge.AniobAppRegistry
 import com.aniob.core.ladder.AniobExecutionRouter
-import com.aniob.core.ladder.AniobAppLaunchResolver
 import com.aniob.core.ladder.AniobIntentResolver
+import com.aniob.core.ladder.AniobLaunchHub
+import com.aniob.core.ladder.AppLaunchTarget
 import com.aniob.core.ladder.AniobPlanningAgent
 import com.aniob.core.ladder.ResolvedIntentShortcut
 import com.aniob.core.ladder.TaskProgress
@@ -466,18 +468,33 @@ class AniobViewModel(
         executionRouter.rememberLookup = { goal, screen ->
             rememberCache.lookup(goal, screen)
         }
-        // Step 0 app launch: "open Clock and …" resolves to a package here, so the first action
-        // costs no model call. The installed check keeps a stale catalog entry from launching a
-        // removed app.
+        // App launches are a LOOKUP, never a model call. Both hooks read the same registry the
+        // intent resolver reads, so "open clock" means the same package everywhere in the ladder.
+        // The platform's launchable check keeps a stale cache entry from opening a removed app.
+        val isLaunchable: (String) -> Boolean = { pkg ->
+            runCatching { app.packageManager.getLaunchIntentForPackage(pkg) != null }.getOrDefault(false)
+        }
+        // Step 0: the app named at the start of the task ("open Clock and set an alarm").
         executionRouter.appLaunchResolver = { goal ->
-            AniobAppLaunchResolver.resolve(
+            AniobLaunchHub.plan(goal, AniobAppRegistry.getInstance(), isLaunchable)?.let { plan ->
+                AppLaunchTarget(plan.packageName, plan.label, plan.launchActivity)
+            }
+        }
+        // Mid-task: an app named later in the task ("… then open Instagram"), skipping the apps this
+        // task already opened and the one already in front. Without this, a multi-step goal keeps
+        // re-launching the app it started in.
+        executionRouter.midTaskLaunchResolver = { goal ->
+            AniobLaunchHub.planMidTask(
                 prompt = goal,
-                entries = com.aniob.core.knowledge.AniobAppCatalog.getInstance().getAll(),
-                isInstalled = { pkg ->
-                    runCatching { app.packageManager.getLaunchIntentForPackage(pkg) != null }
-                        .getOrDefault(false)
-                }
-            )
+                registry = AniobAppRegistry.getInstance(),
+                isLaunchable = isLaunchable,
+                currentPackage = runCatching {
+                    AniobAccessibilityService.instance?.currentForegroundPackage()
+                }.getOrNull(),
+                exclude = AniobLaunchHub.launchedPackages()
+            )?.let { plan ->
+                AppLaunchTarget(plan.packageName, plan.label, plan.launchActivity)
+            }
         }
         viewModelScope.launch(Dispatchers.IO) {
             rememberCache = app.rememberCacheFile.load()
@@ -1964,8 +1981,20 @@ class AniobViewModel(
         }
     }
 
-    internal fun checkDoctorPreflight(prompt: String): com.aniob.core.tools.DoctorResult {
-        val resolvedShortcut = AniobIntentResolver.resolve(prompt)
+    internal fun checkDoctorPreflight(prompt: String): com.aniob.core.tools.DoctorResult =
+        checkDoctorPreflight(prompt, AniobIntentResolver.resolve(prompt))
+
+    /**
+     * @param resolvedShortcut the shortcut for [prompt], when the caller already resolved it.
+     *
+     * An **app** shortcut is not an "offline shortcut": it still needs the accessibility service to
+     * observe the launch, so it must not be exempt from that preflight check. Only a reflex whose
+     * dispatch *is* the outcome (torch, battery, dial, open URL) may skip it.
+     */
+    private fun checkDoctorPreflight(
+        prompt: String,
+        resolvedShortcut: ResolvedIntentShortcut?
+    ): com.aniob.core.tools.DoctorResult {
         return com.aniob.core.tools.AniobDoctor.preflightCheck(
             taskPrompt = prompt,
             targetPackage = resolvedShortcut?.targetPackage,
@@ -1976,12 +2005,13 @@ class AniobViewModel(
             autoRouterMode = _uiState.value.autoRouterMode,
             totalRamGb = AniobDeviceTelemetry.getRealState(app).totalRamGb,
             isAppInstalled = { pkg -> app.packageManager.getLaunchIntentForPackage(pkg) != null },
-            isOfflineShortcut = (resolvedShortcut != null)
+            isOfflineShortcut = resolvedShortcut != null && !resolvedShortcut.requiresObservation
         )
     }
 
     private fun runDoctorPreflight(task: AniobTask, prompt: String, resolvedShortcut: ResolvedIntentShortcut?): Boolean {
-        val doctorResult = checkDoctorPreflight(prompt)
+        // Reuse the shortcut resolved by the caller: resolving twice is how the two answers drift.
+        val doctorResult = checkDoctorPreflight(prompt, resolvedShortcut)
         if (!doctorResult.allPassed) {
             val telemetry = AniobDeviceTelemetry.getRealState(app)
             val recommendedId = modelDownloader.getRecommendedModel(modelDownloader.getDeviceInfo())
@@ -2454,6 +2484,9 @@ class AniobViewModel(
                         proposal = StepPipeline.Proposal.Model(
                             AniobAction.OpenApp(
                                 packageName = ladderResult.packageName,
+                                // Explicit component when the registry knows it: no chooser sheet,
+                                // and the verifier can check the package it actually expects.
+                                activityName = AniobLaunchHub.activityClassName(ladderResult.launchActivity),
                                 thought = "Open ${ladderResult.appName}"
                             ),
                             primaryProvider

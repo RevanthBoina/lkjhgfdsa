@@ -5,6 +5,7 @@ import com.aniob.core.domain.AniobScreenState
 import com.aniob.core.domain.SemanticTarget
 import com.aniob.core.knowledge.AppCatalogEntry
 import com.aniob.core.tools.DevicePowerState
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -19,6 +20,12 @@ class AniobExecutionRouterTest {
         treeHash = "settings-hash-1"
     )
     private val power = DevicePowerState()
+
+    /** Per-task launch memory is process-wide state; a fresh signature must not leak between tests. */
+    @Before
+    fun resetLaunchMemory() {
+        AniobLaunchHub.clearMemory()
+    }
 
     @Test
     fun `model dispatch carries condensed progress summary when planning agent present`() {
@@ -212,10 +219,12 @@ class AniobExecutionRouterTest {
         }
 
         val result = router.planStep(
-            taskPrompt = "open settings",
+            // A *reflex* is what may finish immediately. "open settings" is an app launch, which
+            // must be observed first, so it is no longer a DirectIntent (see AniobMidTaskLaunchTest).
+            taskPrompt = "turn on flashlight",
             screenState = screen,
             stepIndex = 0,
-            taskSignature = "open settings",
+            taskSignature = "turn on flashlight",
             powerState = power
         )
 
